@@ -16,7 +16,7 @@
 
 use std::rc::Rc;
 
-use utilities::Result;
+use utilities::{Result, StrId};
 
 use crate::machine::data::{fault, mk, PVal, Value};
 
@@ -438,7 +438,7 @@ fn pack_struct(layout: &utilities::CLayout, v: &PVal, bytes: &mut [u8]) -> Resul
     };
     if layout.is_union {
         for (name, fv) in fields {
-            if let Some(cf) = layout.fields.iter().find(|f| &f.name == name) {
+            if let Some(cf) = layout.fields.iter().find(|f| *name == f.name.as_str()) {
                 write_field(&cf.kind, cf.offset, fv, bytes)?;
             }
         }
@@ -447,7 +447,7 @@ fn pack_struct(layout: &utilities::CLayout, v: &PVal, bytes: &mut [u8]) -> Resul
     for cf in &layout.fields {
         let fv = fields
             .iter()
-            .find(|(n, _)| n == &cf.name)
+            .find(|(n, _)| *n == cf.name.as_str())
             .map(|(_, v)| v.clone())
             .ok_or_else(|| fault(format!("FFI: struct is missing field `{}`", cf.name)))?;
         write_field(&cf.kind, cf.offset, &fv, bytes)?;
@@ -485,10 +485,10 @@ fn unpack_struct<'p>(name: &str, layout: &utilities::CLayout, bytes: &[u8]) -> V
     let fields = layout
         .fields
         .iter()
-        .map(|cf| (cf.name.clone(), mk(read_field(&cf.kind, cf.offset, bytes))))
+        .map(|cf| (StrId::intern(&cf.name), mk(read_field(&cf.kind, cf.offset, bytes))))
         .collect();
     Value::Struct {
-        name: name.to_string(),
+        name: StrId::intern(name),
         fields,
     }
 }
@@ -540,28 +540,23 @@ fn read_bytes(v: &PVal) -> Result<Vec<u8>> {
 /// entry point the machine's `run_extern` uses for a symbol outside the native
 /// fast-path table (and for every wasm host call).
 pub fn call_extern<'p>(
-    symbol: &str,
-    lib: &str,
-    arg_types: &[String],
-    ret_type: &str,
+    symbol: StrId,
+    lib: StrId,
+    arg_types: &[StrId],
+    ret_type: StrId,
     args: &[PVal<'p>],
 ) -> Result<Value<'p>> {
-    let exact = utilities::libc::exact_types(
-        utilities::Target::host(),
-        lib,
-        symbol,
-        arg_types,
-        ret_type,
-    );
+    let exact = utilities::libc::exact_types(utilities::Target::host(), lib, symbol, arg_types, ret_type);
     let (arg_types, ret_type) = match &exact {
-        Some((a, r)) => (a.as_slice(), r.as_str()),
+        Some((a, r)) => (a.as_slice(), *r),
         None => (arg_types, ret_type),
     };
+    let (symbol, lib) = (symbol.as_str(), lib.as_str());
     let mut cargs = Vec::with_capacity(arg_types.len());
     for (i, ty) in arg_types.iter().enumerate() {
-        cargs.push(classify_arg(ty, &args[i])?);
+        cargs.push(classify_arg(ty.as_str(), &args[i])?);
     }
-    let plan = classify_ret(ret_type);
+    let plan = classify_ret(ret_type.as_str());
     // Keep the struct-return layout to rebuild the value after the call.
     let ret_struct = plan
         .struct_ret

@@ -4,11 +4,11 @@
 //! is process-global (a signal handler has nowhere else to put it), so setting it
 //! would stop evaluations running concurrently in the same process.
 
-use frontend::{lower_program, Checker, Decls};
+use frontend::{desugar_program, Checker};
 
 /// Parse, check and lower one module to the IR. CORE is not injected, so the
 /// module can use no CORE names, builtins included.
-fn lower(src: &str) -> frontend::ir::data::Program {
+fn lower(src: &str) -> frontend::ir::data::IrProgram {
     let parsed = frontend::parse(src).expect("parse");
     let types = std::rc::Rc::new(frontend::Types::new());
     let mut checker = Checker::new(&parsed.ast, types.clone());
@@ -16,8 +16,7 @@ fn lower(src: &str) -> frontend::ir::data::Program {
         .check_program(&parsed.program)
         .unwrap_or_else(|e| panic!("{}", e.render(src, "T")));
     let resolved = frontend::collect_resolved(std::slice::from_ref(&checker));
-    let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
-    let lowered = lower_program(&parsed.ast, &parsed.program, &decls, &resolved);
+    let lowered = desugar_program(&parsed.ast, &parsed.program, &resolved);
     frontend::ir::lower_modules(std::slice::from_ref(&lowered))
 }
 

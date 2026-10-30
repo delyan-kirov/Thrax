@@ -1,5 +1,5 @@
 //! The C code generator (`ccg`): a backend that emits a standalone C program
-//! from the Core ([`frontend::lowering::data`]), the ahead-of-time counterpart to
+//! from the Core ([`frontend::core`]), the ahead-of-time counterpart to
 //! the tree-walking `interpreter`.
 //!
 //! [`emit`] runs the middle-end via [`frontend::ir::lower_modules`] (canonical
@@ -15,7 +15,7 @@
 mod gen;
 
 use frontend::ir;
-use frontend::lowering::data::Program;
+use frontend::core::CoreProgram;
 use gen::{cstr, emit_builtin_enum, emit_extern_table, reachable_codes, Emitter};
 
 /// The C portability layer, emitted ahead of the runtime: every platform
@@ -31,7 +31,7 @@ const RUNTIME: &str = include_str!("runtime.c");
 const THRAXSTD: &str = include_str!("thraxstd.c");
 
 /// The C API of the compiler library, emitted ahead of the runtime when a
-/// program runs a compiler builtin (see [`gen::COMPILER_BUILTINS`]).
+/// program runs a compiler builtin (see [`frontend::ir::data::BuiltinHost::Compiler`]).
 const THRAX_H: &str = include_str!("../../thrax/include/thrax.h");
 
 /// A generated C program together with the symbolic `@extern` libraries it uses,
@@ -62,7 +62,7 @@ pub enum Entry {
 /// the program (word size, os/arch), so a cross build reports the target it was
 /// compiled for rather than the build host.
 pub fn emit(
-    modules: &[Program],
+    modules: &[CoreProgram],
     entry: &str,
     kind: Entry,
     target: utilities::Target,
@@ -73,7 +73,7 @@ pub fn emit(
 /// Like [`emit`], also returning the symbolic `@extern` libraries the program
 /// links against (deduplicated, in first-seen order).
 pub fn emit_program(
-    modules: &[Program],
+    modules: &[CoreProgram],
     entry: &str,
     kind: Entry,
     target: utilities::Target,
@@ -84,7 +84,7 @@ pub fn emit_program(
         Emitter::new(&prog, reachable.clone()).run();
     for e in &mut externs {
         if let Some((args, ret)) =
-            utilities::libc::exact_types(target, &e.lib, &e.symbol, &e.arg_types, &e.ret_type)
+            utilities::libc::exact_types(target, e.lib, e.symbol, &e.arg_types, e.ret_type)
         {
             e.arg_types = args;
             e.ret_type = ret;
@@ -205,7 +205,9 @@ pub fn emit_program(
 
     // The foreign-function wrappers and their dispatch table (empty table + count
     // 0 when the program has no `@extern`).
-    out.push_str(&emit_extern_table(&externs, &prog.crepr_layouts));
+    let layouts: Vec<(String, utilities::CLayout)> =
+        prog.crepr_layouts.iter().map(|(n, l)| (n.to_string(), l.clone())).collect();
+    out.push_str(&emit_extern_table(&externs, &layouts));
 
     // The dispatch tables the runtime calls back through: entry block + slot count
     // per lifted Code.
@@ -293,15 +295,15 @@ pub fn emit_program(
     // libm. (`link_flag` maps "m" to `-lm`; on emcc it is a harmless no-op.)
     let mut libraries: Vec<String> = vec!["m".to_string()];
     for e in &externs {
-        if !libraries.iter().any(|l| l == &e.lib) {
-            libraries.push(e.lib.clone());
+        if !libraries.iter().any(|l| e.lib == l.as_str()) {
+            libraries.push(e.lib.to_string());
         }
     }
     // A program that passes a Thrax closure to C uses libffi closures, so it must
     // link libffi (the generated callback runtime includes `<ffi.h>`).
     let uses_callbacks = externs
         .iter()
-        .any(|e| e.arg_types.iter().any(|t| t.starts_with("@fn(")));
+        .any(|e| e.arg_types.iter().any(|t| t.as_str().starts_with("@fn(")));
     if uses_callbacks && !libraries.iter().any(|l| l == "ffi") {
         libraries.push("ffi".to_string());
     }
@@ -319,14 +321,14 @@ pub fn emit_program(
 #[cfg(test)]
 mod tests {
     use super::RUNTIME;
-    use frontend::ir::data::BUILTINS;
+    use frontend::ir::data::native_builtins;
 
     /// A built-in the runtime never dispatches would compile, then fault as
     /// "unknown built-in" the first time a program ran it.
     #[test]
     fn runtime_dispatches_every_builtin() {
-        for (name, _) in BUILTINS {
-            let id = super::gen::builtin_ident(name);
+        for b in native_builtins() {
+            let (name, id) = (b.name, super::gen::builtin_ident(b.name));
             let dispatched = [format!("case {id}:"), format!("id == {id}")]
                 .iter()
                 .any(|p| RUNTIME.contains(p.as_str()));

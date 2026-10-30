@@ -215,7 +215,7 @@ committed transaction.
 
 `@IO` is the one builtin effect: the outside world, handled by the runtime
 around `@main` and around each `@spawn` task. The entry and build signature
-checks match its literal name (`crates/frontend/src/typing/data.rs`:
+checks match its literal name (`crates/frontend/src/typing/types.rs`:
 `ENTRY_SIG`, `BUILD_SIG`). A split by resource (`@console`, `@fs`, `@net`,
 `@env`, `@time`, `@random`, `@ffi`, with `@IO` as a row alias for all of them)
 was implemented under #284 and reverted under #297:

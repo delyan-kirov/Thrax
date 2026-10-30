@@ -891,7 +891,7 @@ impl Server {
         let src = &snap.sources[module].2;
         if let Some((name, span)) = snap.name_at(module, offset) {
             let checker = snap.checker(module);
-            let Some(ty) = checker.own_values().iter().find(|(n, _)| *n == name).map(|(n, t)| checker.show_decl(n, *t))
+            let Some(ty) = checker.own_values().iter().find(|(n, _)| *n == name.as_str()).map(|(n, t)| checker.show_decl(*n, *t))
             else {
                 return Json::Null;
             };
@@ -928,11 +928,11 @@ impl Server {
         let name = ast.text(*name);
         let checker = snap.checker(module);
         let owner = match qual {
-            Some(q) => Some(checker.qualifier_module(ast.text(*q))),
-            None => checker.call_modules().get(&e).map(|m| m.to_string()),
+            Some(q) => Some(checker.qualifier_module(*q)),
+            None => checker.call_modules().get(&e).copied(),
         };
         let candidates: Vec<usize> = match owner {
-            Some(m) => snap.sources.iter().position(|(n, _, _)| *n == m).into_iter().collect(),
+            Some(m) => snap.sources.iter().position(|(n, _, _)| m == n.as_str()).into_iter().collect(),
             None => std::iter::once(module).chain(0..snap.sources.len()).collect(),
         };
         for m in candidates {
@@ -1044,8 +1044,8 @@ impl Server {
                     .checker(module)
                     .own_values()
                     .iter()
-                    .find(|(n, _)| *n == ast.text(name))
-                    .map(|(n, t)| snap.checker(module).show_decl(n, *t)),
+                    .find(|(n, _)| *n == name)
+                    .map(|(n, t)| snap.checker(module).show_decl(*n, *t)),
                 _ => None,
             };
             let mut sym = Json::obj([

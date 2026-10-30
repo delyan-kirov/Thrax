@@ -1,4 +1,4 @@
-use super::data::builtin_arity;
+use frontend::ir::data::builtin_arity;
 
 /// Every `@extern "thrax"` declaration in CORE names a builtin the machine
 /// runs, so a misspelled declaration fails here rather than when it is called.

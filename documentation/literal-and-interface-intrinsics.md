@@ -173,7 +173,7 @@ tests; it is the risk area the plan calls out.
 - Tests: a user type opting into each literal via context and via `(e : T)`.
 
 Touchpoints: `parser.rs`/`typing.rs` (literal lowering + defaulting),
-`lowering.rs`, `ccg/src/gen.rs` (folding), `library/CORE.thx`.
+`desugar.rs`, `ccg/src/gen.rs` (folding), `library/CORE.thx`.
 
 ## Stage 2 - pattern intrinsics  [LANDED]
 
@@ -187,7 +187,7 @@ binding the rest (or requiring `Empty` for a fixed length). (Since #324 the hook
 the blessed `@ISeqView`, joined by `@ISeqViewBack` for pieces after the middle of a
 `++` pattern.) Check-directed in
 `type_pattern` (only user types route; builtin Str/List keep the fast path); lowering
-emits new core `Pat::HookEq` / `Pat::SeqView`, which `patmat` expands to boolean tests /
+emits new core `Pat::HookEq` / `Pat::SeqView`, which match compilation expands to boolean tests /
 nested `SeqView` matches before the later passes. Verified interpreter + ccg.
 
 ### Original plan text
@@ -198,7 +198,7 @@ nested `SeqView` matches before the later passes. Verified interpreter + ccg.
   after type checking; keep optimized builtin overloads as the fast path.
 - Tests: user-type string and sequence patterns.
 
-Touchpoints: `lowering/patmat.rs`, `typing.rs`, `library/CORE.thx`.
+Touchpoints: `passes/match_compilation.rs`, `typing.rs`, `library/CORE.thx`.
 
 Deferred: general extractors / pattern synonyms via a `@compiler_interface_view`
 returning an arbitrary sum. Same machinery, later.
@@ -214,7 +214,7 @@ a constructor name without collision.
 List half LANDED (2026-09-05): `List` is now an ordinary `@union` declared in CORE.thx
 (`$ List : @union a = Nil: {}, Cons: {a, List a}`), NOT a compiler builtin. Removed the
 hardcoded `List`/`Cons`/`Nil` special-cases from the checker (`variant_sig`,
-`find_union_by_tag`, `union_head_with_tag`) and from lowering (`Decls::variant`,
+`find_union_by_tag`, `union_head_with_tag`) and from lowering (`Declarations::variant`,
 `CONS_FIELDS`); they all resolve through the CORE declaration now. The `[..]`/`::`/`[]`
 sugar still names `List`/`Cons`/`Nil` (its surface definition), and `@list` stays a
 spelling alias for `List`. Verified interpreter + ccg (STRINGS, LISTS examples;
@@ -269,7 +269,7 @@ Touchpoints: `typing.rs` (drop `@list`/`@Str` builtins), `library/CORE.thx`,
 - Drop the friendly `Bool` spelling; `@Bool` only.
 - Migrate corpus, examples, and docs.
 
-Touchpoints: `typing/data.rs` (`display_con`, base-type set), `library/CORE.thx`,
+Touchpoints: `typing/types.rs` (`display_con`, base-type set), `library/CORE.thx`,
 `examples/`, `tests/`, `documentation/`.
 
 ## Open questions to confirm before Stage 1
@@ -298,7 +298,7 @@ The remaining hardcoded `[]` jobs became overloads, so every bracket form except
 - **`@Array`.** Joins through its own CORE overloads of `_sequence_literal`
   (`@Vec @Int -> @Array`) and `_sequence_view`. Deleted: the `is_array` arms in
   `check` / `type_pattern`, `array_exprs` / `array_pats` and their `Resolved`
-  plumbing, and `lowering::array_arm` with its helpers. Array patterns now nest like
+  plumbing, and `desugar::array_arm` with its helpers. Array patterns now nest like
   any other sequence pattern (the old guarded-arm lowering ignored nested
   sub-patterns).
 - **Slices.** A lone `recv.[lo ... hi]` over a non-tensor receiver resolves

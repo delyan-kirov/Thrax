@@ -61,23 +61,23 @@ over a fully UTF-8-checked, escape-decoded `Str` and the custom type just maps i
 ### Stage 2 — pattern intrinsics
 - **Literal patterns via equality** — `is "foo"` / `is 42` on a user type builds the
   literal into that type and matches with `@compiler_interface_equality : t -> t ->
-  @Bool`. New core `Pat::HookEq`, expanded by `patmat` to a boolean test.
+  @Bool`. New core `Pat::HookEq`, expanded by match compilation to a boolean test.
 - **Sequence patterns via view** — `is [a, b, ..r]` / `is h :: t` / `is []` on a user
   type unfold `@compiler_interface_sequence_view : f t -> SeqView (f t) t` (new core
   union `SeqView s t = Empty | More t s`). New core `Pat::SeqView`, expanded by
-  `patmat` to nested `More`/`Empty` matches; fixed-length patterns require an empty
+  match compilation to nested `More`/`Empty` matches; fixed-length patterns require an empty
   tail, `..rest` binds the remainder. (Since #324 the rest is written `[a, b] ++ r`,
   and pieces after the middle of a `++` pattern step a second view, `@ISeqViewBack`.)
 
 Both are check-directed in `type_pattern` (only user types route; the built-in
 `Str`/`List` fast paths are unchanged), and both new `Pat` variants are eliminated by
-`patmat` before the ANF / de-Bruijn passes.
+match compilation before the ANF / de-Bruijn passes.
 
 ### Stage 3 — List de-builtined (the tractable half)
 - **`List` is now an ordinary CORE `@union`** (`Nil` / `Cons`), no longer a compiler
   builtin. The hardcoded `List`/`Cons`/`Nil` special-cases were removed from the
   checker (`variant_sig`, `find_union_by_tag`, `union_head_with_tag`) and lowering
-  (`Decls::variant`, `CONS_FIELDS`) — they all resolve through the CORE declaration.
+  (`Declarations::variant`, `CONS_FIELDS`) — they all resolve through the CORE declaration.
 - Enabled by a genuinely useful prerequisite: **type-directed resolution of bare
   variant tags**. A `.Tag` now takes its union from the expected type
   (`union_head_with_tag` + a `check` arm), and `infer_variant` checks payloads
@@ -130,7 +130,7 @@ resolution coexisting with the prelude `List`.
   `literal_pattern_hook_check` / `sequence_pattern_hook_check`, `resolve_hook` /
   `hook_use`, type-directed variant resolution, the `@Int`/`@Nat` and `List`
   de-builtining.
-- `crates/frontend/src/lowering.rs`, `lowering/patmat.rs`, `lowering/data.rs` — hook
+- `crates/frontend/src/desugar.rs`, `passes/match_compilation.rs`, `core.rs` — hook
   wrapping/folding, `Pat::HookEq` / `Pat::SeqView` and their expansion.
 - `library/CORE.thx` — `SeqView`, the `List` union.
 - `library/LA.thx`, `library/MAP.thx`, `examples/TENSORS.thx` — indexing-hook

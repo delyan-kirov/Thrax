@@ -71,7 +71,7 @@ Four diagnostics, each with its own escape:
 
 ## Elaboration
 
-`lowering::def` leaves the body alone (the author wrote the parameter), and every
+`Desugarer::def` leaves the body alone (the author wrote the parameter), and every
 use site injects the resolved value as a leading argument (`apply_ctx`). A resolved
 context is a `CtxVal`: a bare local name, a qualified global, an instance applied to
 the context resolved for it, a tuple built here, a projection out of a bundle

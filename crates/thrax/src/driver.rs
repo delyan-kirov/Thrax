@@ -318,15 +318,15 @@ fn render_errors(order: &[usize], errors: &[Vec<utilities::Diagnostic>], sources
 /// The public value names each standard-library module defines, inverted: name
 /// to the modules that define it. Read off the sources' `$ name` lines (no
 /// parse), so it is cheap enough to build once per process.
-fn import_hints() -> Rc<HashMap<String, Vec<String>>> {
+fn import_hints() -> Rc<HashMap<utilities::StrId, Vec<utilities::StrId>>> {
     thread_local! {
-        static HINTS: Rc<HashMap<String, Vec<String>>> = Rc::new(build_import_hints());
+        static HINTS: Rc<HashMap<utilities::StrId, Vec<utilities::StrId>>> = Rc::new(build_import_hints());
     }
     HINTS.with(Rc::clone)
 }
 
-fn build_import_hints() -> HashMap<String, Vec<String>> {
-    let mut hints: HashMap<String, Vec<String>> = HashMap::new();
+fn build_import_hints() -> HashMap<utilities::StrId, Vec<utilities::StrId>> {
+    let mut hints: HashMap<utilities::StrId, Vec<utilities::StrId>> = HashMap::new();
     for (module, src) in stdlib::MODULES {
         if matches!(*module, "CORE" | "C") {
             continue;
@@ -341,9 +341,10 @@ fn build_import_hints() -> HashMap<String, Vec<String>> {
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
             if name.starts_with(|c: char| c.is_ascii_lowercase()) && name != "with" {
-                let homes = hints.entry(name).or_default();
-                if !homes.iter().any(|m| m == module) {
-                    homes.push(module.to_string());
+                let homes = hints.entry(name.into()).or_default();
+                let module = utilities::StrId::intern(module);
+                if !homes.contains(&module) {
+                    homes.push(module);
                 }
             }
         }
@@ -355,7 +356,7 @@ fn build_import_hints() -> HashMap<String, Vec<String>> {
 /// checkers (or the first error, rendered).
 type CheckOut<'a> = (
     Vec<frontend::Checker<'a>>,
-    Vec<Vec<(&'a str, frontend::Type)>>,
+    Vec<Vec<(utilities::StrId, frontend::Type)>>,
 );
 
 /// Print a rendered warning once per process. A module is checked again on
@@ -411,7 +412,7 @@ fn check_all<'a>(
 /// is also the order their diagnostics are worth reading in.
 pub(crate) struct Checked<'a> {
     pub checkers: Vec<frontend::Checker<'a>>,
-    pub results: Vec<Vec<(&'a str, frontend::Type)>>,
+    pub results: Vec<Vec<(utilities::StrId, frontend::Type)>>,
     pub errors: Vec<Vec<utilities::Diagnostic>>,
     pub warnings: Vec<Vec<utilities::Diagnostic>>,
     pub order: Vec<usize>,
@@ -449,7 +450,7 @@ pub(crate) fn check_modules_with<'a>(
     // type crossing a module boundary has to address the same store.
     let types = std::rc::Rc::new(frontend::Types::new());
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
-    let mut results: Vec<Vec<(&str, frontend::Type)>> = vec![Vec::new(); programs.len()];
+    let mut results: Vec<Vec<(utilities::StrId, frontend::Type)>> = vec![Vec::new(); programs.len()];
 
     // The auto-injected `C` namespace and the implicitly imported `CORE` module
     // have no dependencies and are checked first: `C` made available qualified-only
@@ -570,7 +571,7 @@ pub(crate) fn prepare_checker<'a, 'c>(
             continue;
         }
         let other = checkers(dep).expect("dependency checked first");
-        let (bare, aliases) = import_forms(ast, program, other.module_name());
+        let (bare, aliases) = import_forms(ast, program, other.module_name().as_str());
         checker.import_as(other, bare || Some(dep) == core_idx, &aliases);
     }
     checker
@@ -578,7 +579,7 @@ pub(crate) fn prepare_checker<'a, 'c>(
 
 /// How `program` imports `module`: whether bare (`$ with M`), and under which
 /// aliases (`$ with A = M`).
-fn import_forms<'a>(ast: &'a frontend::Ast, program: &Program, module: &str) -> (bool, Vec<&'a str>) {
+fn import_forms(ast: &frontend::Ast, program: &Program, module: &str) -> (bool, Vec<utilities::StrId>) {
     let mut bare = false;
     let mut aliases = Vec::new();
     for item in ast.slice(program.items) {
@@ -587,7 +588,7 @@ fn import_forms<'a>(ast: &'a frontend::Ast, program: &Program, module: &str) -> 
             continue;
         }
         match alias {
-            Some(a) => aliases.push(ast.text(*a)),
+            Some(a) => aliases.push(*a),
             None => bare = true,
         }
     }
@@ -605,8 +606,8 @@ pub(crate) fn dotted(ast: &frontend::Ast, parts: utilities::Slice<utilities::Str
 /// escapes; the expansion loop in [`lower_all`] calls this repeatedly on
 /// progressively `@e`-expanded sources.
 type Compiled = (
-    Vec<frontend::lowering::data::Program>,
-    frontend::lowering::ReflectInfo,
+    Vec<frontend::core::CoreProgram>,
+    frontend::ReflectInfo,
 );
 
 fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<Compiled, ExitCode> {
@@ -638,14 +639,13 @@ fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<C
 
     // Lower every module; put the root first so its names win when resolving an
     // unqualified reference defined in more than one module.
-    let decls = frontend::Decls::collect(&ast, &programs);
-    let reflect = decls.reflect();
+    let reflect = resolved.declarations.reflect();
     let root = loaded.index[&loaded.root_name];
     let mut order: Vec<usize> = (0..programs.len()).collect();
     order.sort_by_key(|&i| i != root);
-    let lowered: Vec<frontend::lowering::data::Program> = order
+    let lowered: Vec<frontend::core::CoreProgram> = order
         .iter()
-        .map(|&i| frontend::lower_program(&ast, &programs[i], &decls, &resolved))
+        .map(|&i| frontend::desugar_program(&ast, &programs[i], &resolved))
         .collect();
 
     // `$ @build` has one signature, like the entry: one name, one shape. Its own
@@ -811,7 +811,7 @@ const MAX_META_ROUNDS: usize = 100;
 fn lower_all(
     path: &str,
     want_entry: bool,
-) -> Result<(Vec<frontend::lowering::data::Program>, Loaded, BuildPlan), ExitCode> {
+) -> Result<(Vec<frontend::core::CoreProgram>, Loaded, BuildPlan), ExitCode> {
     utilities::progress::step("PARSING");
     let mut loaded = load_sources(path)?;
     let root_dir = Path::new(path)
@@ -846,7 +846,7 @@ fn lower_all(
             .flat_map(|p| {
                 p.ct_evals
                     .iter()
-                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+                    .map(move |(name, span)| (p.module.to_string(), format!("{}.{}", p.module, name), *span))
             })
             .collect();
         let item_sites: Vec<(String, String, utilities::Span)> = compiled
@@ -855,7 +855,7 @@ fn lower_all(
             .flat_map(|p| {
                 p.ct_runs
                     .iter()
-                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+                    .map(move |(name, span)| (p.module.to_string(), format!("{}.{}", p.module, name), *span))
             })
             .collect();
         let type_sites: Vec<(String, String, utilities::Span)> = compiled
@@ -864,7 +864,7 @@ fn lower_all(
             .flat_map(|p| {
                 p.ct_types
                     .iter()
-                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+                    .map(move |(name, span)| (p.module.to_string(), format!("{}.{}", p.module, name), *span))
             })
             .collect();
         // `$ @build` sites: the synthetic `@build {}` call of every module whose
@@ -872,11 +872,11 @@ fn lower_all(
         let build_sites: Vec<(String, String)> = compiled
             .0
             .iter()
-            .filter(|p| !built.contains(&p.module))
+            .filter(|p| !built.contains(p.module.as_str()))
             .filter_map(|p| {
                 p.ct_build
                     .as_ref()
-                    .map(|name| (p.module.clone(), format!("{}.{}", p.module, name)))
+                    .map(|name| (p.module.to_string(), format!("{}.{}", p.module, name)))
             })
             .collect();
         if expr_sites.is_empty()
@@ -1059,17 +1059,17 @@ fn clear_meta_hosts() {
 /// declaring a given name, sorted by module so the choice never depends on hash
 /// order. Types are namespaced per module, so a bare name means "mine first".
 struct ReflectTables {
-    qualified: HashMap<(String, String), interpreter::machine::TypeInfo>,
-    bare: HashMap<String, Vec<(String, interpreter::machine::TypeInfo)>>,
+    qualified: HashMap<(utilities::StrId, utilities::StrId), interpreter::machine::TypeInfo>,
+    bare: HashMap<utilities::StrId, Vec<(utilities::StrId, interpreter::machine::TypeInfo)>>,
 }
 
 /// Index a round's collected type shapes for `$ @e` reflection.
-fn reflect_tables(reflect: frontend::lowering::ReflectInfo) -> Rc<ReflectTables> {
+fn reflect_tables(reflect: frontend::ReflectInfo) -> Rc<ReflectTables> {
     use interpreter::machine::TypeInfo;
     let mut qualified = HashMap::new();
-    let mut bare: HashMap<String, Vec<(String, TypeInfo)>> = HashMap::new();
-    let mut put = |module: String, name: String, info: TypeInfo| {
-        qualified.insert((module.clone(), name.clone()), info.clone());
+    let mut bare: HashMap<utilities::StrId, Vec<(utilities::StrId, TypeInfo)>> = HashMap::new();
+    let mut put = |module, name, info: TypeInfo| {
+        qualified.insert((module, name), info.clone());
         bare.entry(name).or_default().push((module, info));
     };
     for (module, name, params, fields) in reflect.structs {
@@ -1079,7 +1079,7 @@ fn reflect_tables(reflect: frontend::lowering::ReflectInfo) -> Rc<ReflectTables>
         put(module, name, TypeInfo::Union { params, variants });
     }
     for entries in bare.values_mut() {
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
     }
     Rc::new(ReflectTables { qualified, bare })
 }
@@ -1096,14 +1096,12 @@ fn reflect_host(
     tables: Rc<ReflectTables>,
     caller: String,
 ) -> Box<dyn Fn(&str) -> Option<interpreter::machine::TypeInfo>> {
+    let caller = utilities::StrId::intern(&caller);
     Box::new(move |name: &str| {
         if let Some((module, bare)) = name.split_once('.') {
-            return tables
-                .qualified
-                .get(&(module.to_string(), bare.to_string()))
-                .cloned();
+            return tables.qualified.get(&(module.into(), bare.into())).cloned();
         }
-        let entries = tables.bare.get(name)?;
+        let entries = tables.bare.get(&name.into())?;
         entries
             .iter()
             .find(|(m, _)| *m == caller)
@@ -1117,7 +1115,7 @@ fn as_code_src(v: &interpreter::machine::data::PVal) -> Option<String> {
     use interpreter::machine::data::Value;
     if let Value::Struct { name, fields } = &*v.borrow() {
         if name == "@Code" {
-            return fields.iter().find(|(k, _)| k == "src").and_then(|(_, s)| {
+            return fields.iter().find(|(k, _)| *k == "src").and_then(|(_, s)| {
                 match &*s.borrow() {
                     Value::Str(b) => Some(String::from_utf8_lossy(b).into_owned()),
                     _ => None,
@@ -1158,7 +1156,7 @@ fn splice_sources(sources: &mut [(String, String, String)], mut edits: Vec<(Stri
 /// A compiled REPL session: the lowered modules (root `REPL` first) and the
 /// root module's top-level bindings as `(name, rendered type)`.
 pub struct Session {
-    pub lowered: Vec<frontend::lowering::data::Program>,
+    pub lowered: Vec<frontend::core::CoreProgram>,
     pub decls: Vec<(String, String)>,
     /// The declared type of the name `queried` asked about, when one was asked for.
     pub queried: Option<String>,
@@ -1208,21 +1206,20 @@ fn compile_in_memory(
     )?;
     let resolved = frontend::collect_resolved(&checkers);
 
-    let module_decls = frontend::Decls::collect(&ast, &programs);
     let root = loaded.index[&loaded.root_name];
     let mut order: Vec<usize> = (0..programs.len()).collect();
     order.sort_by_key(|&i| i != root);
     let lowered = order
         .iter()
-        .map(|&i| frontend::lower_program(&ast, &programs[i], &module_decls, &resolved))
+        .map(|&i| frontend::desugar_program(&ast, &programs[i], &resolved))
         .collect();
 
     let mut checkers = checkers;
     let checker = &mut checkers[root];
-    let queried = query.and_then(|n| checker.show_name(n));
+    let queried = query.and_then(|n| checker.show_name(n.into()));
     let decls = results[root]
         .iter()
-        .map(|(n, ty)| (n.to_string(), checker.show_decl(n, *ty)))
+        .map(|(n, ty)| (n.to_string(), checker.show_decl(*n, *ty)))
         .collect();
 
     Ok(Session {
@@ -1710,7 +1707,7 @@ pub fn cmd_check(path: &str) -> ExitCode {
     let root = loaded.index[&loaded.root_name];
     let checker = &checkers[root];
     for (name, ty) in &results[root] {
-        println!("{name} : {}", checker.show_decl(name, *ty));
+        println!("{name} : {}", checker.show_decl(*name, *ty));
     }
     ExitCode::SUCCESS
 }

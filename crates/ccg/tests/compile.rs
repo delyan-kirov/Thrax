@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use frontend::lowering::data::Program;
-use frontend::{lower_program, Checker, Decls};
+use frontend::core::CoreProgram;
+use frontend::{desugar_program, Checker};
 
 /// The implicitly imported CORE module (defines `to_string` and the `+ - * / %`
 /// operator overloads). The driver injects it into every program; the harness
@@ -44,7 +44,7 @@ fn c_compiler() -> String {
 
 /// Parse, check, and lower `src` with CORE injected. Returns the lowered modules
 /// root-first (the user module, then CORE), the order `ccg::emit` expects.
-fn lower(src: &str) -> Vec<Program> {
+fn lower(src: &str) -> Vec<CoreProgram> {
     let ast = frontend::Ast::new();
     let (ast, core_prog) = frontend::parse_into(ast, CORE_SRC).expect("parse CORE");
     let (ast, user_prog) = frontend::parse_into(ast, src).expect("parse");
@@ -59,11 +59,10 @@ fn lower(src: &str) -> Vec<Program> {
     let resolved = frontend::collect_resolved(&[core_checker, user_checker]);
 
     let programs = [core_prog, user_prog];
-    let decls = Decls::collect(&ast, &programs);
     // Root (the user module) first, then CORE.
     vec![
-        lower_program(&ast, &programs[1], &decls, &resolved),
-        lower_program(&ast, &programs[0], &decls, &resolved),
+        desugar_program(&ast, &programs[1], &resolved),
+        desugar_program(&ast, &programs[0], &resolved),
     ]
 }
 

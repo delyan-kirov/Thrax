@@ -15,7 +15,12 @@
 //! Nodes are built into the [`Ast`] stores as they are parsed (bottom-up), so a
 //! parse method returns an [`Aol`] handle, not a reference. Names are interned to
 //! [`StrId`]. Sugar (`;`, `|>`, `<|`, `::`, `[..]`) is preserved as explicit AST
-//! nodes; a later pass desugars it.
+//! nodes; [`crate::desugar`] removes it.
+//!
+//! Input: a [`Lexer`] over one module. Output: its [`Program`] in a shared
+//! [`Ast`], plus every error, so one broken item does not hide the rest.
+//!
+//! Entry point: [`Parser::parse_program`].
 
 pub mod data;
 pub(crate) mod table;
@@ -126,18 +131,18 @@ impl<'a> Parser<'a> {
         &self.text(t)[1..]
     }
     fn intern(&mut self, s: &str) -> StrId {
-        self.ast.strings.intern(s)
+        StrId::intern(s)
     }
     /// Decode a `Kind::Str` token's literal (escapes and all) into interned
     /// bytes. Decoding is deferred to here so the lexer stays borrow-free. Used
     /// for non-interpolating strings (patterns, `@extern` operands).
     fn intern_str(&mut self, t: Token) -> Result<StrId> {
         let bytes = crate::lexer::decode_string(self.text(t), t.span.start, t.line)?;
-        Ok(self.ast.strings.intern_bytes(&bytes))
+        Ok(StrId::intern_bytes(&bytes))
     }
     /// A `Str` literal expression from raw decoded bytes.
     fn str_expr(&mut self, bytes: &[u8]) -> Aol<Expr> {
-        let s = self.ast.strings.intern_bytes(bytes);
+        let s = StrId::intern_bytes(bytes);
         self.expr(Expr::Str(s))
     }
 
@@ -482,7 +487,7 @@ impl<'a> Parser<'a> {
         match t.kind {
             Kind::Word => Some(t.span),
             Kind::At if matches!(text, "@main" | "@build") => Some(t.span),
-            Kind::At if !table::is_blessed_interface(text)
+            Kind::At if !crate::typing::types::is_blessed_interface(text)
                 && matches!(self.peek_at(2).ok()?.kind, Kind::Colon) => Some(t.span),
             _ => None,
         }
@@ -583,7 +588,7 @@ impl<'a> Parser<'a> {
             // projects its single field, so the name is fixed and only CORE declares
             // it; an implementation is an ordinary value (`$ r : @IRange @Int (@Vec
             // @Int) = .{ .range = ... }`).
-            name if table::is_blessed_interface(&format!("@{name}")) => {
+            name if crate::typing::types::is_blessed_interface(&format!("@{name}")) => {
                 let at_tok = self.bump()?; // the '@I...' token
                 let iname = self.intern(self.text(at_tok));
                 expect!(self, Kind::Colon, "expected ':' and '@struct' for the interface type");
@@ -2486,7 +2491,7 @@ impl<'a> Parser<'a> {
             let merged = match (out.last().map(|q| self.ast.pats.lookup(*q).clone()), self.ast.pats.lookup(p).clone()) {
                 (Some(Pattern::Str(a)), Pattern::Str(b)) => {
                     let bytes = [self.ast.bytes(a), self.ast.bytes(b)].concat();
-                    let s = self.ast.strings.intern_bytes(&bytes);
+                    let s = StrId::intern_bytes(&bytes);
                     Some(self.pat(Pattern::Str(s)))
                 }
                 (Some(Pattern::List(a)), Pattern::List(b)) => {

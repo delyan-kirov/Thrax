@@ -11,6 +11,7 @@
 //! so both engines marshal it exactly; the Thrax-facing types stay as written.
 
 use crate::target::{Os, Target};
+use crate::StrId;
 
 /// One C parameter or result, as far as marshalling cares.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -134,10 +135,10 @@ fn sized(target: Target, c: C) -> Option<&'static str> {
     })
 }
 
-fn exact(target: Target, c: C, ty: &str) -> String {
+fn exact(target: Target, c: C, ty: StrId) -> StrId {
     match sized(target, c) {
-        Some(s) if is_integer(ty) => s.to_string(),
-        _ => ty.to_string(),
+        Some(s) if is_integer(ty.as_str()) => StrId::intern(s),
+        _ => ty,
     }
 }
 
@@ -147,24 +148,27 @@ fn exact(target: Target, c: C, ty: &str) -> String {
 /// (not the C library, an unknown function, or an arity that does not match).
 pub fn exact_types(
     target: Target,
-    lib: &str,
-    symbol: &str,
-    args: &[String],
-    ret: &str,
-) -> Option<(Vec<String>, String)> {
-    if !is_libc(lib) {
+    lib: StrId,
+    symbol: StrId,
+    args: &[StrId],
+    ret: StrId,
+) -> Option<(Vec<StrId>, StrId)> {
+    if !is_libc(lib.as_str()) {
         return None;
     }
-    let &(_, c_ret, c_args) = PROTOTYPES.iter().find(|(s, _, _)| *s == symbol)?;
+    let &(_, c_ret, c_args) = PROTOTYPES.iter().find(|(s, _, _)| symbol == *s)?;
     // A nullary C function's binding takes `{}`, which is not a C argument.
-    let real: Vec<&String> = args.iter().filter(|t| *t != "{}").collect();
-    if real.len() != c_args.len() {
+    let real = args.iter().filter(|t| **t != "{}").count();
+    if real != c_args.len() {
         return None;
     }
     let mut c = c_args.iter();
     let args = args
         .iter()
-        .map(|t| if t == "{}" { t.clone() } else { exact(target, *c.next().unwrap(), t) })
+        .map(|&t| if t == "{}" { t } else { exact(target, *c.next().unwrap(), t) })
         .collect();
     Some((args, exact(target, c_ret, ret)))
 }
+
+#[cfg(test)]
+mod tests;

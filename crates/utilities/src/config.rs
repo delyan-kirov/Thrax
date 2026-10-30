@@ -332,5 +332,4 @@ fn parse_string(text: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-#[path = "config_tests.rs"]
 mod tests;

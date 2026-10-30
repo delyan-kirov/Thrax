@@ -125,7 +125,8 @@ Each engine needs the compiler at run time to serve them:
   `libthrax.a` and `libthrax.so` too, with the C API in
   `crates/thrax/include/thrax.h` (`thrax_lex`, `thrax_parse`, `thrax_eval`, values
   as an owned `thrax_value` tree). `ccg` notes when a reachable block names one of
-  these builtins (`gen::COMPILER_BUILTINS`), emits the header and
+  these builtins (the `BuiltinHost::Compiler` entries of
+  `frontend::ir::data::BUILTINS`), emits the header and
   `THRAX_WITH_COMPILER` ahead of `runtime.c` (whose bridge converts the tree into
   runtime `Value`s), and `thrax build` links `libthrax.so` with an rpath. It
   uses the shared library because that one carries its own dependencies (libffi).
@@ -176,7 +177,7 @@ to a `$ @e` generator:
 
 The argument is a type name, bare (`"Rgb"`) or qualified (`"MOD.Rgb"`; qualify to
 disambiguate a name shared across modules). They resolve through a driver-installed
-host (`machine::set_type_host`, fed from `Decls::reflect`), available only inside
+host (`machine::set_type_host`, fed from `Declarations::reflect`), available only inside
 `$ @e`; a stray call at runtime faults. On top of them, `library/DERIVE.thx`
 derives a default `to_string` for any struct or union (`$ @e (DERIVE.derive_show
 "Rgb")`); see `examples/DERIVE_SHOW.thx`. This is the first real derive-style
@@ -516,7 +517,7 @@ $ @build : {} -> <@Meta, @IO> @Code = \_ = @parse_items "$ answer : @Int = 42"
 ```
 
 **One name, one signature**, exactly as for `@main`: `{} -> <@Meta, @IO> @Code`
-(`BUILD` / `BUILD_SIG` / `is_build_type` in `typing/data.rs`, beside the entry's).
+(`BUILD` / `BUILD_SIG` / `is_build_type` in `typing/types.rs`, beside the entry's).
 A `@build` of any other shape is rejected by name before it is ever run.
 
 - **It is a definition, not a directive.** The parser treats `$ @build : T = e`
@@ -576,7 +577,7 @@ compile time on every backend:
    rejected (`typing.rs`).
 2. Lowering: each `@e e` becomes a synthetic global `@e#i` pushed into
    `Program.globals`, with its bare name recorded in the new `Program.ct_runs`
-   (`lowering.rs`, `lowering/data.rs`). It flows through `ir::lower` as an
+   (`desugar.rs`, `core.rs`). It flows through `ir::lower` as an
    ordinary global, so no IR change was needed.
 3. Driver: `compile_and_run_ct` builds the interpreter IR and forces each
    `Module.@e#i` global via `machine::eval`. The value is discarded; a trap
@@ -599,7 +600,7 @@ the common case.
 **Landed (`@build`).** `$ @build : {} -> <@Meta, @IO> @Code` parses as a definition
 (`parser.rs`, the `@main` branch), is shape-checked by name (`is_build_type` via
 the driver), is backed by a synthetic `@build#call` global (`Program.ct_build` in
-`lowering.rs`), and is forced first in each expansion round by `lower_all`, which
+`desugar.rs`), and is forced first in each expansion round by `lower_all`, which
 appends its items to the module's source (`driver.rs`). It needed no new
 intrinsic: the IO is `library/IO.thx` over the `C` namespace, run by the
 compile-time interpreter through the normal FFI. Section 10 has the details.

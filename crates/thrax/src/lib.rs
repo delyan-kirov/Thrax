@@ -5,7 +5,7 @@
 //!   handle-addressed store, the diagnostic model, and the compilation target as
 //!   data.
 //! * [`frontend`] is the front end and middle end: [`frontend::lexer`],
-//!   [`frontend::parser`], [`frontend::typing`], [`frontend::lowering`] (to the
+//!   [`frontend::parser`], [`frontend::typing`], [`frontend::desugar`] (to the
 //!   Core), and [`frontend::ir`] (pattern-match compilation, A-normalization,
 //!   De-Bruijn indexing, closure conversion).
 //! * [`interpreter`] evaluates that IR with the reified-K (CEK) machine.

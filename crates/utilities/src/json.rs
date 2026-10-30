@@ -336,5 +336,4 @@ impl Reader<'_> {
 }
 
 #[cfg(test)]
-#[path = "json_tests.rs"]
 mod tests;

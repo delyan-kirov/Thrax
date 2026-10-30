@@ -1,7 +1,7 @@
 //! End-to-end tests: parse and type-check a module (or several), lower it to the
 //! IR, and evaluate a named global on the reified-K machine.
 
-use frontend::{lower_program, Checker, Decls};
+use frontend::{desugar_program, Checker};
 
 /// The implicitly imported CORE module (defines `to_string`, and now the `+ - *
 /// / %` operator overloads). The driver injects it into every program; the test
@@ -25,7 +25,7 @@ fn c_compiler() -> String {
 
 /// Parse, check, and lower a single module WITHOUT CORE (for entry-point tests
 /// that use no CORE names). See `run` for the CORE-injecting path.
-fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
+fn lower_checked(src: &str, name: &str) -> frontend::core::CoreProgram {
     let parsed = frontend::parse(src).expect("parse");
     let types = std::rc::Rc::new(frontend::Types::new());
     let mut checker = Checker::new(&parsed.ast, types.clone());
@@ -33,8 +33,7 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
         .check_program(&parsed.program)
         .unwrap_or_else(|e| panic!("{}", e.render(src, name)));
     let resolved = frontend::collect_resolved(std::slice::from_ref(&checker));
-    let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
-    lower_program(&parsed.ast, &parsed.program, &decls, &resolved)
+    desugar_program(&parsed.ast, &parsed.program, &resolved)
 }
 
 /// Lower `src` to the IR with CORE injected and evaluate `name` on the machine.
@@ -97,7 +96,7 @@ fn run_modules(user_sources: &[&str], name: &str) -> String {
     interpreter::machine::eval(&ir, name).unwrap_or_else(|e| panic!("{}", e.render("", name)))
 }
 
-fn lower_to_ir(user_sources: &[&str], name: &str) -> frontend::ir::data::Program {
+fn lower_to_ir(user_sources: &[&str], name: &str) -> frontend::ir::data::IrProgram {
     let mut ast = frontend::Ast::new();
     let mut programs = Vec::new();
     for src in std::iter::once(&CORE_SRC).chain(user_sources.iter()) {
@@ -129,14 +128,13 @@ fn lower_to_ir(user_sources: &[&str], name: &str) -> frontend::ir::data::Program
     let all: Vec<Checker> = std::iter::once(core_checker).chain(user_checkers).collect();
     let resolved = frontend::collect_resolved(&all);
 
-    let decls = Decls::collect(&ast, &programs);
     // Root (last) first so its bare names win, matching the driver.
     let root = programs.len() - 1;
     let mut order: Vec<usize> = (0..programs.len()).collect();
     order.sort_by_key(|&i| i != root);
     let lowered: Vec<_> = order
         .iter()
-        .map(|&i| lower_program(&ast, &programs[i], &decls, &resolved))
+        .map(|&i| desugar_program(&ast, &programs[i], &resolved))
         .collect();
     frontend::ir::lower_modules(&lowered)
 }
@@ -1116,7 +1114,7 @@ fn same_named_struct_types_in_two_modules_do_not_collide() {
     // Two modules each declare a `Pair` struct with DIFFERENT fields. A positional
     // struct pattern in B must be lowered against B's own layout, not A's (whose
     // fields differ), which otherwise faults with "no field ...". Regression for
-    // the shared-`Decls` type collision.
+    // the shared-declarations type collision.
     let a = "$ @mod A\n\
         $ Pair : @struct = fst: @Int, snd: @Int\n\
         $ afst : @Int = Pair.{ .fst = 7, .snd = 8 }.fst";

@@ -23,10 +23,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use frontend::ir::data::{Atom, AltKind, Expr, Program, ResumeUse};
-use utilities::Result;
+use frontend::ir::data::{builtin, Atom, AltKind, Builtin, IrExpr, IrProgram, Prim, ResumeUse, Strictness};
+use utilities::{Result, StrId};
 
-use data::{builtin_arity, fault, mk, run_builtin, run_extern, PVal, Resumption, Task, TVar, Value};
+use data::{fault, mk, run_builtin, run_extern, PVal, Resumption, Task, TVar, Value};
 
 /// One activation: the local slot array (params + let/case binders) and the
 /// current closure's captured record.
@@ -43,7 +43,7 @@ type FrameP<'p> = Rc<RefCell<Frame<'p>>>;
 pub(crate) struct KRet<'p> {
     boxed: PVal<'p>,
     slot: usize,
-    cont: &'p Expr,
+    cont: &'p IrExpr,
     frame: FrameP<'p>,
 }
 
@@ -58,8 +58,8 @@ struct Handler<'p> {
 /// continuation (which decides whether a perform captures the stack slice at all,
 /// and whether resuming moves or copies it).
 struct HClause<'p> {
-    effect: Option<String>,
-    op: String,
+    effect: Option<StrId>,
+    op: StrId,
     fun: PVal<'p>,
     resume: ResumeUse,
 }
@@ -127,18 +127,21 @@ pub(crate) enum KFrame<'p> {
 /// The machine: the program plus the global (CAF) memo table. One instance runs a
 /// whole program and is reused across nested CAF evaluations.
 pub struct Machine<'p> {
-    prog: &'p Program,
+    prog: &'p IrProgram,
     /// Canonical global name (`Module.name`) -> its CAF code index.
-    globals: HashMap<String, usize>,
+    globals: HashMap<StrId, usize>,
     /// Bare name (a global's last segment) -> its CAF, first definition winning.
     /// The fallback for an unqualified reference or the entry point.
-    bare: HashMap<String, usize>,
+    bare: HashMap<StrId, usize>,
+    /// What each name a `Glob` atom has read resolved to, so the resolution's
+    /// string work happens once per name rather than once per evaluation.
+    resolved: RefCell<HashMap<StrId, Glob>>,
     /// CAF memo keyed by code index, so a global reached by its canonical and its
     /// bare name is still evaluated once.
     memo: RefCell<HashMap<usize, PVal<'p>>>,
     in_progress: RefCell<HashSet<usize>>,
-    ops_by_effect: HashMap<String, Vec<String>>,
-    ops_by_name: HashMap<String, Vec<String>>,
+    ops_by_effect: HashMap<StrId, Vec<StrId>>,
+    ops_by_name: HashMap<StrId, Vec<StrId>>,
     /// What a slot holds once its value has moved out or been dropped.
     unk: PVal<'p>,
     /// `@spawn` tasks not yet started, oldest first (see [`Task`]).
@@ -148,6 +151,16 @@ pub struct Machine<'p> {
 }
 
 type TVarP<'p> = Rc<RefCell<TVar<'p>>>;
+
+/// What a global name resolves to (see [`Machine::glob`]).
+#[derive(Clone, Copy)]
+enum Glob {
+    Code(usize),
+    Builtin(&'static Builtin),
+    Target,
+    Op(Option<StrId>, StrId),
+    Unbound,
+}
 
 /// What a transaction has read (with the version it saw) and buffered for
 /// writing, in order.
@@ -161,7 +174,7 @@ struct StmLog<'p> {
 /// continuation, and the recursive-closure keep-alive list.
 struct Exec<'p> {
     frame: FrameP<'p>,
-    ctrl: &'p Expr,
+    ctrl: &'p IrExpr,
     kont: Vec<KFrame<'p>>,
     /// Recursive-let closures are reachable from their own env only weakly. With
     /// calls trampolined (no host-stack pinning), keep each one alive here for the
@@ -192,10 +205,10 @@ pub fn deref<'p>(mut v: PVal<'p>) -> PVal<'p> {
 }
 
 fn clause_matches(
-    clause_effect: Option<&str>,
-    clause_op: &str,
-    performed_effect: Option<&str>,
-    performed_op: &str,
+    clause_effect: Option<StrId>,
+    clause_op: StrId,
+    performed_effect: Option<StrId>,
+    performed_op: StrId,
 ) -> bool {
     clause_op == performed_op
         && match (performed_effect, clause_effect) {
@@ -204,7 +217,7 @@ fn clause_matches(
         }
 }
 
-fn format_op(effect: Option<&str>, op: &str) -> String {
+fn format_op(effect: Option<StrId>, op: StrId) -> String {
     match effect {
         Some(effect) => format!("{effect}.{op}"),
         None => op.to_string(),
@@ -212,34 +225,29 @@ fn format_op(effect: Option<&str>, op: &str) -> String {
 }
 
 impl<'p> Machine<'p> {
-    pub fn new(prog: &'p Program) -> Machine<'p> {
+    pub fn new(prog: &'p IrProgram) -> Machine<'p> {
         let mut globals = HashMap::new();
         let mut bare = HashMap::new();
-        for (name, code) in &prog.globals {
-            globals.entry(name.clone()).or_insert(*code);
-            let last = name.rsplit('.').next().unwrap_or(name);
-            bare.entry(last.to_string()).or_insert(*code);
+        for &(name, code) in &prog.globals {
+            globals.entry(name).or_insert(code);
+            let text = name.as_str();
+            let last = text.rsplit('.').next().unwrap_or(text);
+            bare.entry(StrId::intern(last)).or_insert(code);
         }
-        let mut ops_by_effect: HashMap<String, Vec<String>> = HashMap::new();
-        let mut ops_by_name: HashMap<String, Vec<String>> = HashMap::new();
+        let mut ops_by_effect: HashMap<StrId, Vec<StrId>> = HashMap::new();
+        let mut ops_by_name: HashMap<StrId, Vec<StrId>> = HashMap::new();
         for e in &prog.effects {
-            ops_by_effect
-                .entry(e.effect.clone())
-                .or_default()
-                .push(e.op.clone());
-            ops_by_name
-                .entry(e.op.clone())
-                .or_default()
-                .push(e.effect.clone());
-        }
-        for effects in ops_by_name.values_mut() {
-            effects.sort();
-            effects.dedup();
+            ops_by_effect.entry(e.effect).or_default().push(e.op);
+            let effects = ops_by_name.entry(e.op).or_default();
+            if !effects.contains(&e.effect) {
+                effects.push(e.effect);
+            }
         }
         Machine {
             prog,
             globals,
             bare,
+            resolved: RefCell::new(HashMap::new()),
             memo: RefCell::new(HashMap::new()),
             in_progress: RefCell::new(HashSet::new()),
             ops_by_effect,
@@ -291,7 +299,7 @@ impl<'p> Machine<'p> {
 
     /// The task, channel and transaction builtins, which need the machine (to
     /// run other tasks while one waits). `None` for any other name.
-    fn run_concurrency(&self, name: &str, args: &[PVal<'p>]) -> Result<Option<PVal<'p>>> {
+    fn run_concurrency(&self, name: Prim, args: &[PVal<'p>]) -> Result<Option<PVal<'p>>> {
         let arg = |i: usize| -> Result<PVal<'p>> { self.force_thunk(args[i].clone()) };
         let tvar = |v: &PVal<'p>| -> Result<TVarP<'p>> {
             match &*v.borrow() {
@@ -302,13 +310,13 @@ impl<'p> Machine<'p> {
         let v = match name {
             // The reference semantics of a pure task: run it now. Its future is
             // its result, which `@await` hands back.
-            "@par" => self.apply(args[0].clone(), mk(Value::Unit))?,
-            "@spawn" => {
+            Prim::Par => self.apply(args[0].clone(), mk(Value::Unit))?,
+            Prim::Spawn => {
                 let task = Rc::new(RefCell::new(Task::Pending(args[0].clone())));
                 self.tasks.borrow_mut().push_back(task.clone());
                 mk(Value::Future(task))
             }
-            "@await" => {
+            Prim::Await => {
                 let fut = arg(0)?;
                 let task = match &*fut.borrow() {
                     Value::Future(t) => t.clone(),
@@ -319,8 +327,8 @@ impl<'p> Machine<'p> {
                     None => return Err(fault("a task awaits its own result")),
                 }
             }
-            "@chan_new" => mk(Value::Chan(Rc::new(RefCell::new(Default::default())))),
-            "@chan_send" => {
+            Prim::ChanNew => mk(Value::Chan(Rc::new(RefCell::new(Default::default())))),
+            Prim::ChanSend => {
                 let ch = arg(0)?;
                 match &*ch.borrow() {
                     Value::Chan(q) => q.borrow_mut().push_back(args[1].clone()),
@@ -328,7 +336,7 @@ impl<'p> Machine<'p> {
                 }
                 mk(Value::Unit)
             }
-            "@chan_recv" => {
+            Prim::ChanRecv => {
                 let ch = arg(0)?;
                 let q = match &*ch.borrow() {
                     Value::Chan(q) => q.clone(),
@@ -345,16 +353,16 @@ impl<'p> Machine<'p> {
                     }
                 }
             }
-            "@tvar_new" => mk(Value::TVar(Rc::new(RefCell::new(TVar {
+            Prim::TvarNew => mk(Value::TVar(Rc::new(RefCell::new(TVar {
                 val: args[0].clone(),
                 version: 0,
             })))),
-            "@tvar_read" => tvar(&arg(0)?)?.borrow().val.clone(),
-            "@stm_begin" => {
+            Prim::TvarRead => tvar(&arg(0)?)?.borrow().val.clone(),
+            Prim::StmBegin => {
                 *self.stm.borrow_mut() = StmLog::default();
                 mk(Value::Unit)
             }
-            "@stm_read" => {
+            Prim::StmRead => {
                 let t = tvar(&arg(0)?)?;
                 let mut log = self.stm.borrow_mut();
                 if let Some((_, v)) = log.writes.iter().rev().find(|(w, _)| Rc::ptr_eq(w, &t)) {
@@ -368,12 +376,12 @@ impl<'p> Machine<'p> {
                     v
                 }
             }
-            "@stm_write" => {
+            Prim::StmWrite => {
                 let t = tvar(&arg(0)?)?;
                 self.stm.borrow_mut().writes.push((t, args[1].clone()));
                 mk(Value::Unit)
             }
-            "@stm_commit" => {
+            Prim::StmCommit => {
                 let log = std::mem::take(&mut *self.stm.borrow_mut());
                 let valid = log.reads.iter().all(|(t, v)| t.borrow().version == *v);
                 if valid {
@@ -387,7 +395,7 @@ impl<'p> Machine<'p> {
             }
             // A transaction that retries waits for another task to change what
             // it read; the reference semantics run waiting tasks until one has.
-            "@stm_wait" => {
+            Prim::StmWait => {
                 let log = std::mem::take(&mut *self.stm.borrow_mut());
                 let changed = || log.reads.iter().any(|(t, v)| t.borrow().version != *v);
                 while !changed() {
@@ -399,8 +407,8 @@ impl<'p> Machine<'p> {
                 }
                 mk(Value::Unit)
             }
-            "@stm_save" => mk(Value::Int(self.stm.borrow().writes.len() as i64)),
-            "@stm_rollback" => {
+            Prim::StmSave => mk(Value::Int(self.stm.borrow().writes.len() as i64)),
+            Prim::StmRollback => {
                 let mark = match &*arg(0)?.borrow() {
                     Value::Int(n) => *n as usize,
                     _ => return Err(fault("expected a transaction mark")),
@@ -416,7 +424,7 @@ impl<'p> Machine<'p> {
     /// Force and return a global (by canonical or bare name), then collapse
     /// recursive cells.
     pub fn eval_global(&self, name: &str) -> Result<PVal<'p>> {
-        Ok(deref(self.glob(name)?))
+        Ok(deref(self.glob(StrId::intern(name))?))
     }
 
     /// Force a lazy-memoized CAF (keyed by code index, so the canonical and bare
@@ -444,53 +452,58 @@ impl<'p> Machine<'p> {
     /// of the same name (whose last segment aliases into `bare`) cannot shadow a
     /// same-named operation. The `C` libc namespace resolves as exact `@extern`
     /// globals (`C.sqrt`, ...).
-    fn glob(&self, name: &str) -> Result<PVal<'p>> {
-        if let Some(&code) = self.globals.get(name) {
-            return self.force(code);
-        }
-        if let Some(arity) = builtin_arity(name) {
-            return Ok(mk(Value::Builtin {
-                name: name.into(),
-                arity,
-                args: Vec::new(),
-            }));
-        }
-        if let Some(suffix) = name.strip_prefix("TARGET.") {
-            if let Some(v) = clib::target_value(suffix) {
-                return Ok(mk(v));
+    fn glob(&self, name: StrId) -> Result<PVal<'p>> {
+        let cached = self.resolved.borrow().get(&name).copied();
+        let kind = match cached {
+            Some(kind) => kind,
+            None => {
+                let kind = self.resolve_glob(name);
+                self.resolved.borrow_mut().insert(name, kind);
+                kind
             }
+        };
+        match kind {
+            Glob::Code(code) => self.force(code),
+            Glob::Builtin(op) => Ok(mk(Value::Builtin { op, args: Vec::new() })),
+            Glob::Target => {
+                let suffix = name.as_str().strip_prefix("TARGET.").expect("resolved as a TARGET member");
+                Ok(mk(clib::target_value(suffix).expect("resolved as a TARGET member")))
+            }
+            Glob::Op(effect, op) => Ok(mk(Value::Op { effect, op })),
+            Glob::Unbound => Err(fault(format!("unbound name `{name}`"))),
+        }
+    }
+
+    /// Resolve `name` in the order [`Self::glob`] documents.
+    fn resolve_glob(&self, name: StrId) -> Glob {
+        if let Some(&code) = self.globals.get(&name) {
+            return Glob::Code(code);
+        }
+        let text = name.as_str();
+        if let Some(op) = builtin(text) {
+            return Glob::Builtin(op);
+        }
+        if text.strip_prefix("TARGET.").is_some_and(|suffix| clib::target_value(suffix).is_some()) {
+            return Glob::Target;
         }
         // An effect operation: `Effect.op` names the effect, a bare op resolves to
         // the sole effect declaring it (else stays ambient, matched by the handler).
-        if let Some((eff, op)) = name.split_once('.') {
-            if self
-                .ops_by_effect
-                .get(eff)
-                .is_some_and(|ops| ops.iter().any(|o| o == op))
-            {
-                return Ok(mk(Value::Op {
-                    effect: Some(eff.to_string()),
-                    op: op.to_string(),
-                }));
+        if let Some((eff, op)) = text.split_once('.') {
+            let (eff, op) = (StrId::intern(eff), StrId::intern(op));
+            if self.ops_by_effect.get(&eff).is_some_and(|ops| ops.contains(&op)) {
+                return Glob::Op(Some(eff), op);
             }
         }
-        if let Some(effects) = self.ops_by_name.get(name) {
-            let effect = if effects.len() == 1 {
-                Some(effects[0].clone())
-            } else {
-                None
-            };
-            return Ok(mk(Value::Op {
-                effect,
-                op: name.to_string(),
-            }));
+        if let Some(effects) = self.ops_by_name.get(&name) {
+            let effect = if effects.len() == 1 { Some(effects[0]) } else { None };
+            return Glob::Op(effect, name);
         }
         // The unqualified fallback: a reference the checker left bare (the entry
         // point, or a not-module-resolved name), matched by last name-segment.
-        if let Some(&code) = self.bare.get(name) {
-            return self.force(code);
+        match self.bare.get(&name) {
+            Some(&code) => Glob::Code(code),
+            None => Glob::Unbound,
         }
-        Err(fault(format!("unbound name `{name}`")))
     }
 
     /// Read an atom in `frame` WITHOUT forcing a recursive cell (so a closure
@@ -525,7 +538,7 @@ impl<'p> Machine<'p> {
                 .get_mut(*i)
                 .map(|field| std::mem::replace(field, self.unk.clone()))
                 .ok_or_else(|| fault("machine: env index out of range")),
-            Atom::Glob { name } => self.glob(name),
+            Atom::Glob { name } => self.glob(*name),
             Atom::LitI(n) => Ok(mk(Value::Int(*n))),
             Atom::LitR(r) => Ok(mk(Value::Real(*r))),
             Atom::LitS(s) => Ok(mk(Value::Str(Rc::new(s.clone())))),
@@ -545,11 +558,11 @@ impl<'p> Machine<'p> {
                 arg_types,
                 ret_type,
             } => Ok(mk(Value::Extern {
-                abi: Rc::from(abi.as_str()),
-                symbol: Rc::from(symbol.as_str()),
-                lib: Rc::from(lib.as_str()),
-                arg_types: Rc::from(arg_types.as_slice()),
-                ret_type: Rc::from(ret_type.as_str()),
+                abi: *abi,
+                symbol: *symbol,
+                lib: *lib,
+                arg_types: arg_types.as_slice().into(),
+                ret_type: *ret_type,
                 args: Vec::new(),
             })),
         }
@@ -674,14 +687,14 @@ impl<'p> Machine<'p> {
                 }
             }
             match ex.ctrl {
-                Expr::Ret(a) => {
+                IrExpr::Ret(a) => {
                     let v = deref(self.eval_atom(a, &ex.frame)?);
                     if let Some(r) = ex.ret(self, v)? {
                         return Ok(r);
                     }
                 }
 
-                Expr::Let { slot, rhs, body } => {
+                IrExpr::Let { slot, rhs, body } => {
                     let boxed = mk(Value::Unk);
                     let self_ = mk(Value::Rec(Rc::downgrade(&boxed)));
                     ex.frame.borrow_mut().locals[*slot] = self_;
@@ -694,7 +707,7 @@ impl<'p> Machine<'p> {
                     ex.ctrl = rhs.as_ref();
                 }
 
-                Expr::App { fun, arg, .. } => {
+                IrExpr::App { fun, arg, .. } => {
                     let callee = deref(self.eval_atom(fun, &ex.frame)?);
                     let argv = deref(self.eval_atom(arg, &ex.frame)?);
                     if let Some(r) = self.apply_inline(&mut ex, callee, argv)? {
@@ -702,7 +715,7 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                Expr::Case {
+                IrExpr::Case {
                     scrut,
                     alts,
                     default,
@@ -711,7 +724,7 @@ impl<'p> Machine<'p> {
                     // built a cell at a time and each cell is computed when an arm
                     // looks at it.
                     let sv = self.force_thunk(self.eval_atom(scrut, &ex.frame)?)?;
-                    let mut next: Option<&'p Expr> = None;
+                    let mut next: Option<&'p IrExpr> = None;
                     for alt in alts {
                         let matched = {
                             let b = sv.borrow();
@@ -719,7 +732,7 @@ impl<'p> Machine<'p> {
                                 (AltKind::Int(k), Value::Int(v)) => v == k,
                                 (AltKind::Real(r), Value::Real(v)) => v == r,
                                 (AltKind::Bool(x), Value::Bool(v)) => v == x,
-                                (AltKind::Con(c), Value::Variant { tag, .. }) => tag == c,
+                                (AltKind::Con(c), Value::Variant { tag, .. }) => c == tag,
                                 _ => false,
                             }
                         };
@@ -743,29 +756,28 @@ impl<'p> Machine<'p> {
                     ex.ctrl = next.unwrap_or_else(|| default.as_ref());
                 }
 
-                Expr::MkStruct { name, base, fields } => {
-                    let (mut out, base_name): (Vec<(String, PVal<'p>)>, String) = match base {
+                IrExpr::MkStruct { name, base, fields } => {
+                    let (mut out, base_name): (Vec<(StrId, PVal<'p>)>, Option<StrId>) = match base {
                         Some(b) => {
                             let bv = self.force_thunk(self.eval_atom(b, &ex.frame)?)?;
                             let bb = bv.borrow();
                             match &*bb {
-                                Value::Struct { name, fields } => (fields.clone(), name.clone()),
+                                Value::Struct { name, fields } => (fields.clone(), Some(*name)),
                                 _ => return Err(fault("record update of a non-struct value")),
                             }
                         }
-                        None => (Vec::new(), String::new()),
+                        None => (Vec::new(), None),
                     };
                     for (fname, fa) in fields {
                         let fv = deref(self.eval_atom(fa, &ex.frame)?);
                         match out.iter_mut().find(|(n, _)| n == fname) {
                             Some(slot) => slot.1 = fv,
-                            None => out.push((fname.clone(), fv)),
+                            None => out.push((*fname, fv)),
                         }
                     }
-                    let sname = if name.is_empty() {
-                        base_name
-                    } else {
-                        name.clone()
+                    let sname = match base_name {
+                        Some(base_name) if name.bytes().is_empty() => base_name,
+                        _ => *name,
                     };
                     let v = mk(Value::Struct {
                         name: sname,
@@ -776,7 +788,7 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                Expr::Field { rec, name } => {
+                IrExpr::Field { rec, name } => {
                     let rv = self.force_thunk(self.eval_atom(rec, &ex.frame)?)?;
                     let v = {
                         let b = rv.borrow();
@@ -786,7 +798,7 @@ impl<'p> Machine<'p> {
                                 .find(|(n, _)| n == name)
                                 .map(|(_, v)| v.clone()),
                             Value::Tuple(items) => {
-                                name.parse::<usize>().ok().and_then(|i| items.get(i).cloned())
+                                name.as_str().parse::<usize>().ok().and_then(|i| items.get(i).cloned())
                             }
                             _ => None,
                         }
@@ -797,14 +809,14 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                Expr::MkVariant { ty, tag, fields } => {
+                IrExpr::MkVariant { ty, tag, fields } => {
                     let mut fs = Vec::with_capacity(fields.len());
                     for a in fields {
                         fs.push(deref(self.eval_atom(a, &ex.frame)?));
                     }
                     let v = mk(Value::Variant {
-                        ty: ty.clone(),
-                        tag: tag.clone(),
+                        ty: *ty,
+                        tag: *tag,
                         fields: fs,
                     });
                     if let Some(r) = ex.ret(self, v)? {
@@ -812,7 +824,7 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                Expr::MkTuple(items) => {
+                IrExpr::MkTuple(items) => {
                     let mut fs = Vec::with_capacity(items.len());
                     for a in items {
                         fs.push(deref(self.eval_atom(a, &ex.frame)?));
@@ -823,7 +835,7 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                Expr::Handle {
+                IrExpr::Handle {
                     body,
                     clauses,
                     els,
@@ -833,8 +845,8 @@ impl<'p> Machine<'p> {
                         let fun = deref(self.eval_atom(&c.fun, &ex.frame)?);
                         hclauses.push(HClause {
                             resume: c.resume,
-                            effect: c.effect.clone(),
-                            op: c.op.clone(),
+                            effect: c.effect,
+                            op: c.op,
                             fun,
                         });
                     }
@@ -848,13 +860,13 @@ impl<'p> Machine<'p> {
                     ex.ctrl = body.as_ref();
                 }
 
-                Expr::Defer { cleanup, body } => {
+                IrExpr::Defer { cleanup, body } => {
                     let cl = deref(self.eval_atom(cleanup, &ex.frame)?);
                     ex.kont.push(KFrame::Defer(KDefer { cleanup: cl }));
                     ex.ctrl = body.as_ref();
                 }
 
-                Expr::Drop { slots, body } => {
+                IrExpr::Drop { slots, body } => {
                     let mut f = ex.frame.borrow_mut();
                     for &s in slots {
                         f.locals[s] = self.unk.clone();
@@ -863,7 +875,7 @@ impl<'p> Machine<'p> {
                     ex.ctrl = body.as_ref();
                 }
 
-                Expr::Fault(s) => return Err(fault(s.clone())),
+                IrExpr::Fault(s) => return Err(fault(s.clone())),
             }
         }
     }
@@ -880,16 +892,9 @@ impl<'p> Machine<'p> {
     ) -> Result<Option<PVal<'p>>> {
         enum Kind<'p> {
             Code(usize, Vec<PVal<'p>>),
-            Builtin(Rc<str>, usize, Vec<PVal<'p>>),
-            Extern(
-                Rc<str>,
-                Rc<str>,
-                Rc<str>,
-                Rc<[String]>,
-                Rc<str>,
-                Vec<PVal<'p>>,
-            ),
-            Op(Option<String>, String),
+            Builtin(&'static Builtin, Vec<PVal<'p>>),
+            Extern(StrId, StrId, StrId, Rc<[StrId]>, StrId, Vec<PVal<'p>>),
+            Op(Option<StrId>, StrId),
             /// The resumption, and whether this call is its sole owner.
             Resump(Rc<Resumption<'p>>, bool),
             Bad,
@@ -902,12 +907,8 @@ impl<'p> Machine<'p> {
         let kind = match &mut *callee.borrow_mut() {
             Value::Code { code, env } if sole => Kind::Code(*code, std::mem::take(env)),
             Value::Code { code, env } => Kind::Code(*code, env.clone()),
-            Value::Builtin { name, arity, args } if sole => {
-                Kind::Builtin(name.clone(), *arity, std::mem::take(args))
-            }
-            Value::Builtin { name, arity, args } => {
-                Kind::Builtin(name.clone(), *arity, args.clone())
-            }
+            Value::Builtin { op, args } if sole => Kind::Builtin(op, std::mem::take(args)),
+            Value::Builtin { op, args } => Kind::Builtin(op, args.clone()),
             Value::Extern {
                 abi,
                 symbol,
@@ -915,15 +916,8 @@ impl<'p> Machine<'p> {
                 arg_types,
                 ret_type,
                 args,
-            } => Kind::Extern(
-                abi.clone(),
-                symbol.clone(),
-                lib.clone(),
-                arg_types.clone(),
-                ret_type.clone(),
-                args.clone(),
-            ),
-            Value::Op { effect, op } => Kind::Op(effect.clone(), op.clone()),
+            } => Kind::Extern(*abi, *symbol, *lib, arg_types.clone(), *ret_type, args.clone()),
+            Value::Op { effect, op } => Kind::Op(*effect, *op),
             // Every owner but this call's cell would be a boundary.
             Value::Resump(r) => {
                 let unique = sole && Rc::strong_count(r) == 1 + r.bound.get();
@@ -959,25 +953,23 @@ impl<'p> Machine<'p> {
                 Ok(None)
             }
 
-            Kind::Builtin(name, arity, mut args) => {
+            Kind::Builtin(op, mut args) => {
                 args.push(argv);
-                let v = if args.len() >= arity {
-                    // `generate template f` is HIGHER-ORDER: it applies the closure
-                    // `f` to each index, so it runs here (where `self.apply` can drive
-                    // the machine) rather than in the leaf `run_builtin`.
-                    // Structural equality walks the whole value, so both sides are
-                    // forced first: comparing an unforced slot would compare
-                    // representations, not values. Like `@tensor_create` below, this
-                    // needs the machine, so it cannot live in the leaf `run_builtin`.
-                    if &*name == "==" {
-                        self.force_deep(&args[0])?;
-                        self.force_deep(&args[1])?;
-                        mk(run_builtin(&name, &args)?)
-                    } else if let Some(v) = self.run_concurrency(&name, &args)? {
+                let v = if args.len() >= op.arity {
+                    // A deep-strict builtin (structural `==`) compares values, so
+                    // every lazy slot in its operands is forced first. Forcing needs
+                    // the machine, so it cannot happen in the leaf `run_builtin`.
+                    if op.strictness == Strictness::Deep {
+                        for a in &args {
+                            self.force_deep(a)?;
+                        }
+                        mk(run_builtin(op.prim, &args)?)
+                    } else if let Some(v) = self.run_concurrency(op.prim, &args)? {
                         v
-                    } else if &*name == "@tensor_create" {
-                        // Build the elements by applying `f` at each index of the
-                        // template's leading axis, then stack them into a tensor.
+                    } else if op.prim == Prim::TensorCreate {
+                        // Higher-order: apply `f` at each index of the template's
+                        // leading axis, which needs the machine, then stack the
+                        // results into a tensor.
                         let (_, _, shape, _) = data::tensor_fields(&args[0])?;
                         let len = shape.first().copied().unwrap_or(0);
                         let f = args[1].clone();
@@ -987,10 +979,10 @@ impl<'p> Machine<'p> {
                         }
                         mk(data::tensor_stack(&out)?)
                     } else {
-                        mk(run_builtin(&name, &args)?)
+                        mk(run_builtin(op.prim, &args)?)
                     }
                 } else {
-                    mk(Value::Builtin { name, arity, args })
+                    mk(Value::Builtin { op, args })
                 };
                 ex.ret(self, v)
             }
@@ -1013,7 +1005,7 @@ impl<'p> Machine<'p> {
                         self.callback_apply(cl, words, kinds, rk)
                     };
                     let out = ffi::with_applier(&apply, || {
-                        run_extern(&abi, &symbol, &lib, &arg_types, &ret_type, positional)
+                        run_extern(abi, symbol, lib, &arg_types, ret_type, positional)
                     });
                     mk(out?)
                 } else {
@@ -1034,12 +1026,7 @@ impl<'p> Machine<'p> {
                 for i in (0..ex.kont.len()).rev() {
                     if let KFrame::Prompt(kp) = &ex.kont[i] {
                         for cl in &kp.handler.clauses {
-                            if clause_matches(
-                                cl.effect.as_deref(),
-                                &cl.op,
-                                effect.as_deref(),
-                                &op,
-                            ) {
+                            if clause_matches(cl.effect, cl.op, effect, op) {
                                 found = Some((i, cl.fun.clone(), cl.resume));
                                 break;
                             }
@@ -1052,7 +1039,7 @@ impl<'p> Machine<'p> {
                 let (p, clause, resume) = found.ok_or_else(|| {
                     fault(format!(
                         "unhandled effect operation `{}`",
-                        format_op(effect.as_deref(), &op)
+                        format_op(effect, op)
                     ))
                 })?;
                 // Take the slice from the prompt (inclusive: a deep handler) up to
@@ -1193,8 +1180,8 @@ fn copy_segment<'p>(seg: &[KFrame<'p>]) -> Vec<KFrame<'p>> {
                         .clauses
                         .iter()
                         .map(|c| HClause {
-                            effect: c.effect.clone(),
-                            op: c.op.clone(),
+                            effect: c.effect,
+                            op: c.op,
                             fun: c.fun.clone(),
                             resume: c.resume,
                         })
@@ -1333,10 +1320,10 @@ const RENDER_FORCE_BUDGET: usize = 64;
 
 /// Evaluate a global of `prog` on the machine and render it, for diffing against
 /// the tree-walker.
-pub fn eval(prog: &Program, name: &str) -> Result<String> {
+pub fn eval(prog: &IrProgram, name: &str) -> Result<String> {
     // Install the program's C-repr struct layouts so the `@extern` seam can
     // marshal struct values by value.
-    let outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+    let outer = ffi::set_layouts(prog.crepr_layouts.iter().map(|(n, l)| (n.to_string(), l.clone())).collect());
     let shown = (|| {
         let m = Machine::new(prog);
         let v = m.eval_global(name)?;
@@ -1354,15 +1341,15 @@ pub fn eval(prog: &Program, name: &str) -> Result<String> {
 /// Evaluate a global to its structured value (like [`eval`] but without
 /// rendering to a string), so a caller can inspect it, e.g. a compile-time
 /// `$ @e` whose `@Code` result the driver splices.
-pub fn eval_value<'p>(prog: &'p Program, name: &str) -> Result<PVal<'p>> {
-    let outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+pub fn eval_value<'p>(prog: &'p IrProgram, name: &str) -> Result<PVal<'p>> {
+    let outer = ffi::set_layouts(prog.crepr_layouts.iter().map(|(n, l)| (n.to_string(), l.clone())).collect());
     let m = Machine::new(prog);
     let v = m.eval_global(name).and_then(|v| m.finish_tasks().map(|_| v));
     ffi::set_layouts(outer);
     v
 }
 
-/// A machine value detached from any [`Program`], so it can cross the re-entrant
+/// A machine value detached from any [`IrProgram`], so it can cross the re-entrant
 /// compile boundary of `@eval`: the nested compile produces a value tied to its
 /// own program's lifetime, and this is the reified, lifetime-free form embedded
 /// back into the outer machine. Only first-order data reifies; a closure, a
@@ -1377,8 +1364,8 @@ pub enum OwnedValue {
     Bool(bool),
     Unit,
     Tuple(Vec<OwnedValue>),
-    Struct { name: String, fields: Vec<(String, OwnedValue)> },
-    Variant { ty: String, tag: String, fields: Vec<OwnedValue> },
+    Struct { name: StrId, fields: Vec<(StrId, OwnedValue)> },
+    Variant { ty: StrId, tag: StrId, fields: Vec<OwnedValue> },
     Vector(Vec<OwnedValue>),
 }
 
@@ -1397,15 +1384,15 @@ pub fn reify(v: &PVal) -> std::result::Result<OwnedValue, String> {
             OwnedValue::Tuple(items.iter().map(reify).collect::<std::result::Result<_, _>>()?)
         }
         Value::Struct { name, fields } => OwnedValue::Struct {
-            name: name.clone(),
+            name: *name,
             fields: fields
                 .iter()
-                .map(|(k, val)| Ok((k.clone(), reify(val)?)))
+                .map(|(k, val)| Ok((*k, reify(val)?)))
                 .collect::<std::result::Result<_, String>>()?,
         },
         Value::Variant { ty, tag, fields } => OwnedValue::Variant {
-            ty: ty.clone(),
-            tag: tag.clone(),
+            ty: *ty,
+            tag: *tag,
             fields: fields.iter().map(reify).collect::<std::result::Result<_, _>>()?,
         },
         Value::Vector(items) => {
@@ -1434,12 +1421,12 @@ pub fn embed<'p>(o: &OwnedValue) -> Value<'p> {
         OwnedValue::Unit => Value::Unit,
         OwnedValue::Tuple(items) => Value::Tuple(items.iter().map(|o| mk(embed(o))).collect()),
         OwnedValue::Struct { name, fields } => Value::Struct {
-            name: name.clone(),
-            fields: fields.iter().map(|(k, o)| (k.clone(), mk(embed(o)))).collect(),
+            name: *name,
+            fields: fields.iter().map(|(k, o)| (*k, mk(embed(o)))).collect(),
         },
         OwnedValue::Variant { ty, tag, fields } => Value::Variant {
-            ty: ty.clone(),
-            tag: tag.clone(),
+            ty: *ty,
+            tag: *tag,
             fields: fields.iter().map(|o| mk(embed(o))).collect(),
         },
         OwnedValue::Vector(items) => {
@@ -1513,13 +1500,13 @@ pub(crate) fn meta_eval(src: &str) -> Result<OwnedValue> {
 /// its payload arity).
 #[derive(Clone)]
 pub enum TypeInfo {
-    Struct { params: Vec<String>, fields: Vec<String> },
-    Union { params: Vec<String>, variants: Vec<(String, usize)> },
+    Struct { params: Vec<StrId>, fields: Vec<StrId> },
+    Union { params: Vec<StrId>, variants: Vec<(StrId, usize)> },
 }
 
 impl TypeInfo {
     /// The type's declared parameter names, in order (empty for a monomorphic type).
-    pub fn params(&self) -> &[String] {
+    pub fn params(&self) -> &[StrId] {
         match self {
             TypeInfo::Struct { params, .. } | TypeInfo::Union { params, .. } => params,
         }
@@ -1555,8 +1542,8 @@ pub(crate) fn type_lookup(name: &str) -> Result<TypeInfo> {
 
 /// Run the program entry (`@main`): apply it to `argv` as a `@Vec @Str` and
 /// return its `@Int` result as the process exit code.
-pub fn run_entry(prog: &Program, name: &str, argv: Vec<String>) -> Result<i64> {
-    let _outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+pub fn run_entry(prog: &IrProgram, name: &str, argv: Vec<String>) -> Result<i64> {
+    let _outer = ffi::set_layouts(prog.crepr_layouts.iter().map(|(n, l)| (n.to_string(), l.clone())).collect());
     let m = Machine::new(prog);
     let f = m.eval_global(name)?;
     let args: Vec<PVal> = argv
