@@ -13,6 +13,7 @@ build
 thrax-out
 result
 target
+!/crates/utilities/src/target/
 artifacts
 external/musl
 
