@@ -75,7 +75,7 @@ impl<'a> Checker<'a> {
     /// arguments. A bare variable or a base type would turn the search into "any
     /// value of this type in scope", which is never what is meant, and the error
     /// belongs at the declaration rather than at every call site.
-    pub(super) fn check_ctx_head(&mut self, name: &str, ctx: Aol<Ty>) -> Result<()> {
+    pub(super) fn check_ctx_head(&mut self, name: StrId, ctx: Aol<Ty>) -> Result<()> {
         let mut tvars = HashMap::new();
         let ty = self.ty_of_ast(ctx, &mut tvars);
         let zonked = self.unifier.zonk(ty);
@@ -117,7 +117,7 @@ impl<'a> Checker<'a> {
     /// pinned (so `max_of 3 7` searches for a context over `@Int` rather than over
     /// a bare variable). The binders that could satisfy it are captured now,
     /// because the scopes are gone by then.
-    pub(super) fn plan_ctx(&mut self, site: Aol<Expr>, fname: &str, req: Type) -> Result<()> {
+    pub(super) fn plan_ctx(&mut self, site: Aol<Expr>, fname: StrId, req: Type) -> Result<()> {
         if let Some(value) = self.ctx_override.remove(&site) {
             self.check(value, req)?;
             self.ctx_args.insert(site, CtxVal::Expr(value));
@@ -126,7 +126,7 @@ impl<'a> Checker<'a> {
         let locals = self.ctx_locals(req);
         self.ctx_pending.push(PendingCtx {
             site,
-            fname: fname.to_string(),
+            fname,
             req,
             sig: self.current_sig,
             locals,
@@ -223,7 +223,7 @@ impl<'a> Checker<'a> {
                 }
                 None => HashSet::new(),
             };
-            let resolved = self.resolve_ctx(&p.fname, req, &p.locals, &rigid, 0);
+            let resolved = self.resolve_ctx(p.fname, req, &p.locals, &rigid, 0);
             // A metaprogram-expansion round: the instance may be injected by a
             // generator that has not run yet, so leave the site unresolved rather
             // than failing. The final strict round rejects it if it is still missing.
@@ -250,7 +250,7 @@ impl<'a> Checker<'a> {
     /// takes a context has it resolved here too, bounded by [`CTX_DEPTH`].
     pub(super) fn resolve_ctx(
         &mut self,
-        fname: &str,
+        fname: StrId,
         req: Type,
         locals: &[CtxLocal],
         rigid: &HashSet<VarId>,
@@ -308,7 +308,7 @@ impl<'a> Checker<'a> {
                 .cloned()
                 .collect();
             if hits.len() > 1 {
-                let names: Vec<String> = hits.iter().map(|l| l.name.to_string()).collect();
+                let names: Vec<StrId> = hits.iter().map(|l| l.name).collect();
                 return Err(self.ctx_ambiguous(fname, req, &names));
             }
             if let Some(l) = hits.first() {
@@ -347,7 +347,7 @@ impl<'a> Checker<'a> {
             return Err(self.ctx_unresolved(fname, req));
         }
         if hits.len() > 1 {
-            let names: Vec<String> = hits.iter().map(|c| c.name.to_string()).collect();
+            let names: Vec<StrId> = hits.iter().map(|c| c.name).collect();
             return Err(self.ctx_ambiguous(fname, req, &names));
         }
         let Some(c) = hits.first().cloned() else {
@@ -372,7 +372,7 @@ impl<'a> Checker<'a> {
             return Ok(base);
         }
         let own = self.unifier.zonk(own.expect("an instance with a context packs it"));
-        let arg = self.resolve_ctx(c.name.as_str(), own, locals, rigid, depth + 1)?;
+        let arg = self.resolve_ctx(c.name, own, locals, rigid, depth + 1)?;
         Ok(CtxVal::App(Box::new(base), Box::new(arg)))
     }
 
@@ -419,7 +419,7 @@ impl<'a> Checker<'a> {
     /// through the body's result. Then the context IS determined and simply does
     /// not fit, so say that, naming the instance and the parameter that differs,
     /// rather than claim none is in scope.
-    pub(super) fn explain_near_miss(&mut self, d: Diagnostic, fname: &str, cands: &[Inst], req: Type) -> Diagnostic {
+    pub(super) fn explain_near_miss(&mut self, d: Diagnostic, fname: StrId, cands: &[Inst], req: Type) -> Diagnostic {
         let (_, want) = self.spine(req);
         let Some(&first) = want.first() else {
             return d;
@@ -469,10 +469,10 @@ impl<'a> Checker<'a> {
     }
 
     /// No value of the requirement's type is in scope.
-    pub(super) fn ctx_missing(&self, fname: &str, req: Type) -> Diagnostic {
+    pub(super) fn ctx_missing(&self, fname: StrId, req: Type) -> Diagnostic {
         // A blessed interface comes from a desugar (`.[i]`, `1.2i`), so the site
         // has no call to pass a context to.
-        if is_blessed_interface(fname) {
+        if is_blessed_interface(fname.as_str()) {
             return diag!(
                 Code::TypeMismatch, Span::at(0), 0,
                 "no `{fname}` instance of type `{}` is in scope",
@@ -494,7 +494,7 @@ impl<'a> Checker<'a> {
 
     /// The requirement is still open, so there is nothing to search for. Reported
     /// with both escapes, because neither is obvious from the call alone.
-    pub(super) fn ctx_unresolved(&self, fname: &str, req: Type) -> Diagnostic {
+    pub(super) fn ctx_unresolved(&self, fname: StrId, req: Type) -> Diagnostic {
         diag!(
             Code::TypeMismatch, Span::at(0), 0,
             "the context `{}` of `{fname}` is not determined here",
@@ -509,16 +509,16 @@ impl<'a> Checker<'a> {
     /// Several values of the requirement's type are in scope. An annotation cannot
     /// break this tie, since the candidates share a type, so the note offers the
     /// explicit form instead.
-    pub(super) fn ctx_ambiguous(&self, fname: &str, req: Type, names: &[String]) -> Diagnostic {
+    pub(super) fn ctx_ambiguous(&self, fname: StrId, req: Type, names: &[StrId]) -> Diagnostic {
         diag!(
             Code::TypeMismatch, Span::at(0), 0,
             "several values of type `{}` satisfy the context of `{fname}`: {}",
             self.show(req),
-            names.join(", ")
+            names.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")
         )
         .with_help(format!(
             "pass the one you mean explicitly as `{fname} (@ctx {}) ...`",
-            names.first().map(String::as_str).unwrap_or("value")
+            names.first().map_or("value", |n| n.as_str())
         ))
     }
 }
@@ -529,8 +529,8 @@ impl<'a> Checker<'a> {
     /// The requirement type, single field name, and field type of blessed interface
     /// `name` applied to `args`. `None` when the interface is not declared in scope,
     /// so a desugar site keeps its built-in meaning.
-    pub(super) fn blessed_req(&mut self, name: &str, args: &[Type]) -> Option<(Type, StrId, Type)> {
-        let info = self.structs.get(&StrId::intern(name))?.clone();
+    pub(super) fn blessed_req(&mut self, name: StrId, args: &[Type]) -> Option<(Type, StrId, Type)> {
+        let info = self.structs.get(&name)?.clone();
         if info.params.len() != args.len() || info.fields.len() != 1 {
             return None;
         }
@@ -553,7 +553,7 @@ impl<'a> Checker<'a> {
     /// instance found by type, plus the type of its single field (what the site's
     /// operands are checked against). A failure leaves the unifier untouched and
     /// returns `None`, so the site falls back to its built-in meaning.
-    pub(super) fn blessed(&mut self, name: &str, args: &[Type]) -> Option<(HookImpl, Type)> {
+    pub(super) fn blessed(&mut self, name: StrId, args: &[Type]) -> Option<(HookImpl, Type)> {
         let save = self.unifier.save();
         let Some((req, field, field_ty)) = self.blessed_req(name, args) else {
             self.unifier.restore(save);
@@ -571,7 +571,7 @@ impl<'a> Checker<'a> {
     /// The instance satisfying an already-built blessed requirement. Unlike
     /// [`Self::blessed`] a failure is NOT rolled back, so callers that have already
     /// committed unifications probe with their own `save`/`restore` first.
-    pub(super) fn resolve_blessed(&mut self, name: &str, req: Type, field: StrId) -> Option<HookImpl> {
+    pub(super) fn resolve_blessed(&mut self, name: StrId, req: Type, field: StrId) -> Option<HookImpl> {
         let locals = self.ctx_locals(req);
         let rigid = HashSet::new();
         self.resolve_ctx(name, req, &locals, &rigid, 0)
@@ -592,7 +592,7 @@ impl<'a> Checker<'a> {
     ) -> Result<Type> {
         let arity = self.structs.get(&name).map(|i| i.params.len()).unwrap_or(0);
         let vars: Vec<Type> = (0..arity).map(|_| self.unifier.fresh()).collect();
-        let Some((req, field, method)) = self.blessed_req(name.as_str(), &vars) else {
+        let Some((req, field, method)) = self.blessed_req(name, &vars) else {
             let span = self.ast.expr_span(head).unwrap_or_else(|| Span::at(0));
             return Err(diag!(
                 Code::TypeUnbound, span, 0,
@@ -612,27 +612,27 @@ impl<'a> Checker<'a> {
         let probe = self.unifier.save();
         let zonked = self.unifier.zonk(req);
         let resolvable = self
-            .resolve_blessed(name.as_str(), zonked, field)
+            .resolve_blessed(name, zonked, field)
             .is_some();
         self.unifier.restore(probe);
         if resolvable {
             let zonked = self.unifier.zonk(req);
             let hook = self
-                .resolve_blessed(name.as_str(), zonked, field)
+                .resolve_blessed(name, zonked, field)
                 .expect("the probe above resolved it");
             self.ctx_args.insert(head, hook.ctx);
             self.blessed_sites.insert(head, hook.field);
             return Ok(self.unifier.zonk(rest));
         }
-        self.plan_ctx(head, name.as_str(), req)?;
+        self.plan_ctx(head, name, req)?;
         self.blessed_sites.insert(head, field);
         Ok(rest)
     }
 
     /// Every instance of blessed interface `name` in scope, as the diagnostic that
     /// lists what a range can build needs them.
-    pub(super) fn blessed_instances(&self, name: &str) -> Vec<Inst> {
-        self.instances.get(&StrId::intern(name)).cloned().unwrap_or_default()
+    pub(super) fn blessed_instances(&self, name: StrId) -> Vec<Inst> {
+        self.instances.get(&name).cloned().unwrap_or_default()
     }
 
     /// The head constructor of `ty` if it is a user-declared type (struct / union /
@@ -668,13 +668,13 @@ impl<'a> Checker<'a> {
         if self.ctx_head(zonked).is_none() {
             return Ok(false);
         }
-        let (name, args, elem) = match self.node(e) {
-            Expr::Str(_) => (IF_STR_LIT, vec![expected], None),
-            Expr::Int(_) => (IF_INT_LIT, vec![expected], None),
-            Expr::Real(_) => (IF_REAL_LIT, vec![expected], None),
+        let (name, args, elem): (StrId, _, _) = match self.node(e) {
+            Expr::Str(_) => (IF_STR_LIT.into(), vec![expected], None),
+            Expr::Int(_) => (IF_INT_LIT.into(), vec![expected], None),
+            Expr::Real(_) => (IF_REAL_LIT.into(), vec![expected], None),
             Expr::List(_) => {
                 let elem = self.unifier.fresh();
-                (IF_SEQ_LIT, vec![elem, expected], Some(elem))
+                (IF_SEQ_LIT.into(), vec![elem, expected], Some(elem))
             }
             _ => return Ok(false),
         };
@@ -704,7 +704,7 @@ impl<'a> Checker<'a> {
         hi: Option<Aol<Expr>>,
         expected: Option<Type>,
     ) -> Result<Type> {
-        let name = if hi.is_some() { IF_RANGE } else { IF_RANGE_FROM };
+        let name = StrId::intern(if hi.is_some() { IF_RANGE } else { IF_RANGE_FROM });
         let bound = self.infer(lo)?;
         if let Some(hi) = hi {
             let t = self.infer(hi)?;
@@ -759,7 +759,7 @@ impl<'a> Checker<'a> {
     /// The FIRST blessed instance of `name` that satisfies the requirement,
     /// committing it. Used as the default when nothing constrains the result and
     /// several instances fit; the strict unique-match rule is [`Self::blessed`].
-    pub(super) fn blessed_first(&mut self, name: &str, args: &[Type]) -> Option<(HookImpl, Type)> {
+    pub(super) fn blessed_first(&mut self, name: StrId, args: &[Type]) -> Option<(HookImpl, Type)> {
         for inst in self.blessed_instances(name) {
             let save = self.unifier.save();
             let Some((req, field, field_ty)) = self.blessed_req(name, args) else {
@@ -782,7 +782,7 @@ impl<'a> Checker<'a> {
             let ctx = if inst.has_ctx {
                 let own = self.unifier.zonk(own.expect("an instance with a context packs it"));
                 let locals = self.ctx_locals(own);
-                match self.resolve_ctx(inst.name.as_str(), own, &locals, &HashSet::new(), 0) {
+                match self.resolve_ctx(inst.name, own, &locals, &HashSet::new(), 0) {
                     Ok(arg) => CtxVal::App(Box::new(base), Box::new(arg)),
                     Err(_) => {
                         self.unifier.restore(save);
@@ -804,13 +804,14 @@ impl<'a> Checker<'a> {
     /// The blessed construction interface for a literal PATTERN kind
     /// (`Str`/`Int`/`Real`), so a literal pattern reuses the same builder a literal
     /// expression does.
-    pub(super) fn pattern_literal_hook(pat: &Pattern) -> Option<&'static str> {
+    pub(super) fn pattern_literal_hook(pat: &Pattern) -> Option<StrId> {
         Some(match pat {
             Pattern::Str(_) => IF_STR_LIT,
             Pattern::Int(_) => IF_INT_LIT,
             Pattern::Real(_) => IF_REAL_LIT,
             _ => return None,
-        })
+        }
+        .into())
     }
 
     /// Resolve the sequence view `view` (`@ISeqView` or `@ISeqViewBack`) for a
@@ -820,7 +821,7 @@ impl<'a> Checker<'a> {
         &mut self,
         pat: Aol<Pattern>,
         expected: Type,
-        view: &str,
+        view: StrId,
     ) -> Result<Option<Type>> {
         let elem = self.unifier.fresh();
         let Some((hook, _)) = self.blessed(view, &[expected, elem]) else {
@@ -833,7 +834,7 @@ impl<'a> Checker<'a> {
     /// The element type of a sequence pattern piece's scrutinee, through `view`.
     /// A scrutinee not yet known DEFAULTS to `@Vec elem`. Records the hook at
     /// `pat` either way.
-    pub(super) fn sequence_pattern_elem(&mut self, pat: Aol<Pattern>, expected: Type, view: &str) -> Result<Type> {
+    pub(super) fn sequence_pattern_elem(&mut self, pat: Aol<Pattern>, expected: Type, view: StrId) -> Result<Type> {
         if let Some(elem) = self.sequence_pattern_hook_check(pat, expected, view)? {
             return Ok(elem);
         }
@@ -847,7 +848,7 @@ impl<'a> Checker<'a> {
         Ok(self.sequence_pattern_hook_check(pat, expected, view)?.unwrap_or(elem))
     }
 
-    pub(super) fn no_sequence_view(&self, expected: Type, view: &str) -> Diagnostic {
+    pub(super) fn no_sequence_view(&self, expected: Type, view: StrId) -> Diagnostic {
         let shown = self.unifier.show(expected);
         let end = if view == IF_SEQ_VIEW { "front" } else { "back" };
         diag!(
@@ -873,7 +874,7 @@ impl<'a> Checker<'a> {
         };
         let save = self.unifier.save();
         let build = self.blessed(build_name, &[expected]);
-        let eq = self.blessed(IF_EQ, &[expected]);
+        let eq = self.blessed(IF_EQ.into(), &[expected]);
         match (build, eq) {
             (Some((build, _)), Some((eq, _))) => {
                 self.literal_pattern_hooks.insert(pat, (build, eq));

@@ -318,15 +318,15 @@ fn render_errors(order: &[usize], errors: &[Vec<utilities::Diagnostic>], sources
 /// The public value names each standard-library module defines, inverted: name
 /// to the modules that define it. Read off the sources' `$ name` lines (no
 /// parse), so it is cheap enough to build once per process.
-fn import_hints() -> Rc<HashMap<String, Vec<String>>> {
+fn import_hints() -> Rc<HashMap<utilities::StrId, Vec<utilities::StrId>>> {
     thread_local! {
-        static HINTS: Rc<HashMap<String, Vec<String>>> = Rc::new(build_import_hints());
+        static HINTS: Rc<HashMap<utilities::StrId, Vec<utilities::StrId>>> = Rc::new(build_import_hints());
     }
     HINTS.with(Rc::clone)
 }
 
-fn build_import_hints() -> HashMap<String, Vec<String>> {
-    let mut hints: HashMap<String, Vec<String>> = HashMap::new();
+fn build_import_hints() -> HashMap<utilities::StrId, Vec<utilities::StrId>> {
+    let mut hints: HashMap<utilities::StrId, Vec<utilities::StrId>> = HashMap::new();
     for (module, src) in stdlib::MODULES {
         if matches!(*module, "CORE" | "C") {
             continue;
@@ -341,9 +341,10 @@ fn build_import_hints() -> HashMap<String, Vec<String>> {
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
             if name.starts_with(|c: char| c.is_ascii_lowercase()) && name != "with" {
-                let homes = hints.entry(name).or_default();
-                if !homes.iter().any(|m| m == module) {
-                    homes.push(module.to_string());
+                let homes = hints.entry(name.into()).or_default();
+                let module = utilities::StrId::intern(module);
+                if !homes.contains(&module) {
+                    homes.push(module);
                 }
             }
         }
@@ -1058,17 +1059,17 @@ fn clear_meta_hosts() {
 /// declaring a given name, sorted by module so the choice never depends on hash
 /// order. Types are namespaced per module, so a bare name means "mine first".
 struct ReflectTables {
-    qualified: HashMap<(String, String), interpreter::machine::TypeInfo>,
-    bare: HashMap<String, Vec<(String, interpreter::machine::TypeInfo)>>,
+    qualified: HashMap<(utilities::StrId, utilities::StrId), interpreter::machine::TypeInfo>,
+    bare: HashMap<utilities::StrId, Vec<(utilities::StrId, interpreter::machine::TypeInfo)>>,
 }
 
 /// Index a round's collected type shapes for `$ @e` reflection.
 fn reflect_tables(reflect: frontend::ReflectInfo) -> Rc<ReflectTables> {
     use interpreter::machine::TypeInfo;
     let mut qualified = HashMap::new();
-    let mut bare: HashMap<String, Vec<(String, TypeInfo)>> = HashMap::new();
-    let mut put = |module: String, name: String, info: TypeInfo| {
-        qualified.insert((module.clone(), name.clone()), info.clone());
+    let mut bare: HashMap<utilities::StrId, Vec<(utilities::StrId, TypeInfo)>> = HashMap::new();
+    let mut put = |module, name, info: TypeInfo| {
+        qualified.insert((module, name), info.clone());
         bare.entry(name).or_default().push((module, info));
     };
     for (module, name, params, fields) in reflect.structs {
@@ -1078,7 +1079,7 @@ fn reflect_tables(reflect: frontend::ReflectInfo) -> Rc<ReflectTables> {
         put(module, name, TypeInfo::Union { params, variants });
     }
     for entries in bare.values_mut() {
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
     }
     Rc::new(ReflectTables { qualified, bare })
 }
@@ -1095,14 +1096,12 @@ fn reflect_host(
     tables: Rc<ReflectTables>,
     caller: String,
 ) -> Box<dyn Fn(&str) -> Option<interpreter::machine::TypeInfo>> {
+    let caller = utilities::StrId::intern(&caller);
     Box::new(move |name: &str| {
         if let Some((module, bare)) = name.split_once('.') {
-            return tables
-                .qualified
-                .get(&(module.to_string(), bare.to_string()))
-                .cloned();
+            return tables.qualified.get(&(module.into(), bare.into())).cloned();
         }
-        let entries = tables.bare.get(name)?;
+        let entries = tables.bare.get(&name.into())?;
         entries
             .iter()
             .find(|(m, _)| *m == caller)
@@ -1116,7 +1115,7 @@ fn as_code_src(v: &interpreter::machine::data::PVal) -> Option<String> {
     use interpreter::machine::data::Value;
     if let Value::Struct { name, fields } = &*v.borrow() {
         if name == "@Code" {
-            return fields.iter().find(|(k, _)| k == "src").and_then(|(_, s)| {
+            return fields.iter().find(|(k, _)| *k == "src").and_then(|(_, s)| {
                 match &*s.borrow() {
                     Value::Str(b) => Some(String::from_utf8_lossy(b).into_owned()),
                     _ => None,
@@ -1217,7 +1216,7 @@ fn compile_in_memory(
 
     let mut checkers = checkers;
     let checker = &mut checkers[root];
-    let queried = query.and_then(|n| checker.show_name(n));
+    let queried = query.and_then(|n| checker.show_name(n.into()));
     let decls = results[root]
         .iter()
         .map(|(n, ty)| (n.to_string(), checker.show_decl(*n, *ty)))

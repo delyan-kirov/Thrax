@@ -95,15 +95,15 @@ fn to_c(v: &OwnedValue) -> ThraxValue {
         OwnedValue::Tuple(items) => seq(ThraxKind::Tuple, items),
         OwnedValue::Vector(items) => seq(ThraxKind::Vec, items),
         OwnedValue::Struct { name, fields } => {
-            let keys: Vec<*const c_char> = fields.iter().map(|(k, _)| c_name(k)).collect();
+            let keys: Vec<*const c_char> = fields.iter().map(|(k, _)| c_name(k.as_str())).collect();
             let items: Vec<ThraxValue> = fields.iter().map(|(_, v)| to_c(v)).collect();
             let (keys, _) = leak_slice(keys);
             let (items, len) = leak_slice(items);
-            ThraxValue { name: c_name(name), keys, items, len, ..ThraxValue::leaf(ThraxKind::Struct) }
+            ThraxValue { name: c_name(name.as_str()), keys, items, len, ..ThraxValue::leaf(ThraxKind::Struct) }
         }
         OwnedValue::Variant { ty, tag, fields } => ThraxValue {
-            name: c_name(ty),
-            tag: c_name(tag),
+            name: c_name(ty.as_str()),
+            tag: c_name(tag.as_str()),
             ..seq(ThraxKind::Variant, fields)
         },
     }

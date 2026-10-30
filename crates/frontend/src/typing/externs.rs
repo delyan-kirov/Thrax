@@ -45,7 +45,7 @@ impl<'a> Checker<'a> {
             }
             let param = self.unifier.resolve(param);
             let (params, arg_types) = self.extern_param_spec(param)?;
-            let ret_name = marshal_name(&self.unifier.types, self.unifier.resolve(ret));
+            let ret_name = StrId::intern(&marshal_name(&self.unifier.types, self.unifier.resolve(ret)));
             self.extern_specs.insert(e, (params, arg_types, ret_name));
         }
         Ok(())
@@ -56,7 +56,7 @@ impl<'a> Checker<'a> {
     /// in declared order, pulled by name; any other type is one C argument used
     /// directly (a scalar, a C-repr struct by value, `@Ptr`, `Str`, a callback, or
     /// a `List T` array).
-    pub(super) fn extern_param_spec(&mut self, param: Type) -> Result<(Vec<ExternArg>, Vec<String>)> {
+    pub(super) fn extern_param_spec(&mut self, param: Type) -> Result<(Vec<ExternArg>, Vec<StrId>)> {
         if is_unit_ty(&self.unifier.types, param) {
             return Ok((vec![], vec![]));
         }
@@ -67,8 +67,8 @@ impl<'a> Checker<'a> {
             let mut params = Vec::with_capacity(fields.len());
             let mut arg_types = Vec::with_capacity(fields.len());
             for (name, fty) in fields {
-                params.push(ExternArg::Field(name.to_string()));
-                arg_types.push(marshal_name(&self.unifier.types, self.unifier.resolve(fty)));
+                params.push(ExternArg::Field(name));
+                arg_types.push(StrId::intern(&marshal_name(&self.unifier.types, self.unifier.resolve(fty))));
             }
             return Ok((params, arg_types));
         }
@@ -80,11 +80,11 @@ impl<'a> Checker<'a> {
             for (i, it) in self.unifier.types.items(items).to_vec().into_iter().enumerate() {
                 params.push(ExternArg::Elem(i));
                 let r = self.unifier.resolve(it);
-                arg_types.push(marshal_name(&self.unifier.types, r));
+                arg_types.push(StrId::intern(&marshal_name(&self.unifier.types, r)));
             }
             return Ok((params, arg_types));
         }
-        Ok((vec![ExternArg::Whole], vec![marshal_name(&self.unifier.types, param)]))
+        Ok((vec![ExternArg::Whole], vec![StrId::intern(&marshal_name(&self.unifier.types, param))]))
     }
 }
 

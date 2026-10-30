@@ -665,7 +665,7 @@ impl<'a> Checker<'a> {
 
     /// The type of field `name` in a record value: through the row for a structural
     /// record (open tail grows to include it), or the declared field for a struct.
-    pub(super) fn field_type_of(&mut self, base: Type, name: &str) -> Result<Type> {
+    pub(super) fn field_type_of(&mut self, base: Type, name: StrId) -> Result<Type> {
         if let TypeNode::Record(_) = self.unifier.head(base) {
             return self
                 .unifier

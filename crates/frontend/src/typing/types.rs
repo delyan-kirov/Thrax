@@ -85,7 +85,7 @@ pub enum TypeNode {
 pub struct TypesMark {
     nodes: usize,
     tuples: usize,
-    rigids: std::collections::HashMap<String, u32>,
+    rigids: std::collections::HashMap<StrId, u32>,
 }
 
 /// How [`Types::error`] prints. Not lexable as a type, so no source can name it.
@@ -100,7 +100,7 @@ pub struct Types {
     /// with everything, so one error does not cascade into its uses.
     error: Type,
     /// How many rigid types each name has been given (see [`Types::rigid`]).
-    rigids: RefCell<std::collections::HashMap<String, u32>>,
+    rigids: RefCell<std::collections::HashMap<StrId, u32>>,
 }
 
 impl Default for Types {
@@ -201,14 +201,15 @@ impl Types {
     /// `name`. Each call makes a new one; a later one with the same name is
     /// told apart by a `#n` suffix, since the store is shared by every module.
     pub fn rigid(&self, name: &str) -> Type {
+        let id = StrId::intern(name);
         let n = {
             let mut rigids = self.rigids.borrow_mut();
-            let n = rigids.entry(name.to_string()).or_insert(0);
+            let n = rigids.entry(id).or_insert(0);
             *n += 1;
             *n
         };
         if n == 1 {
-            self.add(TypeNode::Con(self.intern(name)))
+            self.add(TypeNode::Con(id))
         } else {
             self.add(TypeNode::Con(self.intern(&format!("{name} #{n}"))))
         }
@@ -255,10 +256,10 @@ impl Types {
     }
 
     /// A closed record row from `(label, ty)` pairs in order.
-    pub fn record_of(&self, fields: impl DoubleEndedIterator<Item = (String, Type)>) -> Type {
+    pub fn record_of(&self, fields: impl DoubleEndedIterator<Item = (StrId, Type)>) -> Type {
         let mut row = self.row_empty;
         for (l, t) in fields.rev() {
-            row = self.row_field(&l, t, row);
+            row = self.row_field(l, t, row);
         }
         self.record(row)
     }
@@ -293,7 +294,7 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
 
 /// A row alias that display may print in place of its labels: the alias name
 /// and the labels it stands for.
-pub type RowFold = (String, Vec<String>);
+pub type RowFold = (StrId, Vec<StrId>);
 
 /// [`display`], printing any row that holds every label of a fold in `folds` with
 /// the fold's name instead of those labels. Earlier folds are tried first.
@@ -477,16 +478,17 @@ pub fn display_folding(
 /// the position of its first label. One occurrence of each label is consumed, so
 /// a label the row repeats outside the alias still shows.
 pub fn fold_labels(mut labels: Vec<String>, folds: &[RowFold]) -> Vec<String> {
+    let is = |label: &String, member: &StrId| *member == label.as_str();
     for (name, members) in folds {
-        if members.is_empty() || !members.iter().all(|m| labels.contains(m)) {
+        if members.is_empty() || !members.iter().all(|m| labels.iter().any(|l| is(l, m))) {
             continue;
         }
-        let at = labels.iter().position(|l| members.contains(l)).expect("a member is present");
+        let at = labels.iter().position(|l| members.iter().any(|m| is(l, m))).expect("a member is present");
         for m in members {
-            let i = labels.iter().position(|l| l == m).expect("checked above");
+            let i = labels.iter().position(|l| is(l, m)).expect("checked above");
             labels.remove(i);
         }
-        labels.insert(at, name.clone());
+        labels.insert(at, name.to_string());
     }
     labels
 }
@@ -518,30 +520,24 @@ pub fn dump(types: &Types, ty: Type) -> String {
 /// whose handler discharges into `@IO`.
 pub const IO: &str = "@IO";
 
-/// The labels of a closed row as a sorted set, or `None` for an open row.
-fn closed_row_labels(types: &Types, row: Type) -> Option<Vec<String>> {
-    let mut labels: Vec<String> = Vec::new();
+/// Whether `row` is closed and its labels are exactly the set `want` (distinct
+/// names).
+fn closed_row_is(types: &Types, row: Type, want: &[&str]) -> bool {
+    let mut labels: Vec<StrId> = Vec::new();
     let mut cur = row;
     loop {
         match types.node(cur) {
             TypeNode::RowExtend(label, _, rest) => {
-                labels.push(types.name(label).to_string());
+                if !labels.contains(&label) {
+                    labels.push(label);
+                }
                 cur = rest;
             }
             TypeNode::RowEmpty => break,
-            _ => return None,
+            _ => return false,
         }
     }
-    labels.sort_unstable();
-    labels.dedup();
-    Some(labels)
-}
-
-/// `labels` as the sorted set [`closed_row_labels`] yields.
-fn label_set(labels: &[&str]) -> Vec<String> {
-    let mut want: Vec<String> = labels.iter().map(|s| s.to_string()).collect();
-    want.sort_unstable();
-    want
+    labels.len() == want.len() && want.iter().all(|w| labels.iter().any(|l| l == w))
 }
 
 /// The one name the compiler knows a program by: `$ @main`, a C-style entry that
@@ -569,7 +565,7 @@ pub fn is_entry_type(types: &Types, ty: Type) -> bool {
         _ => false,
     };
     let code = is_con(to, INT);
-    let io = closed_row_labels(types, eff) == Some(label_set(&[IO]));
+    let io = closed_row_is(types, eff, &[IO]);
     argv && code && io
 }
 
@@ -595,7 +591,7 @@ pub fn is_build_type(types: &Types, ty: Type) -> bool {
     };
     // The row is order-insensitive, so compare label sets rather than a fixed
     // spelling: `<@Meta, @IO>` and `<@IO, @Meta>` are the same row.
-    let io_meta = closed_row_labels(types, eff) == Some(label_set(&["@Meta", IO]));
+    let io_meta = closed_row_is(types, eff, &["@Meta", IO]);
     is_con(from, UNIT) && is_con(to, "@Code") && io_meta
 }
 

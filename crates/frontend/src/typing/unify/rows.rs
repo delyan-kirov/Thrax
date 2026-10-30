@@ -329,8 +329,7 @@ impl Unifier {
     pub(super) fn effect_not_handled(&self, label: StrId, where_: &str) -> Diagnostic {
         let part_of = self.performed.as_ref().and_then(|performed| {
             self.row_folds.iter().find(|(_, members)| {
-                members.iter().any(|m| label == m.as_str())
-                    && members.iter().all(|m| performed.iter().any(|p| *p == m.as_str()))
+                members.contains(&label) && members.iter().all(|m| performed.contains(m))
             })
         });
         let effect = match part_of {

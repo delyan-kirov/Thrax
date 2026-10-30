@@ -797,8 +797,7 @@ impl<'a> Desugarer<'a> {
                 let (abi, symbol, lib) = (*abi, *symbol, *lib);
                 match self.resolved.extern_sigs.get(&e) {
                     Some((_params, arg_types, ret_type)) => {
-                        let arg_types = arg_types.iter().map(|t| StrId::intern(t)).collect();
-                        let ret_type = StrId::intern(ret_type);
+                        let (arg_types, ret_type) = (arg_types.clone(), *ret_type);
                         self.add(Term::Extern {
                             abi,
                             symbol,
@@ -1045,7 +1044,7 @@ impl<'a> Desugarer<'a> {
                     let ExternArg::Field(name) = p else {
                         unreachable!()
                     };
-                    match fields.iter().find(|(n, _)| *n == name.as_str()) {
+                    match fields.iter().find(|(n, _)| n == name) {
                         Some((_, t)) => acc = self.app(acc, *t),
                         None => {
                             return self.fault(format!(
@@ -1092,7 +1091,7 @@ impl<'a> Desugarer<'a> {
             .iter()
             .map(|p| match p {
                 ExternArg::Whole => subject,
-                ExternArg::Field(name) => self.field(subject, name),
+                ExternArg::Field(name) => self.field(subject, *name),
                 ExternArg::Elem(i) => self.field(subject, i.to_string()),
             })
             .collect()

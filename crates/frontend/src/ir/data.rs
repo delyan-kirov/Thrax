@@ -358,6 +358,8 @@ pub enum Strictness {
 /// One built-in operation.
 #[derive(Clone, Copy, Debug)]
 pub struct Builtin {
+    /// Which operation it is, for an engine to dispatch on.
+    pub prim: Prim,
     pub name: &'static str,
     pub arity: usize,
     pub strictness: Strictness,
@@ -371,66 +373,153 @@ impl Builtin {
     }
 }
 
-const fn leaf(name: &'static str, arity: usize) -> Builtin {
-    Builtin { name, arity, strictness: Strictness::Shallow, host: BuiltinHost::Everywhere }
+const fn leaf(prim: Prim, name: &'static str, arity: usize) -> Builtin {
+    Builtin { prim, name, arity, strictness: Strictness::Shallow, host: BuiltinHost::Everywhere }
 }
 
-const fn deep(name: &'static str, arity: usize) -> Builtin {
-    Builtin { strictness: Strictness::Deep, ..leaf(name, arity) }
+const fn deep(prim: Prim, name: &'static str, arity: usize) -> Builtin {
+    Builtin { strictness: Strictness::Deep, ..leaf(prim, name, arity) }
 }
 
-const fn parallel(name: &'static str, arity: usize) -> Builtin {
-    Builtin { host: BuiltinHost::Parallel, ..leaf(name, arity) }
+const fn parallel(prim: Prim, name: &'static str, arity: usize) -> Builtin {
+    Builtin { host: BuiltinHost::Parallel, ..leaf(prim, name, arity) }
 }
 
-const fn compiler(name: &'static str, arity: usize) -> Builtin {
-    Builtin { host: BuiltinHost::Compiler, ..leaf(name, arity) }
+const fn compiler(prim: Prim, name: &'static str, arity: usize) -> Builtin {
+    Builtin { host: BuiltinHost::Compiler, ..leaf(prim, name, arity) }
 }
 
-const fn compile_time(name: &'static str, arity: usize) -> Builtin {
-    Builtin { host: BuiltinHost::CompileTime, ..leaf(name, arity) }
+const fn compile_time(prim: Prim, name: &'static str, arity: usize) -> Builtin {
+    Builtin { host: BuiltinHost::CompileTime, ..leaf(prim, name, arity) }
 }
 
-/// Every built-in operation: the one table both engines read. The native
-/// runtime numbers its dispatch (`THxB_*`) from the order of the native
-/// entries, so a new native builtin goes before the compile-time ones.
-pub const BUILTINS: &[Builtin] = &[
-    leaf("not", 1), leaf("neg", 1),
-    leaf("@iadd", 2), leaf("@isub", 2), leaf("@imul", 2), leaf("@idiv", 2), leaf("@imod", 2),
-    leaf("@udiv", 2), leaf("@umod", 2),
-    leaf("@fadd", 2), leaf("@fsub", 2), leaf("@fmul", 2), leaf("@fdiv", 2), leaf("@fmod", 2),
-    leaf("@fpow", 2),
-    leaf("@f32add", 2), leaf("@f32sub", 2), leaf("@f32mul", 2), leaf("@f32div", 2),
-    leaf("@f32mod", 2),
-    leaf("@f32pow", 2),
-    leaf("@ieq", 2), leaf("@ilt", 2), leaf("@ult", 2), leaf("@feq", 2), leaf("@flt", 2),
-    leaf("@seq", 2),
-    leaf("@slt", 2), leaf("@swrap", 2), leaf("@uwrap", 2),
-    deep("==", 2), leaf("<", 2), leaf(">", 2), leaf("<=", 2), leaf(">=", 2), leaf("++", 2),
-    leaf("@acat", 2),
-    leaf("@array_alloc", 1), leaf("@array_len", 1), leaf("@array_get", 2),
-    leaf("@array_push", 2),
-    leaf("@array_set", 3), leaf("@array_slice", 3),
-    leaf("record_without", 2),
-    leaf("@vec_new", 1), leaf("@vec_len", 1), leaf("@vec_get", 2), leaf("@vec_push", 2),
-    leaf("@vec_fill", 2),
-    leaf("@vec_set", 3), leaf("@vec_slice", 3),
-    leaf("@tensor_length", 1), leaf("@tensor_stack", 1), leaf("@tensor_transpose", 1),
-    leaf("@tensor_concat", 2), leaf("@tensor_index", 2), leaf("@tensor_create", 2),
-    leaf("@tensor_slice", 3), leaf("@tensor_index_axis", 3), leaf("@tensor_slice_axis", 4),
-    leaf("@delay", 1), parallel("@par", 1), parallel("@spawn", 1), parallel("@await", 1),
-    leaf("@chan_new", 1), leaf("@chan_send", 2), leaf("@chan_recv", 1),
-    leaf("@tvar_new", 1), leaf("@tvar_read", 1),
-    leaf("@stm_begin", 1), leaf("@stm_read", 1), leaf("@stm_write", 2), leaf("@stm_commit", 1),
-    leaf("@stm_wait", 1), leaf("@stm_save", 1), leaf("@stm_rollback", 1),
-    compiler("@lex", 1), compiler("@token_kind", 1), compiler("@token_text", 1),
-    compiler("@parse", 1), compiler("@parse_str", 1),
-    compiler("@parse_items", 1), compiler("@format", 1), compiler("@eval", 1),
-    compile_time("@abort", 1), compile_time("@emit", 1), compile_time("@fresh", 1),
-    compile_time("@link", 1), compile_time("@link_path", 1),
-    compile_time("@type_kind", 1), compile_time("@type_fields", 1),
-    compile_time("@type_variants", 1), compile_time("@type_params", 1),
-];
+/// Declare [`Prim`], one variant per builtin, and [`BUILTINS`] in the same
+/// order, from one list of `Variant = builder("name", arity)` entries.
+macro_rules! builtins {
+    ($($prim:ident = $make:ident($name:literal, $arity:literal),)*) => {
+        /// A built-in operation, as an engine dispatches on it. Variant `k` is
+        /// `BUILTINS[k]`.
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+        pub enum Prim {
+            $($prim,)*
+        }
+
+        /// Every built-in operation: the one table both engines read. The native
+        /// runtime numbers its dispatch (`THxB_*`) from the order of the native
+        /// entries, so a new native builtin goes before the compile-time ones.
+        pub const BUILTINS: &[Builtin] = &[$($make(Prim::$prim, $name, $arity),)*];
+    };
+}
+
+builtins! {
+    Not = leaf("not", 1),
+    Neg = leaf("neg", 1),
+    Iadd = leaf("@iadd", 2),
+    Isub = leaf("@isub", 2),
+    Imul = leaf("@imul", 2),
+    Idiv = leaf("@idiv", 2),
+    Imod = leaf("@imod", 2),
+    Udiv = leaf("@udiv", 2),
+    Umod = leaf("@umod", 2),
+    Fadd = leaf("@fadd", 2),
+    Fsub = leaf("@fsub", 2),
+    Fmul = leaf("@fmul", 2),
+    Fdiv = leaf("@fdiv", 2),
+    Fmod = leaf("@fmod", 2),
+    Fpow = leaf("@fpow", 2),
+    F32add = leaf("@f32add", 2),
+    F32sub = leaf("@f32sub", 2),
+    F32mul = leaf("@f32mul", 2),
+    F32div = leaf("@f32div", 2),
+    F32mod = leaf("@f32mod", 2),
+    F32pow = leaf("@f32pow", 2),
+    Ieq = leaf("@ieq", 2),
+    Ilt = leaf("@ilt", 2),
+    Ult = leaf("@ult", 2),
+    Feq = leaf("@feq", 2),
+    Flt = leaf("@flt", 2),
+    Seq = leaf("@seq", 2),
+    Slt = leaf("@slt", 2),
+    Swrap = leaf("@swrap", 2),
+    Uwrap = leaf("@uwrap", 2),
+    Eq = deep("==", 2),
+    Lt = leaf("<", 2),
+    Gt = leaf(">", 2),
+    Le = leaf("<=", 2),
+    Ge = leaf(">=", 2),
+    Concat = leaf("++", 2),
+    Acat = leaf("@acat", 2),
+    ArrayAlloc = leaf("@array_alloc", 1),
+    ArrayLen = leaf("@array_len", 1),
+    ArrayGet = leaf("@array_get", 2),
+    ArrayPush = leaf("@array_push", 2),
+    ArraySet = leaf("@array_set", 3),
+    ArraySlice = leaf("@array_slice", 3),
+    RecordWithout = leaf("record_without", 2),
+    VecNew = leaf("@vec_new", 1),
+    VecLen = leaf("@vec_len", 1),
+    VecGet = leaf("@vec_get", 2),
+    VecPush = leaf("@vec_push", 2),
+    VecFill = leaf("@vec_fill", 2),
+    VecSet = leaf("@vec_set", 3),
+    VecSlice = leaf("@vec_slice", 3),
+    TensorLength = leaf("@tensor_length", 1),
+    TensorStack = leaf("@tensor_stack", 1),
+    TensorTranspose = leaf("@tensor_transpose", 1),
+    TensorConcat = leaf("@tensor_concat", 2),
+    TensorIndex = leaf("@tensor_index", 2),
+    TensorCreate = leaf("@tensor_create", 2),
+    TensorSlice = leaf("@tensor_slice", 3),
+    TensorIndexAxis = leaf("@tensor_index_axis", 3),
+    TensorSliceAxis = leaf("@tensor_slice_axis", 4),
+    Delay = leaf("@delay", 1),
+    Par = parallel("@par", 1),
+    Spawn = parallel("@spawn", 1),
+    Await = parallel("@await", 1),
+    ChanNew = leaf("@chan_new", 1),
+    ChanSend = leaf("@chan_send", 2),
+    ChanRecv = leaf("@chan_recv", 1),
+    TvarNew = leaf("@tvar_new", 1),
+    TvarRead = leaf("@tvar_read", 1),
+    StmBegin = leaf("@stm_begin", 1),
+    StmRead = leaf("@stm_read", 1),
+    StmWrite = leaf("@stm_write", 2),
+    StmCommit = leaf("@stm_commit", 1),
+    StmWait = leaf("@stm_wait", 1),
+    StmSave = leaf("@stm_save", 1),
+    StmRollback = leaf("@stm_rollback", 1),
+    Lex = compiler("@lex", 1),
+    TokenKind = compiler("@token_kind", 1),
+    TokenText = compiler("@token_text", 1),
+    Parse = compiler("@parse", 1),
+    ParseStr = compiler("@parse_str", 1),
+    ParseItems = compiler("@parse_items", 1),
+    Format = compiler("@format", 1),
+    Eval = compiler("@eval", 1),
+    Abort = compile_time("@abort", 1),
+    Emit = compile_time("@emit", 1),
+    Fresh = compile_time("@fresh", 1),
+    Link = compile_time("@link", 1),
+    LinkPath = compile_time("@link_path", 1),
+    TypeKind = compile_time("@type_kind", 1),
+    TypeFields = compile_time("@type_fields", 1),
+    TypeVariants = compile_time("@type_variants", 1),
+    TypeParams = compile_time("@type_params", 1),
+}
+
+impl Prim {
+    /// The table entry of this builtin.
+    pub fn builtin(self) -> &'static Builtin {
+        &BUILTINS[self as usize]
+    }
+}
+
+/// Prints the builtin's name.
+impl std::fmt::Display for Prim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.builtin().name)
+    }
+}
 
 /// The builtin called `name`, if there is one.
 pub fn builtin(name: &str) -> Option<&'static Builtin> {

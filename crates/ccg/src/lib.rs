@@ -84,7 +84,7 @@ pub fn emit_program(
         Emitter::new(&prog, reachable.clone()).run();
     for e in &mut externs {
         if let Some((args, ret)) =
-            utilities::libc::exact_types(target, &e.lib, &e.symbol, &e.arg_types, &e.ret_type)
+            utilities::libc::exact_types(target, e.lib, e.symbol, &e.arg_types, e.ret_type)
         {
             e.arg_types = args;
             e.ret_type = ret;
@@ -295,15 +295,15 @@ pub fn emit_program(
     // libm. (`link_flag` maps "m" to `-lm`; on emcc it is a harmless no-op.)
     let mut libraries: Vec<String> = vec!["m".to_string()];
     for e in &externs {
-        if !libraries.iter().any(|l| l == &e.lib) {
-            libraries.push(e.lib.clone());
+        if !libraries.iter().any(|l| e.lib == l.as_str()) {
+            libraries.push(e.lib.to_string());
         }
     }
     // A program that passes a Thrax closure to C uses libffi closures, so it must
     // link libffi (the generated callback runtime includes `<ffi.h>`).
     let uses_callbacks = externs
         .iter()
-        .any(|e| e.arg_types.iter().any(|t| t.starts_with("@fn(")));
+        .any(|e| e.arg_types.iter().any(|t| t.as_str().starts_with("@fn(")));
     if uses_callbacks && !libraries.iter().any(|l| l == "ffi") {
         libraries.push("ffi".to_string());
     }

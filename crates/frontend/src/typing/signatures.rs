@@ -348,7 +348,7 @@ impl<'a> Checker<'a> {
 
     /// The labels a parameterless, closed row alias stands for, through any
     /// aliases it names, or None when it is not one (or names something else).
-    pub(super) fn closed_row_alias_labels(&self, name: StrId) -> Option<Vec<String>> {
+    pub(super) fn closed_row_alias_labels(&self, name: StrId) -> Option<Vec<StrId>> {
         let (params, body) = self.aliases.get(&name)?;
         let Ty::Row(row) = self.ast.ty(*body) else {
             return None;
@@ -356,7 +356,7 @@ impl<'a> Checker<'a> {
         if !params.is_empty() || row.tail.is_some() {
             return None;
         }
-        let mut out: Vec<String> = Vec::new();
+        let mut out: Vec<StrId> = Vec::new();
         for entry in self.ast.slice(row.entries) {
             let label = entry.name;
             let more = if self.aliases.contains_key(&label) {
@@ -365,7 +365,7 @@ impl<'a> Checker<'a> {
                 }
                 self.closed_row_alias_labels(label)?
             } else {
-                vec![label.to_string()]
+                vec![label]
             };
             for l in more {
                 if !out.contains(&l) {
@@ -380,15 +380,15 @@ impl<'a> Checker<'a> {
     /// parameterless one of at least two labels (a one-label alias is a mere
     /// rename, and printing it would hide the effect's own name), largest first.
     pub(super) fn register_row_folds(&mut self) {
-        let mut folds: Vec<(String, Vec<String>)> = self
+        let mut folds: Vec<(StrId, Vec<StrId>)> = self
             .aliases
             .keys()
-            .filter_map(|name| {
-                let labels = self.closed_row_alias_labels(*name)?;
-                (labels.len() >= 2).then(|| (name.to_string(), labels))
+            .filter_map(|&name| {
+                let labels = self.closed_row_alias_labels(name)?;
+                (labels.len() >= 2).then_some((name, labels))
             })
             .collect();
-        folds.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+        folds.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.as_str().cmp(b.0.as_str())));
         self.unifier.row_folds = folds;
     }
 }

@@ -41,11 +41,14 @@ impl<'a> Checker<'a> {
     /// Every qualifier a module writes must name one thing: an alias may not
     /// repeat, nor reuse the name of another imported module, this module, or `C`.
     pub(super) fn check_import_aliases(&mut self, program: &Program) {
-        let dotted = |parts: Slice<StrId>| {
-            self.ast.slice(parts).iter().map(|p| p.as_str()).collect::<Vec<_>>().join(".")
+        let dotted = |parts: Slice<StrId>| -> StrId {
+            match self.ast.slice(parts) {
+                [one] => *one,
+                many => StrId::intern(&many.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(".")),
+            }
         };
-        let mut plain: HashSet<String> = HashSet::new();
-        let mut aliased: Vec<(StrId, String, Span)> = Vec::new();
+        let mut plain: HashSet<StrId> = HashSet::new();
+        let mut aliased: Vec<(StrId, StrId, Span)> = Vec::new();
         for item in self.ast.slice(program.items) {
             match item {
                 Item::Import { module, alias: None, .. } => {
@@ -57,11 +60,11 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
-        let mut seen: HashMap<StrId, String> = HashMap::new();
+        let mut seen: HashMap<StrId, StrId> = HashMap::new();
         for (alias, module, span) in aliased {
             let clash = if let Some(first) = seen.get(&alias) {
                 Some(format!("`{alias}` is already an alias of `{first}`"))
-            } else if alias != module.as_str() && plain.contains(alias.as_str()) {
+            } else if alias != module && plain.contains(&alias) {
                 Some(format!("`{alias}` is already the name of an imported module"))
             } else if alias == self.module_name {
                 Some(format!("`{alias}` is the name of this module"))
@@ -410,10 +413,10 @@ impl<'a> Checker<'a> {
                 vec![Edit::new(Span::at(0), n)],
                 Applicability::MaybeIncorrect,
             ),
-            None => match self.import_hints.get(name.as_str()).map(Vec::as_slice) {
+            None => match self.import_hints.get(&name).map(Vec::as_slice) {
                 Some([home]) => {
-                    let home = home.clone();
-                    self.with_import_fix(unbound(name), &home)
+                    let home = *home;
+                    self.with_import_fix(unbound(name), home.as_str())
                 }
                 Some(homes) if !homes.is_empty() => unbound(name).with_help(format!(
                     "it is defined in {}; import one of them",

@@ -1,7 +1,10 @@
 use super::*;
 
+/// Builds one global's body in the program's store.
+type Build = fn(&mut Terms) -> Aol<Term>;
+
 /// A program of `globals`, each built in its store by its function.
-fn prog(globals: Vec<(&str, fn(&mut Terms) -> Aol<Term>)>) -> CoreProgram {
+fn prog(globals: Vec<(&str, Build)>) -> CoreProgram {
     let mut p = CoreProgram::new(StrId::intern("M"));
     for (name, build) in globals {
         let term = build(&mut p.terms);

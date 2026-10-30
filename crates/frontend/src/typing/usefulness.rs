@@ -19,6 +19,8 @@
 
 use std::rc::Rc;
 
+use utilities::StrId;
+
 /// The one union whose variants line up with the sequence view's two steps:
 /// CORE's `impl_ISeqView_for_List` views `Nil` as `Empty` and `Cons` as `More`,
 /// so its variant and sequence patterns share a column. Any other union's view is
@@ -31,9 +33,9 @@ pub enum Ctor {
     /// Variant `index` of `union`. `siblings` lists every variant of the union as
     /// `(tag, payload arity)`, in declaration order.
     Variant {
-        union: Rc<str>,
+        union: StrId,
         index: usize,
-        siblings: Rc<[(String, usize)]>,
+        siblings: Rc<[(StrId, usize)]>,
     },
     Bool(bool),
     /// The end of a sequence (`[]`, the view's `Empty`).
@@ -50,14 +52,14 @@ pub enum Ctor {
     /// The single constructor of a product, its fields in `fields` order.
     Product {
         kind: ProductKind,
-        fields: Rc<[String]>,
+        fields: Rc<[StrId]>,
     },
 }
 
 /// How a product pattern was written, for showing a witness.
 #[derive(Clone, Debug)]
 pub enum ProductKind {
-    Struct(Rc<str>),
+    Struct(StrId),
     Tuple,
     Record,
     /// A sized tensor of this length; fields are element positions.
@@ -86,7 +88,7 @@ pub enum DPat {
     /// A product matched by field name; fields it does not list are wildcards.
     /// Turned into a positional [`Ctor::Product`] per column, once every row's
     /// field names are known.
-    Product(ProductKind, Vec<(String, DPat)>),
+    Product(ProductKind, Vec<(StrId, DPat)>),
 }
 
 impl Ctor {
@@ -132,7 +134,7 @@ impl Ctor {
         Some(match self {
             Ctor::Variant { union, siblings, .. } => (0..siblings.len())
                 .map(|index| Ctor::Variant {
-                    union: union.clone(),
+                    union: *union,
                     index,
                     siblings: siblings.clone(),
                 })
@@ -150,7 +152,7 @@ impl Ctor {
 /// row has `v.len()` columns. When a column mixes variants of a union with
 /// sequence steps, the minority family is dropped and `mixed` names the union,
 /// since a witness found after that may be one the dropped rows do cover.
-fn useful(rows: &[Vec<DPat>], v: &[DPat], mixed: &mut Option<Rc<str>>) -> Option<Vec<DPat>> {
+fn useful(rows: &[Vec<DPat>], v: &[DPat], mixed: &mut Option<StrId>) -> Option<Vec<DPat>> {
     let Some((head, rest)) = v.split_first() else {
         return rows.is_empty().then(Vec::new);
     };
@@ -224,7 +226,7 @@ fn useful_ints(
     head: &DPat,
     rest: &[DPat],
     dom: (i128, i128),
-    mixed: &mut Option<Rc<str>>,
+    mixed: &mut Option<StrId>,
 ) -> Option<Vec<DPat>> {
     let (lo, hi) = match head {
         DPat::Ctor(Ctor::Int { lo, hi, .. }, _) => (*lo, *hi),
@@ -281,10 +283,10 @@ fn segments(span: (i128, i128), ranges: impl Iterator<Item = (i128, i128)>) -> V
 fn normalize_column(
     rows: &[Vec<DPat>],
     head: &DPat,
-    mixed: &mut Option<Rc<str>>,
+    mixed: &mut Option<StrId>,
 ) -> (Vec<Vec<DPat>>, DPat) {
     let all = || rows.iter().map(|r| &r[0]).chain(std::iter::once(head));
-    let mut names: Vec<String> = Vec::new();
+    let mut names: Vec<StrId> = Vec::new();
     let mut kind: Option<ProductKind> = None;
     let mut list: Option<Ctor> = None;
     for p in all() {
@@ -293,17 +295,17 @@ fn normalize_column(
                 kind.get_or_insert_with(|| k.clone());
                 for (n, _) in fields {
                     if !names.contains(n) {
-                        names.push(n.clone());
+                        names.push(*n);
                     }
                 }
             }
-            DPat::Ctor(c @ Ctor::Variant { union, .. }, _) if &**union == SEQ_UNION.0 => {
+            DPat::Ctor(c @ Ctor::Variant { union, .. }, _) if *union == SEQ_UNION.0 => {
                 list.get_or_insert_with(|| c.clone());
             }
             _ => {}
         }
     }
-    let names: Rc<[String]> = names.into();
+    let names: Rc<[StrId]> = names.into();
     let fix = |p: &DPat| -> DPat {
         match p {
             DPat::Product(_, fields) => {
@@ -325,7 +327,7 @@ fn normalize_column(
                     match siblings.iter().position(|(t, n)| t == tag && *n == args.len()) {
                         Some(index) => DPat::Ctor(
                             Ctor::Variant {
-                                union: union.clone(),
+                                union: *union,
                                 index,
                                 siblings: siblings.clone(),
                             },
@@ -371,10 +373,10 @@ fn normalize_column(
 }
 
 /// The union whose variants meet sequence steps when `a` and `b` are one of each.
-fn seq_variant_clash(a: &Ctor, b: &Ctor) -> Option<Rc<str>> {
+fn seq_variant_clash(a: &Ctor, b: &Ctor) -> Option<StrId> {
     match (a, b) {
         (Ctor::Variant { union, .. }, Ctor::SeqEmpty | Ctor::SeqMore)
-        | (Ctor::SeqEmpty | Ctor::SeqMore, Ctor::Variant { union, .. }) => Some(union.clone()),
+        | (Ctor::SeqEmpty | Ctor::SeqMore, Ctor::Variant { union, .. }) => Some(*union),
         _ => None,
     }
 }
@@ -448,7 +450,7 @@ pub fn show(p: &DPat) -> String {
                         let mut slots: Vec<(usize, String)> = fields
                             .iter()
                             .zip(args)
-                            .map(|(f, a)| (f.parse().unwrap_or(0), show(a)))
+                            .map(|(f, a)| (f.as_str().parse().unwrap_or(0), show(a)))
                             .collect();
                         slots.sort_by_key(|(i, _)| *i);
                         let slots: Vec<String> = slots.into_iter().map(|(_, s)| s).collect();
@@ -460,7 +462,7 @@ pub fn show(p: &DPat) -> String {
                                 fields
                                     .iter()
                                     .zip(args)
-                                    .find(|(f, _)| f.parse() == Ok(i))
+                                    .find(|(f, _)| f.as_str().parse() == Ok(i))
                                     .map_or("_".to_string(), |(_, a)| show(a))
                             })
                             .collect();
@@ -499,7 +501,7 @@ pub enum Dead {
 /// and `missing` may be a value the dropped arms do cover.
 pub struct Report {
     pub missing: Option<DPat>,
-    pub mixed: Option<Rc<str>>,
+    pub mixed: Option<StrId>,
     pub unreachable: Vec<Dead>,
 }
 

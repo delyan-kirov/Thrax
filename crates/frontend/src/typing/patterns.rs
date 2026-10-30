@@ -81,7 +81,7 @@ impl<'a> Checker<'a> {
             Pattern::List(elems) => {
                 // `[a, b]` / `[]` matches any sequence through its `@ISeqView` (the
                 // default `@Vec` when the scrutinee is not yet known).
-                let elem = self.sequence_pattern_elem(pat, expected, IF_SEQ_VIEW)?;
+                let elem = self.sequence_pattern_elem(pat, expected, IF_SEQ_VIEW.into())?;
                 for e in self.ast.slice(*elems).iter() {
                     self.type_pattern(*e, elem)?;
                 }
@@ -89,7 +89,7 @@ impl<'a> Checker<'a> {
             }
             Pattern::Concat { pre, mid, suf } => {
                 let (pre, mid, suf) = (self.ast.slice(*pre), *mid, self.ast.slice(*suf));
-                for (pieces, view) in [(pre, IF_SEQ_VIEW), (suf, IF_SEQ_VIEW_BACK)] {
+                for (pieces, view) in [(pre, IF_SEQ_VIEW.into()), (suf, IF_SEQ_VIEW_BACK.into())] {
                     for piece in pieces.iter() {
                         self.type_concat_piece(*piece, expected, view)?;
                     }
@@ -289,7 +289,7 @@ impl<'a> Checker<'a> {
     /// One fixed piece of a `++` pattern, matched from the front (`view` is
     /// `@ISeqView`) or the back (`@ISeqViewBack`). A string literal strips a
     /// literal prefix or suffix of a `@Str`; a closed `[..]` steps the view.
-    pub(super) fn type_concat_piece(&mut self, piece: Aol<Pattern>, expected: Type, view: &str) -> Result<()> {
+    pub(super) fn type_concat_piece(&mut self, piece: Aol<Pattern>, expected: Type, view: StrId) -> Result<()> {
         let r = match self.pnode(piece) {
             Pattern::Str(_) => {
                 let str_ty = self.unifier.types.con(ty::STR);
@@ -532,7 +532,7 @@ impl<'a> Checker<'a> {
             .enumerate()
             .map(|(i, p)| (i as u64, *p))
             .chain(back.iter().enumerate().map(|(j, p)| (back_start + j as u64, *p)))
-            .map(|(i, p)| (i.to_string(), self.dpat(p)))
+            .map(|(i, p)| (StrId::intern(&i.to_string()), self.dpat(p)))
             .collect();
         DPat::Product(ProductKind::Tensor(n), fields)
     }
@@ -613,7 +613,7 @@ impl<'a> Checker<'a> {
                 if pats.is_empty() {
                     return DPat::Wild;
                 }
-                let fields = pats.iter().enumerate().map(|(i, p)| (i.to_string(), self.dpat(*p)));
+                let fields = pats.iter().enumerate().map(|(i, p)| (StrId::intern(&i.to_string()), self.dpat(*p)));
                 DPat::Product(ProductKind::Tuple, fields.collect())
             }
             Pattern::Struct { ty, fields } => {
@@ -625,21 +625,21 @@ impl<'a> Checker<'a> {
                 for (i, f) in self.ast.slice(*fields).iter().enumerate() {
                     match f {
                         FieldPat::Named { name, pat } => {
-                            out.push((name.to_string(), self.dpat(*pat)))
+                            out.push((*name, self.dpat(*pat)))
                         }
                         FieldPat::Positional(pat) => match info.fields.get(i) {
-                            Some((name, _)) => out.push((name.to_string(), self.dpat(*pat))),
+                            Some((name, _)) => out.push((*name, self.dpat(*pat))),
                             None => return DPat::Opaque,
                         },
                         FieldPat::Shorthand(_) => {}
                     }
                 }
-                DPat::Product(ProductKind::Struct(ty.as_str().into()), out)
+                DPat::Product(ProductKind::Struct(ty), out)
             }
             Pattern::Record { fields, .. } => {
                 let fields = self.ast.slice(*fields).iter().filter_map(|f| match f {
                     FieldPat::Named { name, pat } => {
-                        Some((name.to_string(), self.dpat(*pat)))
+                        Some((*name, self.dpat(*pat)))
                     }
                     _ => None,
                 });
@@ -674,13 +674,13 @@ impl<'a> Checker<'a> {
                         None => return DPat::Opaque,
                     }
                 }
-                let siblings: Vec<(String, usize)> = info
+                let siblings: Vec<(StrId, usize)> = info
                     .variants
                     .iter()
-                    .map(|v| (v.tag.to_string(), v.payload.len()))
+                    .map(|v| (v.tag, v.payload.len()))
                     .collect();
                 DPat::Ctor(
-                    Ctor::Variant { union: union.as_str().into(), index, siblings: siblings.into() },
+                    Ctor::Variant { union, index, siblings: siblings.into() },
                     args,
                 )
             }

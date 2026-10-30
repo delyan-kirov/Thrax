@@ -301,7 +301,7 @@ pub struct Checker<'a> {
     import_anchor: Option<(usize, &'static str, &'static str)>,
     /// Modules the driver could import, by the value names they define, for an
     /// "import it" fix on an unbound name.
-    import_hints: Rc<HashMap<String, Vec<String>>>,
+    import_hints: Rc<HashMap<StrId, Vec<StrId>>>,
     /// Every `???` met, with its type and the binders in scope there (the
     /// candidates for filling it), reported once the definition is solved.
     holes: Vec<(Aol<Expr>, Type, Vec<(StrId, Type)>)>,
@@ -402,7 +402,7 @@ struct CtxLocal {
 /// requirement's type variables are pinned.
 struct PendingCtx {
     site: Aol<Expr>,
-    fname: String,
+    fname: StrId,
     req: Type,
     /// The enclosing definition's signature, whose variables resolution may not
     /// bind (zonked at resolution time, so a variable chain is followed).
@@ -416,7 +416,7 @@ struct PendingCtx {
 /// result variable standing in for the (not-yet-known) result, and the call site
 /// to annotate once it resolves.
 struct Pending {
-    name: String,
+    name: StrId,
     candidates: Vec<Cand>,
     args: Vec<Type>,
     result: Type,
@@ -537,7 +537,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Supply the module names an unbound name may suggest importing.
-    pub fn set_import_hints(&mut self, hints: Rc<HashMap<String, Vec<String>>>) {
+    pub fn set_import_hints(&mut self, hints: Rc<HashMap<StrId, Vec<StrId>>>) {
         self.import_hints = hints;
     }
 
@@ -681,7 +681,7 @@ impl<'a> Checker<'a> {
         // module resolves them regardless of source order.
         for d in &defs {
             let Some(ctx) = d.ctx else { continue };
-            self.check_ctx_head(d.name.as_str(), ctx)?;
+            self.check_ctx_head(d.name, ctx)?;
             let sig = d.sig.expect("a `@ctx` is parsed as part of a signature");
             self.own_ctx.push((d.name, sig));
             self.qualified_ctx.insert((self.module_name, d.name), sig);
@@ -1037,15 +1037,15 @@ impl<'a> Checker<'a> {
     /// `@ctx` prefix). The shell's `:type` uses this for a bare name: inferring the
     /// name as an expression would have to pick a type for its context, which is
     /// exactly what the declaration leaves open.
-    pub fn show_name(&mut self, name: &str) -> Option<String> {
-        if let Some(sig) = self.global_ctx.get(&StrId::intern(name)).copied() {
+    pub fn show_name(&mut self, name: StrId) -> Option<String> {
+        if let Some(sig) = self.global_ctx.get(&name).copied() {
             let (exposed, ctx) = self.scheme_and_ctx(sig, true);
             if let Some(ctx) = ctx {
                 let parts = self.unifier.show_all(&[ctx, exposed]);
                 return Some(format!("@ctx {} -> {}", parts[0], parts[1]));
             }
         }
-        self.lookup(StrId::intern(name)).map(|ty| self.show(ty))
+        self.lookup(name).map(|ty| self.show(ty))
     }
 
     /// How a definition's type reads to a user: its exposed arrow, prefixed with the

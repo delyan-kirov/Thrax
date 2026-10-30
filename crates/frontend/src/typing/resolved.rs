@@ -18,7 +18,7 @@ pub type LazySlots = HashMap<(StrId, Option<StrId>), Vec<bool>>;
 /// positional C arguments (`params`), the flattened C argument type names
 /// (`arg_types`, one per positional C argument), and the result type name. The
 /// three are consumed by lowering to build the extern value both engines call.
-pub type ExternSpec = (Vec<ExternArg>, Vec<String>, String);
+pub type ExternSpec = (Vec<ExternArg>, Vec<StrId>, StrId);
 
 /// One resolved context (`@ctx`) value at a use site, ready for lowering to inject
 /// as a leading argument of the referenced function.
@@ -340,9 +340,9 @@ struct VariantLayout {
 /// [`Declarations::reflect`], consumed by the driver's `$ @e` type-reflection host.
 pub struct ReflectInfo {
     /// `(module, name, type params, field names)` per struct.
-    pub structs: Vec<(String, String, Vec<String>, Vec<String>)>,
+    pub structs: Vec<(StrId, StrId, Vec<StrId>, Vec<StrId>)>,
     /// `(module, name, type params, variants)` per union, a variant `(tag, arity)`.
-    pub unions: Vec<(String, String, Vec<String>, Vec<(String, usize)>)>,
+    pub unions: Vec<(StrId, StrId, Vec<StrId>, Vec<(StrId, usize)>)>,
 }
 
 impl Declarations {
@@ -378,17 +378,17 @@ impl Declarations {
     /// Unions are reconstructed from the tag-keyed table by grouping on the union
     /// name; a variant's arity is its payload field count (`0` for a unit payload).
     pub fn reflect(&self) -> ReflectInfo {
-        let texts = |ids: &[StrId]| ids.iter().map(|i| i.to_string()).collect::<Vec<_>>();
-        let params_of = |module: StrId, name: StrId| -> Vec<String> {
+        let params_of = |module: StrId, name: StrId| -> Vec<StrId> {
             self.type_params
                 .get(&module)
                 .and_then(|m| m.get(&name))
-                .map_or_else(Vec::new, |ps| texts(ps))
+                .cloned()
+                .unwrap_or_default()
         };
-        let mut structs: Vec<(String, String, Vec<String>, Vec<String>)> = Vec::new();
+        let mut structs = Vec::new();
         for (&module, fields_by_name) in &self.structs {
             for (&name, fields) in fields_by_name {
-                structs.push((module.to_string(), name.to_string(), params_of(module, name), texts(fields)));
+                structs.push((module, name, params_of(module, name), fields.clone()));
             }
         }
         // Group variants per union, carrying each variant's declaration order, then
@@ -415,8 +415,7 @@ impl Declarations {
             .into_iter()
             .map(|(m, n, mut vs)| {
                 vs.sort_by_key(|(_, _, order)| *order);
-                let vs = vs.into_iter().map(|(t, a, _)| (t.to_string(), a)).collect();
-                (m.to_string(), n.to_string(), params_of(m, n), vs)
+                (m, n, params_of(m, n), vs.into_iter().map(|(t, a, _)| (t, a)).collect())
             })
             .collect();
         ReflectInfo { structs, unions }

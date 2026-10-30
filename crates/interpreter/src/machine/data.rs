@@ -13,7 +13,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use utilities::{Code, Diagnostic, Result, Span};
+use utilities::{Code, Diagnostic, Result, Span, StrId};
+use frontend::ir::data::{Builtin, Prim};
 
 use crate::machine::KFrame;
 
@@ -42,19 +43,18 @@ pub enum Value<'p> {
     Unit,
     Tuple(Vec<PVal<'p>>),
     Struct {
-        name: String,
-        fields: Vec<(String, PVal<'p>)>,
+        name: StrId,
+        fields: Vec<(StrId, PVal<'p>)>,
     },
     Variant {
-        ty: String,
-        tag: String,
+        ty: StrId,
+        tag: StrId,
         fields: Vec<PVal<'p>>,
     },
     Vector(Rc<Vec<PVal<'p>>>),
-    /// A partially applied built-in; it runs once `args` reaches `arity`.
+    /// A partially applied built-in; it runs once `args` reaches its arity.
     Builtin {
-        name: Rc<str>,
-        arity: usize,
+        op: &'static Builtin,
         args: Vec<PVal<'p>>,
     },
     /// A foreign function (`@extern`) value, before it is saturated. Like a
@@ -67,11 +67,11 @@ pub enum Value<'p> {
     /// wrapped. `lib` is the symbolic library the symbol lives in, resolved to a
     /// soname and `dlopen`ed when the symbol is not in the compiled-in host table.
     Extern {
-        abi: Rc<str>,
-        symbol: Rc<str>,
-        lib: Rc<str>,
-        arg_types: Rc<[String]>,
-        ret_type: Rc<str>,
+        abi: StrId,
+        symbol: StrId,
+        lib: StrId,
+        arg_types: Rc<[StrId]>,
+        ret_type: StrId,
         args: Vec<PVal<'p>>,
     },
     /// A closure: a lifted IR code block plus its captured environment record.
@@ -84,8 +84,8 @@ pub enum Value<'p> {
     Rec(Weak<RefCell<Value<'p>>>),
     /// An algebraic effect operation; applying it performs the operation.
     Op {
-        effect: Option<String>,
-        op: String,
+        effect: Option<StrId>,
+        op: StrId,
     },
     /// A captured continuation (a delimited stack slice).
     Resump(Rc<Resumption<'p>>),
@@ -248,12 +248,12 @@ pub(crate) fn mk_tensor<'p>(
     strides: Vec<usize>,
 ) -> Value<'p> {
     Value::Struct {
-        name: TENSOR.to_string(),
+        name: TENSOR.into(),
         fields: vec![
-            ("buf".to_string(), mk(Value::Vector(buf))),
-            ("off".to_string(), mk(Value::Int(off as i64))),
-            ("shape".to_string(), mk(int_vec_val(&shape))),
-            ("strides".to_string(), mk(int_vec_val(&strides))),
+            ("buf".into(), mk(Value::Vector(buf))),
+            ("off".into(), mk(Value::Int(off as i64))),
+            ("shape".into(), mk(int_vec_val(&shape))),
+            ("strides".into(), mk(int_vec_val(&strides))),
         ],
     }
 }
@@ -368,47 +368,47 @@ fn as_byte(v: &PVal) -> Result<u8> {
 
 /// Run a saturated built-in. `a` is already deref'd (the machine derefs an
 /// argument before pushing it onto a builtin's operand list).
-pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
+pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
     match name {
-        "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
-        | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
-        | "@f32mod" | "@f32pow" => arith_intrinsic(name, &a[0], &a[1]),
-        "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq" | "@slt" => {
+        Prim::Iadd | Prim::Isub | Prim::Imul | Prim::Idiv | Prim::Imod | Prim::Udiv | Prim::Umod | Prim::Fadd | Prim::Fsub
+        | Prim::Fmul | Prim::Fdiv | Prim::Fmod | Prim::Fpow | Prim::F32add | Prim::F32sub | Prim::F32mul | Prim::F32div
+        | Prim::F32mod | Prim::F32pow => arith_intrinsic(name, &a[0], &a[1]),
+        Prim::Ieq | Prim::Ilt | Prim::Ult | Prim::Feq | Prim::Flt | Prim::Seq | Prim::Slt => {
             compare_intrinsic(name, &a[0], &a[1])
         }
-        "@swrap" | "@uwrap" => {
+        Prim::Swrap | Prim::Uwrap => {
             let (bits, x) = (as_int(&a[0])?, as_int(&a[1])?);
             if !(1..64).contains(&bits) {
                 return Ok(Value::Int(x));
             }
             let shift = 64 - bits as u32;
-            Ok(Value::Int(if name == "@swrap" {
+            Ok(Value::Int(if name == Prim::Swrap {
                 (x << shift) >> shift
             } else {
                 ((x as u64) << shift >> shift) as i64
             }))
         }
-        "neg" => match &*a[0].borrow() {
+        Prim::Neg => match &*a[0].borrow() {
             Value::Int(n) => Ok(Value::Int(-n)),
             Value::Real(r) => Ok(Value::Real(-r)),
             Value::Real32(r) => Ok(Value::Real32(-r)),
             _ => Err(fault("`neg` on a non-number")),
         },
-        "not" => match &*a[0].borrow() {
+        Prim::Not => match &*a[0].borrow() {
             Value::Bool(b) => Ok(Value::Bool(!b)),
             _ => Err(fault("`not` on a non-boolean")),
         },
-        "==" => Ok(Value::Bool(value_eq(&a[0], &a[1]))),
-        "<" | ">" | "<=" | ">=" => compare(name, &a[0], &a[1]),
+        Prim::Eq => Ok(Value::Bool(value_eq(&a[0], &a[1]))),
+        Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge => compare(name, &a[0], &a[1]),
         // `++` itself is a CORE function over the `ICat` interface now; `@acat` is the
         // byte-buffer primitive its `@Str` / `@Array` instances bottom out on.
-        "++" | "@acat" => concat(&a[0], &a[1]),
+        Prim::Concat | Prim::Acat => concat(&a[0], &a[1]),
         // Suspend a lazy slot. The argument is the nullary closure lowering built
         // around the slot's expression; `force` runs it.
-        "@delay" => Ok(Value::Thunk(a[0].clone())),
-        "@array_alloc" => Ok(Value::Str(Rc::new(vec![0u8; as_len(&a[0])?]))),
-        "@array_len" => Ok(Value::Int(as_bytes(&a[0])?.len() as i64)),
-        "@array_get" => {
+        Prim::Delay => Ok(Value::Thunk(a[0].clone())),
+        Prim::ArrayAlloc => Ok(Value::Str(Rc::new(vec![0u8; as_len(&a[0])?]))),
+        Prim::ArrayLen => Ok(Value::Int(as_bytes(&a[0])?.len() as i64)),
+        Prim::ArrayGet => {
             let bytes = as_bytes(&a[0])?;
             let i = as_index(&a[1])?;
             bytes
@@ -416,12 +416,12 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .map(|b| Value::Int(*b as i64))
                 .ok_or_else(|| fault("array index out of bounds"))
         }
-        "@array_push" => {
+        Prim::ArrayPush => {
             let mut bytes = as_bytes(&a[0])?.as_ref().clone();
             bytes.push(as_byte(&a[1])?);
             Ok(Value::Str(Rc::new(bytes)))
         }
-        "@array_set" => {
+        Prim::ArraySet => {
             let mut bytes = as_bytes(&a[0])?.as_ref().clone();
             let i = as_index(&a[1])?;
             if i >= bytes.len() {
@@ -430,7 +430,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             bytes[i] = as_byte(&a[2])?;
             Ok(Value::Str(Rc::new(bytes)))
         }
-        "@array_slice" => {
+        Prim::ArraySlice => {
             let bytes = as_bytes(&a[0])?;
             let mut beg = as_index(&a[1])?;
             let mut end = as_index(&a[2])?;
@@ -438,51 +438,51 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             end = end.clamp(beg, bytes.len());
             Ok(Value::Str(Rc::new(bytes[beg..end].to_vec())))
         }
-        "record_without" => {
+        Prim::RecordWithout => {
             let label = as_bytes(&a[1])?;
             match &*a[0].borrow() {
                 Value::Struct { name, fields } => {
                     let mut out = Vec::with_capacity(fields.len());
                     let mut dropped = false;
                     for (n, val) in fields {
-                        if !dropped && n.as_bytes() == label.as_ref().as_slice() {
+                        if !dropped && n.bytes() == label.as_ref().as_slice() {
                             dropped = true;
                             continue;
                         }
-                        out.push((n.clone(), val.clone()));
+                        out.push((*n, val.clone()));
                     }
                     Ok(Value::Struct {
-                        name: name.clone(),
+                        name: *name,
                         fields: out,
                     })
                 }
                 _ => Err(fault("`record_without` on a non-record")),
             }
         }
-        "@vec_new" => Ok(Value::Vector(Rc::new(Vec::new()))),
-        "@vec_fill" => {
+        Prim::VecNew => Ok(Value::Vector(Rc::new(Vec::new()))),
+        Prim::VecFill => {
             let n = as_len(&a[0])?;
             Ok(Value::Vector(Rc::new(vec![a[1].clone(); n])))
         }
-        "@vec_len" => Ok(Value::Int(as_vec(&a[0])?.len() as i64)),
-        "@tensor_length" => {
+        Prim::VecLen => Ok(Value::Int(as_vec(&a[0])?.len() as i64)),
+        Prim::TensorLength => {
             let (_, _, shape, _) = tensor_fields(&a[0])?;
             Ok(Value::Int(*shape.first().unwrap_or(&0) as i64))
         }
-        "@tensor_stack" => {
+        Prim::TensorStack => {
             let v = as_vec(&a[0])?;
             tensor_stack(&v)
         }
         // O(1) transpose: a VIEW sharing the buffer with every axis reversed (for a
         // rank-2 tensor, the matrix transpose). No elements are copied.
-        "@tensor_transpose" => {
+        Prim::TensorTranspose => {
             let (buf, off, mut shape, mut strides) = tensor_fields(&a[0])?;
             shape.reverse();
             strides.reverse();
             Ok(mk_tensor(buf, off, shape, strides))
         }
         // O(1) slice along axis 0: a VIEW over `[lo, hi)`.
-        "@tensor_slice" => {
+        Prim::TensorSlice => {
             let (buf, off, mut shape, strides) = tensor_fields(&a[0])?;
             if shape.is_empty() {
                 return Err(fault("slice of a rank-0 tensor"));
@@ -495,7 +495,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         }
         // O(1) index of a GIVEN axis (modular): drop that axis, a VIEW. Reducing the
         // last remaining axis yields the scalar element.
-        "@tensor_index_axis" => {
+        Prim::TensorIndexAxis => {
             let (buf, off, mut shape, mut strides) = tensor_fields(&a[0])?;
             let axis = as_index(&a[1])?;
             if axis >= shape.len() {
@@ -518,7 +518,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Ok(mk_tensor(buf, base, shape, strides))
         }
         // O(1) slice of a GIVEN axis: a VIEW over `[lo, hi)` of that axis.
-        "@tensor_slice_axis" => {
+        Prim::TensorSliceAxis => {
             let (buf, off, mut shape, strides) = tensor_fields(&a[0])?;
             let axis = as_index(&a[1])?;
             if axis >= shape.len() {
@@ -530,7 +530,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             shape[axis] = hi - lo;
             Ok(mk_tensor(buf, base, shape, strides))
         }
-        "@vec_get" => {
+        Prim::VecGet => {
             let v = as_vec(&a[0])?;
             let i = as_index(&a[1])?;
             v.get(i)
@@ -538,7 +538,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .map(|p| p.borrow().clone_shallow())
                 .ok_or_else(|| fault("vec index out of bounds"))
         }
-        "@vec_push" => {
+        Prim::VecPush => {
             // Appending by copying the whole buffer makes building a vector
             // quadratic, so push in place whenever nothing else can observe the
             // buffer: this operand list must be the cell's only owner, and the
@@ -558,13 +558,13 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Ok(Value::Vector(Rc::new(v)))
         }
         // A copy of the half-open range `[lo, hi)`, clamped to the vector.
-        "@vec_slice" => {
+        Prim::VecSlice => {
             let v = as_vec(&a[0])?;
             let lo = as_index(&a[1])?.min(v.len());
             let hi = as_index(&a[2])?.clamp(lo, v.len());
             Ok(Value::Vector(Rc::new(v[lo..hi].to_vec())))
         }
-        "@tensor_concat" => {
+        Prim::TensorConcat => {
             let (_, _, xs, _) = tensor_fields(&a[0])?;
             let (_, _, ys, _) = tensor_fields(&a[1])?;
             if xs.get(1..) != ys.get(1..) {
@@ -577,7 +577,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let strides = row_major_strides(&shape);
             Ok(mk_tensor(Rc::new(buf), 0, shape, strides))
         }
-        "@tensor_index" => {
+        Prim::TensorIndex => {
             let (buf, off, shape, strides) = tensor_fields(&a[0])?;
             if shape.is_empty() || shape[0] == 0 {
                 return Err(fault("index into an empty tensor"));
@@ -600,7 +600,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 ))
             }
         }
-        "@vec_set" => {
+        Prim::VecSet => {
             let mut v = as_vec(&a[0])?.as_ref().clone();
             let i = as_index(&a[1])?;
             if i >= v.len() {
@@ -611,19 +611,19 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         }
         // Metaprogramming: tokenize a string into opaque `@Token` values. A lex
         // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
-        "@lex" => {
+        Prim::Lex => {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
                 .map_err(|_| fault("@lex: the argument is not valid UTF-8"))?;
             Ok(crate::machine::embed(&lex(src)?))
         }
-        "@token_kind" => token_field(&a[0], "kind"),
-        "@token_text" => token_field(&a[0], "text"),
+        Prim::TokenKind => token_field(&a[0], "kind"),
+        Prim::TokenText => token_field(&a[0], "text"),
         // Parse a token vector (from `@lex`) into opaque `@Code`. `@Code` is
         // text-backed, so this detokenizes (the lexemes rejoined with a space,
         // which whitespace-insensitive expression syntax re-lexes identically) and
         // validates exactly like `@parse_str`. A syntax error traps.
-        "@parse" => {
+        Prim::Parse => {
             let toks = as_vec(&a[0])?;
             let mut lexemes: Vec<Vec<u8>> = Vec::with_capacity(toks.len());
             for t in toks.iter() {
@@ -642,15 +642,15 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
         // The fragment is carried as its source text, which `@eval` and splicing
         // re-enter the driver's pipeline with.
-        "@parse_str" | "@parse_items" => {
+        Prim::ParseStr | Prim::ParseItems => {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
                 .map_err(|_| fault(format!("{name}: the argument is not valid UTF-8")))?;
-            let kind = if name == "@parse_str" { Fragment::Expr } else { Fragment::Items };
+            let kind = if name == Prim::ParseStr { Fragment::Expr } else { Fragment::Items };
             check_fragment(src, kind)?;
             Ok(code_value(src))
         }
-        "@format" => {
+        Prim::Format => {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
                 .map_err(|_| fault("@format: the argument is not valid UTF-8"))?;
@@ -661,7 +661,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // Compile and run an `@Code` fragment, embedding its value. Needs the
         // driver's pipeline, so it defers to the installed host (see
         // `crate::machine::set_meta_eval`).
-        "@eval" => {
+        Prim::Eval => {
             let src = match &*a[0].borrow() {
                 Value::Struct { name, fields } if name == "@Code" => fields
                     .iter()
@@ -681,7 +681,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // Compile-time diagnostics. `@abort` fails the build with the given
         // message (a diagnostic the driver renders); `@emit` prints it and
         // continues.
-        "@abort" => {
+        Prim::Abort => {
             let msg = as_bytes(&a[0])?;
             Err(Diagnostic::error(
                 Code::MetaAbort,
@@ -690,14 +690,14 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 String::from_utf8_lossy(&msg).into_owned(),
             ))
         }
-        "@emit" => {
+        Prim::Emit => {
             let msg = as_bytes(&a[0])?;
             eprintln!("thrax: {}", String::from_utf8_lossy(&msg));
             Ok(Value::Unit)
         }
         // A unique identifier string `prefix_m<n>` for hygienic compile-time
         // codegen. The counter is monotonic per process, so names never collide.
-        "@fresh" => {
+        Prim::Fresh => {
             thread_local!(static FRESH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) });
             let n = FRESH.with(|c| {
                 let v = c.get();
@@ -711,9 +711,9 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // Steer the build at compile time (used as `$ @e <| @link "curl"`): record
         // a library / search path for the driver to add to the link line. Returns
         // empty code, so the directive inserts nothing.
-        "@link" | "@link_path" => {
+        Prim::Link | Prim::LinkPath => {
             let arg = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
-            crate::machine::push_link(name == "@link_path", arg);
+            crate::machine::push_link(name == Prim::LinkPath, arg);
             Ok(code_value(""))
         }
         // Compile-time reflection over a declared type, resolved by the driver's
@@ -721,7 +721,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // `$ @e`. A derive-style macro reads the shape and generates code for it.
         // `@type_kind` reports `"struct"` / `"union"`; `@type_fields` the struct's
         // field names; `@type_variants` the union's `(tag, arity)` pairs.
-        "@type_kind" => {
+        Prim::TypeKind => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let kind = match crate::machine::type_lookup(&ty)? {
                 crate::machine::TypeInfo::Struct { .. } => "struct",
@@ -729,16 +729,16 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             };
             Ok(Value::Str(Rc::new(kind.as_bytes().to_vec())))
         }
-        "@type_params" => {
+        Prim::TypeParams => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let params: Vec<PVal> = crate::machine::type_lookup(&ty)?
                 .params()
                 .iter()
-                .map(|p| mk(Value::Str(Rc::new(p.clone().into_bytes()))))
+                .map(|p| mk(Value::Str(Rc::new(p.bytes().to_vec()))))
                 .collect();
             Ok(Value::Vector(Rc::new(params)))
         }
-        "@type_fields" => {
+        Prim::TypeFields => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let fields = match crate::machine::type_lookup(&ty)? {
                 crate::machine::TypeInfo::Struct { fields, .. } => fields,
@@ -748,11 +748,11 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             };
             let items: Vec<PVal> = fields
                 .into_iter()
-                .map(|f| mk(Value::Str(Rc::new(f.into_bytes()))))
+                .map(|f| mk(Value::Str(Rc::new(f.bytes().to_vec()))))
                 .collect();
             Ok(Value::Vector(Rc::new(items)))
         }
-        "@type_variants" => {
+        Prim::TypeVariants => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let variants = match crate::machine::type_lookup(&ty)? {
                 crate::machine::TypeInfo::Union { variants, .. } => variants,
@@ -764,7 +764,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .into_iter()
                 .map(|(tag, arity)| {
                     mk(Value::Tuple(vec![
-                        mk(Value::Str(Rc::new(tag.into_bytes()))),
+                        mk(Value::Str(Rc::new(tag.bytes().to_vec()))),
                         mk(Value::Int(arity as i64)),
                     ]))
                 })
@@ -787,10 +787,10 @@ pub fn lex(src: &str) -> Result<crate::machine::OwnedValue> {
             break;
         }
         toks.push(OwnedValue::Struct {
-            name: "@Token".to_string(),
+            name: "@Token".into(),
             fields: vec![
-                ("kind".to_string(), OwnedValue::Str(token_kind_name(t.kind).as_bytes().to_vec())),
-                ("text".to_string(), OwnedValue::Str(src.as_bytes()[t.span.start..t.span.end].to_vec())),
+                ("kind".into(), OwnedValue::Str(token_kind_name(t.kind).as_bytes().to_vec())),
+                ("text".into(), OwnedValue::Str(src.as_bytes()[t.span.start..t.span.end].to_vec())),
             ],
         });
     }
@@ -817,8 +817,8 @@ pub fn check_fragment(src: &str, kind: Fragment) -> Result<()> {
 /// An opaque `@Code` value carrying `src`.
 fn code_value<'p>(src: &str) -> Value<'p> {
     Value::Struct {
-        name: "@Code".to_string(),
-        fields: vec![("src".to_string(), mk(Value::Str(Rc::new(src.as_bytes().to_vec()))))],
+        name: "@Code".into(),
+        fields: vec![("src".into(), mk(Value::Str(Rc::new(src.as_bytes().to_vec()))))],
     }
 }
 
@@ -889,31 +889,31 @@ fn token_field<'p>(v: &PVal<'p>, field: &str) -> Result<Value<'p>> {
 /// op two reals. Integer add/sub/mul wrap on overflow, matching the C backend.
 /// The `@f32*` family rounds both operands and the result to single precision and
 /// yields a [`Value::Real32`], so `@Float32` arithmetic is genuinely f32.
-fn arith_intrinsic<'p>(name: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
+fn arith_intrinsic<'p>(name: Prim, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
     match name {
-        "@iadd" => Ok(Value::Int(as_int(x)?.wrapping_add(as_int(y)?))),
-        "@isub" => Ok(Value::Int(as_int(x)?.wrapping_sub(as_int(y)?))),
-        "@imul" => Ok(Value::Int(as_int(x)?.wrapping_mul(as_int(y)?))),
-        "@idiv" | "@imod" if as_int(y)? == 0 => Err(fault("division by zero")),
-        "@idiv" => Ok(Value::Int(as_int(x)? / as_int(y)?)),
-        "@imod" => Ok(Value::Int(as_int(x)? % as_int(y)?)),
+        Prim::Iadd => Ok(Value::Int(as_int(x)?.wrapping_add(as_int(y)?))),
+        Prim::Isub => Ok(Value::Int(as_int(x)?.wrapping_sub(as_int(y)?))),
+        Prim::Imul => Ok(Value::Int(as_int(x)?.wrapping_mul(as_int(y)?))),
+        Prim::Idiv | Prim::Imod if as_int(y)? == 0 => Err(fault("division by zero")),
+        Prim::Idiv => Ok(Value::Int(as_int(x)? / as_int(y)?)),
+        Prim::Imod => Ok(Value::Int(as_int(x)? % as_int(y)?)),
         // `@u*` read the same i64 bits as unsigned: for a `Nat` whose value
         // exceeds `i64::MAX`, signed division would give the wrong result.
-        "@udiv" | "@umod" if as_int(y)? == 0 => Err(fault("division by zero")),
-        "@udiv" => Ok(Value::Int(((as_int(x)? as u64) / (as_int(y)? as u64)) as i64)),
-        "@umod" => Ok(Value::Int(((as_int(x)? as u64) % (as_int(y)? as u64)) as i64)),
-        "@fadd" => Ok(Value::Real(as_f64(x)? + as_f64(y)?)),
-        "@fsub" => Ok(Value::Real(as_f64(x)? - as_f64(y)?)),
-        "@fmul" => Ok(Value::Real(as_f64(x)? * as_f64(y)?)),
-        "@fdiv" => Ok(Value::Real(as_f64(x)? / as_f64(y)?)),
-        "@fmod" => Ok(Value::Real(as_f64(x)? % as_f64(y)?)),
-        "@fpow" => Ok(Value::Real(as_f64(x)?.powf(as_f64(y)?))),
-        "@f32add" => Ok(Value::Real32(as_f32(x)? + as_f32(y)?)),
-        "@f32sub" => Ok(Value::Real32(as_f32(x)? - as_f32(y)?)),
-        "@f32mul" => Ok(Value::Real32(as_f32(x)? * as_f32(y)?)),
-        "@f32div" => Ok(Value::Real32(as_f32(x)? / as_f32(y)?)),
-        "@f32mod" => Ok(Value::Real32(as_f32(x)? % as_f32(y)?)),
-        "@f32pow" => Ok(Value::Real32(as_f32(x)?.powf(as_f32(y)?))),
+        Prim::Udiv | Prim::Umod if as_int(y)? == 0 => Err(fault("division by zero")),
+        Prim::Udiv => Ok(Value::Int(((as_int(x)? as u64) / (as_int(y)? as u64)) as i64)),
+        Prim::Umod => Ok(Value::Int(((as_int(x)? as u64) % (as_int(y)? as u64)) as i64)),
+        Prim::Fadd => Ok(Value::Real(as_f64(x)? + as_f64(y)?)),
+        Prim::Fsub => Ok(Value::Real(as_f64(x)? - as_f64(y)?)),
+        Prim::Fmul => Ok(Value::Real(as_f64(x)? * as_f64(y)?)),
+        Prim::Fdiv => Ok(Value::Real(as_f64(x)? / as_f64(y)?)),
+        Prim::Fmod => Ok(Value::Real(as_f64(x)? % as_f64(y)?)),
+        Prim::Fpow => Ok(Value::Real(as_f64(x)?.powf(as_f64(y)?))),
+        Prim::F32add => Ok(Value::Real32(as_f32(x)? + as_f32(y)?)),
+        Prim::F32sub => Ok(Value::Real32(as_f32(x)? - as_f32(y)?)),
+        Prim::F32mul => Ok(Value::Real32(as_f32(x)? * as_f32(y)?)),
+        Prim::F32div => Ok(Value::Real32(as_f32(x)? / as_f32(y)?)),
+        Prim::F32mod => Ok(Value::Real32(as_f32(x)? % as_f32(y)?)),
+        Prim::F32pow => Ok(Value::Real32(as_f32(x)?.powf(as_f32(y)?))),
         _ => unreachable!("arith_intrinsic called with `{name}`"),
     }
 }
@@ -921,21 +921,21 @@ fn arith_intrinsic<'p>(name: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'
 /// A monomorphic comparison intrinsic, the primitive the comparison instances are
 /// built on. `@u*` reads the same i64 bits as unsigned, so a `Nat` past
 /// `i64::MAX` orders correctly.
-fn compare_intrinsic<'p>(name: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
+fn compare_intrinsic<'p>(name: Prim, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
     let r = match name {
-        "@ieq" => as_int(x)? == as_int(y)?,
-        "@ilt" => as_int(x)? < as_int(y)?,
-        "@ult" => (as_int(x)? as u64) < (as_int(y)? as u64),
-        "@feq" => as_f64(x)? == as_f64(y)?,
-        "@flt" => as_f64(x)? < as_f64(y)?,
-        "@seq" => as_bytes(x)? == as_bytes(y)?,
-        "@slt" => as_bytes(x)? < as_bytes(y)?,
+        Prim::Ieq => as_int(x)? == as_int(y)?,
+        Prim::Ilt => as_int(x)? < as_int(y)?,
+        Prim::Ult => (as_int(x)? as u64) < (as_int(y)? as u64),
+        Prim::Feq => as_f64(x)? == as_f64(y)?,
+        Prim::Flt => as_f64(x)? < as_f64(y)?,
+        Prim::Seq => as_bytes(x)? == as_bytes(y)?,
+        Prim::Slt => as_bytes(x)? < as_bytes(y)?,
         _ => unreachable!("compare_intrinsic called with `{name}`"),
     };
     Ok(Value::Bool(r))
 }
 
-fn compare<'p>(op: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
+fn compare<'p>(op: Prim, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
     use std::cmp::Ordering;
     let ord = {
         let (bx, by) = (x.borrow(), y.borrow());
@@ -951,10 +951,10 @@ fn compare<'p>(op: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
         }
     };
     let r = match op {
-        "<" => ord == Ordering::Less,
-        ">" => ord == Ordering::Greater,
-        "<=" => ord != Ordering::Greater,
-        ">=" => ord != Ordering::Less,
+        Prim::Lt => ord == Ordering::Less,
+        Prim::Gt => ord == Ordering::Greater,
+        Prim::Le => ord != Ordering::Greater,
+        Prim::Ge => ord != Ordering::Less,
         _ => unreachable!("compare called with a non-comparison operator"),
     };
     Ok(Value::Bool(r))
@@ -1045,11 +1045,11 @@ extern "C" {
 /// exactly as the compiled backend links them, so both engines agree.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_extern<'p>(
-    abi: &str,
-    symbol: &str,
-    lib: &str,
-    arg_types: &[String],
-    ret_type: &str,
+    abi: StrId,
+    symbol: StrId,
+    lib: StrId,
+    arg_types: &[StrId],
+    ret_type: StrId,
     args: &[PVal<'p>],
 ) -> Result<Value<'p>> {
     if abi == "WASM" {
@@ -1058,7 +1058,7 @@ pub(crate) fn run_extern<'p>(
              the wasm playground, not in a native run"
         )));
     }
-    if writes_terminal(symbol, args) {
+    if writes_terminal(symbol.as_str(), args) {
         utilities::progress::seal();
     }
     let v = crate::machine::ffi::call_extern(symbol, lib, arg_types, ret_type, args)?;
@@ -1085,11 +1085,11 @@ fn writes_terminal(symbol: &str, args: &[PVal]) -> bool {
 // just the abi guard and the hand-off.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn run_extern<'p>(
-    abi: &str,
-    symbol: &str,
-    lib: &str,
-    arg_types: &[String],
-    ret_type: &str,
+    abi: StrId,
+    symbol: StrId,
+    lib: StrId,
+    arg_types: &[StrId],
+    ret_type: StrId,
     args: &[PVal<'p>],
 ) -> Result<Value<'p>> {
     if abi != "WASM" {
@@ -1115,18 +1115,17 @@ impl<'p> Value<'p> {
             Value::Unit => Value::Unit,
             Value::Tuple(items) => Value::Tuple(items.clone()),
             Value::Struct { name, fields } => Value::Struct {
-                name: name.clone(),
+                name: *name,
                 fields: fields.clone(),
             },
             Value::Variant { ty, tag, fields } => Value::Variant {
-                ty: ty.clone(),
-                tag: tag.clone(),
+                ty: *ty,
+                tag: *tag,
                 fields: fields.clone(),
             },
             Value::Vector(items) => Value::Vector(items.clone()),
-            Value::Builtin { name, arity, args } => Value::Builtin {
-                name: name.clone(),
-                arity: *arity,
+            Value::Builtin { op, args } => Value::Builtin {
+                op,
                 args: args.clone(),
             },
             Value::Extern {
@@ -1137,11 +1136,11 @@ impl<'p> Value<'p> {
                 ret_type,
                 args,
             } => Value::Extern {
-                abi: abi.clone(),
-                symbol: symbol.clone(),
-                lib: lib.clone(),
+                abi: *abi,
+                symbol: *symbol,
+                lib: *lib,
                 arg_types: arg_types.clone(),
-                ret_type: ret_type.clone(),
+                ret_type: *ret_type,
                 args: args.clone(),
             },
             Value::Code { code, env } => Value::Code {
@@ -1150,8 +1149,8 @@ impl<'p> Value<'p> {
             },
             Value::Rec(w) => Value::Rec(w.clone()),
             Value::Op { effect, op } => Value::Op {
-                effect: effect.clone(),
-                op: op.clone(),
+                effect: *effect,
+                op: *op,
             },
             Value::Resump(r) => Value::Resump(r.clone()),
             Value::Thunk(f) => Value::Thunk(f.clone()),

@@ -45,11 +45,11 @@ enum Sink {
 /// into positional arguments at the call site during lowering.
 #[derive(Clone)]
 pub struct ExternSite {
-    pub abi: String,
-    pub symbol: String,
-    pub lib: String,
-    pub arg_types: Vec<String>,
-    pub ret_type: String,
+    pub abi: StrId,
+    pub symbol: StrId,
+    pub lib: StrId,
+    pub arg_types: Vec<StrId>,
+    pub ret_type: StrId,
 }
 
 pub struct Emitter<'p> {
@@ -322,11 +322,11 @@ fn collect_extern_atom(a: &Atom, externs: &mut Vec<ExternSite>, idx: &mut HashMa
             let key = extern_key(abi, symbol, lib, arg_types, ret_type);
             idx.entry(key).or_insert_with(|| {
                 externs.push(ExternSite {
-                    abi: abi.to_string(),
-                    symbol: symbol.to_string(),
-                    lib: lib.to_string(),
-                    arg_types: arg_types.iter().map(|t| t.to_string()).collect(),
-                    ret_type: ret_type.to_string(),
+                    abi: *abi,
+                    symbol: *symbol,
+                    lib: *lib,
+                    arg_types: arg_types.clone(),
+                    ret_type: *ret_type,
                 });
                 externs.len() - 1
             });
@@ -679,6 +679,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
     let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
     for e in externs {
         for ty in e.arg_types.iter().chain(std::iter::once(&e.ret_type)) {
+            let ty = ty.as_str();
             // A direct struct/union type, or the element of a `List T` array param.
             let sname = struct_array_elem(ty).unwrap_or(ty);
             if let Some(layout) = layout_of(sname) {
@@ -689,7 +690,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
     // The libffi-closure runtime, only when a program passes a Thrax closure to C.
     let has_callbacks = externs
         .iter()
-        .any(|e| e.arg_types.iter().any(|t| t.starts_with("@fn(")));
+        .any(|e| e.arg_types.iter().any(|t| t.as_str().starts_with("@fn(")));
     if has_callbacks {
         out.push_str(CALLBACK_RUNTIME);
     }
@@ -720,10 +721,10 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
             continue;
         }
         // The C return type + how to wrap the result back into a `Value*`.
-        let ret_layout = layout_of(&e.ret_type);
+        let ret_layout = layout_of(e.ret_type.as_str());
         let ret_ty: String = match ret_layout {
-            Some(_) => cstruct_name(&e.ret_type),
-            None => c_ret(&e.ret_type).0.to_string(),
+            Some(_) => cstruct_name(e.ret_type.as_str()),
+            None => c_ret(e.ret_type.as_str()).0.to_string(),
         };
 
         // Each argument's C parameter type and the statements that build `a{i}`.
@@ -735,6 +736,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
         let mut cb_frees: Vec<usize> = Vec::new();
         let mut arr_frees: Vec<usize> = Vec::new();
         for (i, t) in e.arg_types.iter().enumerate() {
+            let t = t.as_str();
             if matches!(cabi(t), Cabi::Unit) && layout_of(t).is_none() {
                 continue;
             }
@@ -799,7 +801,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
         };
         out.push_str(&format!(
             "extern {ret_ty} THx_sym_{n}({sig}) __asm__(THX_ASM_NAME({}));\n",
-            cstr(e.symbol.as_bytes())
+            cstr(e.symbol.bytes())
         ));
         out.push_str(&format!("static Value* THx_extern_{n}(Value** args) {{\n  (void)args;\n"));
         // The wrapper is N-ary: `args[i]` is the i-th positional C argument (the
@@ -812,10 +814,10 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
                 out.push_str(&format!("  {ret_ty} _r = {call};\n"));
                 out.push_str(&frees);
                 let mut ctr = 0usize;
-                let tmp = emit_build("_r", &e.ret_type, layout, &mut out, &mut ctr);
+                let tmp = emit_build("_r", e.ret_type.as_str(), layout, &mut out, &mut ctr);
                 out.push_str(&format!("  return {tmp};\n"));
             }
-            None => match c_ret(&e.ret_type).1 {
+            None => match c_ret(e.ret_type.as_str()).1 {
                 None => out.push_str(&format!("  {call};\n{frees}  return THxRT_unit();\n")),
                 Some(w) => {
                     out.push_str(&format!("  {ret_ty} _r = {call};\n{frees}  return {w};\n"))

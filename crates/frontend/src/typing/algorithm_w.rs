@@ -478,7 +478,7 @@ impl<'a> Checker<'a> {
             {
                 let name = *name;
                 let cands = self.overloads.get(&name).cloned().expect("guarded above");
-                let got = self.resolve_overload(name.as_str(), &cands, &[], Some(e))?;
+                let got = self.resolve_overload(name, &cands, &[], Some(e))?;
                 self.unifier.unify_expected(got, expected, "against the expected type")
             }
             _ => {
@@ -687,7 +687,7 @@ impl<'a> Checker<'a> {
                 let ctx_sig = self.global_ctx.get(&op).copied();
                 if let Some(sig) = ctx_sig {
                     let (req, exposed) = self.ctx_use_type(sig);
-                    self.plan_ctx(e, op.as_str(), req)?;
+                    self.plan_ctx(e, op, req)?;
                     let owner = self.owner_of(op);
                     self.record_call(Some(e), owner);
                     // Take the operand types from the OPERATOR's signature rather
@@ -758,7 +758,7 @@ impl<'a> Checker<'a> {
                 let op_ty = match self.global_ctx.get(&op).copied() {
                     Some(sig) => {
                         let (req, exposed) = self.ctx_use_type(sig);
-                        self.plan_ctx(e, op.as_str(), req)?;
+                        self.plan_ctx(e, op, req)?;
                         let owner = self.owner_of(op);
                         self.record_call(Some(e), owner);
                         exposed
@@ -799,7 +799,7 @@ impl<'a> Checker<'a> {
                 }
                 let vec_con = self.unifier.types.con(ty::VEC);
                 let vec = self.unifier.types.app(vec_con, elem);
-                if let Some((hook, _)) = self.blessed(IF_SEQ_LIT, &[elem, vec]) {
+                if let Some((hook, _)) = self.blessed(IF_SEQ_LIT.into(), &[elem, vec]) {
                     self.literal_hooks.insert(e, hook);
                 }
                 Ok(vec)
@@ -1143,7 +1143,7 @@ impl<'a> Checker<'a> {
             if self.tensor_parts(rt).is_none() {
                 let (lo, hi) = (*lo, *hi);
                 let result = self.unifier.fresh();
-                if let Some((hook, _)) = self.blessed(IF_SLICE, &[rt, result]) {
+                if let Some((hook, _)) = self.blessed(IF_SLICE.into(), &[rt, result]) {
                     let int = self.unifier.types.con(ty::INT);
                     self.check(lo, int)?;
                     self.check(hi, int)?;
@@ -1275,7 +1275,7 @@ impl<'a> Checker<'a> {
                         .iter()
                         .map(|a| self.infer(*a))
                         .collect::<Result<Vec<_>>>()?;
-                    return self.resolve_overload(name.as_str(), &cands, &arg_tys, Some(head));
+                    return self.resolve_overload(name, &cands, &arg_tys, Some(head));
                 }
             }
         }
@@ -1420,7 +1420,7 @@ impl<'a> Checker<'a> {
         if module.is_none() && is_blessed_interface(name.as_str()) {
             let arity = self.structs.get(&name).map(|i| i.params.len()).unwrap_or(0);
             let args: Vec<Type> = (0..arity).map(|_| self.unifier.fresh()).collect();
-            let Some((req, field, field_ty)) = self.blessed_req(name.as_str(), &args) else {
+            let Some((req, field, field_ty)) = self.blessed_req(name, &args) else {
                 let span = self.ast.expr_span(site).unwrap_or_else(|| Span::at(0));
                 return Err(diag!(
                     Code::TypeUnbound, span, 0,
@@ -1429,7 +1429,7 @@ impl<'a> Checker<'a> {
                            CORE declares it as a one-field `@struct`"
                 ));
             };
-            self.plan_ctx(site, name.as_str(), req)?;
+            self.plan_ctx(site, name, req)?;
             self.blessed_sites.insert(site, field);
             return Ok(field_ty);
         }
@@ -1446,7 +1446,7 @@ impl<'a> Checker<'a> {
             // than staying an under-applied function.
             if let Some(sig) = self.qualified_ctx.get(&(m, name)).copied() {
                 let (req, exposed) = self.ctx_use_type(sig);
-                self.plan_ctx(site, name.as_str(), req)?;
+                self.plan_ctx(site, name, req)?;
                 return Ok(exposed);
             }
             return match self.qualified_candidates(m, name) {
@@ -1478,7 +1478,7 @@ impl<'a> Checker<'a> {
         if !self.shadowed_locally(name) {
             if let Some(sig) = self.global_ctx.get(&name).copied() {
                 let (req, exposed) = self.ctx_use_type(sig);
-                self.plan_ctx(site, name.as_str(), req)?;
+                self.plan_ctx(site, name, req)?;
                 return Ok(exposed);
             }
         }
@@ -1849,12 +1849,12 @@ impl<'a> Checker<'a> {
         with: Option<Aol<Expr>>,
         update: Option<Aol<Expr>>,
     ) -> Result<Type> {
-        let mut explicit: Vec<(String, Type)> = Vec::new();
+        let mut explicit: Vec<(StrId, Type)> = Vec::new();
         for fi in fields {
             match fi {
                 FieldInit::Named { name, value } => {
                     let t = self.infer(*value)?;
-                    explicit.push((name.to_string(), t));
+                    explicit.push((*name, t));
                 }
                 FieldInit::Positional(value) => {
                     self.infer(*value)?;
@@ -1870,7 +1870,7 @@ impl<'a> Checker<'a> {
             // must resolve in the base, and the result type is the base's.
             let base_ty = self.infer(base)?;
             for (n, got) in &explicit {
-                let want = self.field_type_of(base_ty, n)?;
+                let want = self.field_type_of(base_ty, *n)?;
                 self.unifier.unify(*got, want, "in a record update")?;
             }
             return Ok(base_ty);
@@ -1883,7 +1883,7 @@ impl<'a> Checker<'a> {
             let full = explicit
                 .into_iter()
                 .rev()
-                .fold(row, |rest, (n, t)| self.unifier.types.row_field(&n, t, rest));
+                .fold(row, |rest, (n, t)| self.unifier.types.row_field(n, t, rest));
             return Ok(self.unifier.types.record(full));
         }
         Ok(self.unifier.types.record_of(explicit.into_iter()))
@@ -1929,7 +1929,7 @@ impl<'a> Checker<'a> {
 impl<'a> Checker<'a> {
     pub(super) fn resolve_overload(
         &mut self,
-        name: &str,
+        name: StrId,
         candidates: &[Cand],
         args: &[Type],
         site: Option<Aol<Expr>>,
@@ -1950,7 +1950,7 @@ impl<'a> Checker<'a> {
             Match::None => Err(self.no_overload(name, args, site)),
             Match::Ambiguous => {
                 self.pending.push(Pending {
-                    name: name.to_string(),
+                    name,
                     candidates: candidates.to_vec(),
                     args: args.to_vec(),
                     result: result,
@@ -2010,7 +2010,7 @@ impl<'a> Checker<'a> {
                     // Lenient round: a still-unmatched overload may be satisfied by
                     // an about-to-be-injected definition; drop it rather than error.
                     Match::None if self.lenient => {}
-                    Match::None => return Err(self.no_overload(&p.name, &p.args, p.site)),
+                    Match::None => return Err(self.no_overload(p.name, &p.args, p.site)),
                     Match::Ambiguous => still.push(p),
                 }
             }
@@ -2102,7 +2102,7 @@ impl<'a> Checker<'a> {
         Ok(progress)
     }
 
-    pub(super) fn no_overload(&self, name: &str, args: &[Type], site: Option<Aol<Expr>>) -> Diagnostic {
+    pub(super) fn no_overload(&self, name: StrId, args: &[Type], site: Option<Aol<Expr>>) -> Diagnostic {
         let shown: Vec<String> = args.iter().map(|a| self.show(*a)).collect();
         let mut d = diag!(
             Code::TypeMismatch, Span::at(0), 0,
