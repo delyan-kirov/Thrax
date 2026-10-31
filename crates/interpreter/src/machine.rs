@@ -1470,26 +1470,34 @@ pub fn take_link_directives() -> Vec<(bool, String)> {
     LINKS.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
+/// What the `@build` of a project's `BUILD.thx` recorded: the directories its
+/// `@import_path` calls added and the options its `@option` calls set.
+#[derive(Default)]
+pub struct BuildRecord {
+    pub import_paths: Vec<String>,
+    pub options: Vec<utilities::config::Setting>,
+}
+
 thread_local! {
-    /// The directories `@import_path` added, while a project's `BUILD.thx` runs.
-    /// `None` at every other time, so a call anywhere else faults.
-    static IMPORT_PATHS: std::cell::RefCell<Option<Vec<String>>> =
+    /// Open while a project's `BUILD.thx` runs. `None` at every other time, so
+    /// `@import_path` or `@option` anywhere else faults.
+    static BUILD_RECORD: std::cell::RefCell<Option<BuildRecord>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Accept `@import_path` calls until [`take_import_paths`].
-pub fn accept_import_paths() {
-    IMPORT_PATHS.with(|c| *c.borrow_mut() = Some(Vec::new()));
+/// Accept `@import_path` and `@option` calls until [`take_build_record`].
+pub fn open_build_record() {
+    BUILD_RECORD.with(|c| *c.borrow_mut() = Some(BuildRecord::default()));
 }
 
-/// Record an `@import_path`; false when no `BUILD.thx` is running.
-pub fn push_import_path(dir: String) -> bool {
-    IMPORT_PATHS.with(|c| c.borrow_mut().as_mut().map(|dirs| dirs.push(dir)).is_some())
+/// Add to the open record; false when no `BUILD.thx` is running.
+pub fn record_build(f: impl FnOnce(&mut BuildRecord)) -> bool {
+    BUILD_RECORD.with(|c| c.borrow_mut().as_mut().map(f).is_some())
 }
 
-/// Stop accepting `@import_path` and drain what it recorded.
-pub fn take_import_paths() -> Vec<String> {
-    IMPORT_PATHS.with(|c| c.borrow_mut().take().unwrap_or_default())
+/// Stop accepting `@import_path` and `@option` and drain what they recorded.
+pub fn take_build_record() -> BuildRecord {
+    BUILD_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
 thread_local! {

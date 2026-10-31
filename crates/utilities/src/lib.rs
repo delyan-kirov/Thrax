@@ -4,7 +4,7 @@
 //!   lifetime.
 //! * [`error`] is the diagnostic model; [`json`] is the language server's wire
 //!   format.
-//! * [`config`] is `thrax.toml` and the table of options it may set.
+//! * [`config`] is the table of options a `BUILD.thx` may set.
 //! * [`libc`] holds the C library's real prototypes, which `@extern` bindings
 //!   type loosely.
 //! * [`interrupt`] is the interrupt flag a signal handler sets and a running

@@ -1,0 +1,5 @@
+$ @mod BUILD
+
+# An option is checked against the table of options when `@build` runs.
+$ @build : {} -> <@Meta, @IO> @Code = \_ = @option "format.widht" "80"; @parse_items ""
+#~ error[BUILD_SCRIPT]: unknown option `format.widht`

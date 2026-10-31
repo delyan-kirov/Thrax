@@ -1,20 +1,15 @@
-//! The source tools: `thrax fmt`, `thrax fix`, `thrax explain` and
-//! `thrax config`.
+//! The source tools: `thrax fmt`, `thrax fix` and `thrax explain`.
 
 use std::path::Path;
 use std::process::ExitCode;
 
-use utilities::config::Config;
 use utilities::{Applicability, Code, Edit, Span};
 
 /// The explanation of every diagnostic code, one `## CODE` section each.
 const EXPLANATIONS: &str = include_str!("../../../documentation/errors.md");
 
 fn style(path: &Path) -> frontend::format::Style {
-    let (config, problems) = Config::for_path(path);
-    for p in problems {
-        eprint!("{p}");
-    }
+    let config = crate::driver::project_options(path.parent().unwrap_or(Path::new("")));
     frontend::format::Style {
         width: config.int("format", "width") as usize,
         indent: config.int("format", "indent") as usize,
@@ -146,26 +141,6 @@ pub fn cmd_explain(code: Option<&str>) -> ExitCode {
             }
             ExitCode::FAILURE
         }
-    }
-}
-
-/// `thrax config [FILE]`: the options in force for FILE (or the current
-/// directory), with where they came from, then every option documented.
-pub fn cmd_config(path: Option<&str>) -> ExitCode {
-    let at = Path::new(path.unwrap_or("."));
-    let (config, problems) = Config::for_path(&at.canonicalize().unwrap_or_else(|_| at.to_path_buf()));
-    for p in &problems {
-        eprint!("{p}");
-    }
-    match config.sources.last() {
-        Some(file) => println!("# options from {}, over the defaults\n", file.display()),
-        None => println!("# no {} found; these are the defaults\n", utilities::config::FILE_NAME),
-    }
-    print!("{}", utilities::config::document());
-    if problems.is_empty() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
     }
 }
 

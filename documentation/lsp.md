@@ -154,33 +154,24 @@ re-check that body.
 
 ## Configuration
 
-`thrax.toml`, found in the file's directory or above, holds the options.
-`thrax config` prints the ones in force and documents every one; the table in
-`crates/utilities/src/config.rs` is the single source, so adding an option is
-adding a row. A misspelled option gets a did-you-mean fix.
+A project sets its options with `@option` in its `BUILD.thx` (language
+reference, section 11.4, lists them all):
 
-```toml
-[format]
-width = 100
-indent = 4
+```thrax
+$ @mod BUILD
 
-[check]
-max_errors = 20
-
-[lsp]
-check = "type"     # or "save"
-focus = "roots"    # "all", "roots" or "one"
-debounce_ms = 150
-grace = true
-grace_ms = 1500
-max_diagnostics = 50
-
-[lints]
-unreachable_arm = "warn"   # "allow", "warn" or "deny"
+$ @build : {} -> <@Meta, @IO> @Code = \_ =
+    @option "lsp.check" "save";
+    @option "lsp.focus" "one";
+    @parse_items ""
 ```
 
+The table in `crates/utilities/src/config.rs` is the single source, so adding
+an option is adding a row. A misspelled option gets a did-you-mean. When
+`BUILD.thx` fails the server reports it on stderr and uses the defaults.
+
 An editor's settings (`initializationOptions`, or `workspace/didChangeConfiguration`
-under `thrax`) use the same sections and keys, and override the file.
+under `thrax`) use the same sections and keys, and override the project.
 
 ## Formatting
 
@@ -225,7 +216,7 @@ is not in the spec.
 
 - `crates/utilities/src/error.rs`: the diagnostic model (severity, fixes,
   applicability, the rendered patch), `closest` for did-you-mean.
-- `crates/utilities/src/config.rs`, `json.rs`: `thrax.toml`, the wire format.
+- `crates/utilities/src/config.rs`, `json.rs`: the option table, the wire format.
 - `crates/frontend/src/parser.rs`: item-level recovery. `typing.rs`: the error
   type, per-definition recovery, holes and their fits.
 - `crates/frontend/src/format.rs`: the formatter.

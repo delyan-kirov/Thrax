@@ -63,7 +63,7 @@ pub struct Server {
     grace_due: Vec<(String, Instant)>,
     /// Documents to rank counterfactually once typing pauses.
     rank_due: Vec<(String, Instant)>,
-    /// Settings the client sent, re-applied over each file's `thrax.toml`.
+    /// Settings the client sent, re-applied over each file's project options.
     client: Json,
     shutting_down: bool,
     out: Sink,
@@ -216,7 +216,7 @@ impl Server {
     }
 
     fn config(&self, path: &Path) -> Config {
-        let (mut config, _) = Config::for_path(path);
+        let mut config = crate::driver::project_options(path.parent().unwrap_or(Path::new("")));
         if let Json::Obj(sections) = &self.client {
             for (section, keys) in sections {
                 let Json::Obj(keys) = keys else { continue };

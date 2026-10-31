@@ -66,7 +66,6 @@ the names in scope that fit.
 thrax fmt     MAIN.thx          # format in place (--check only reports)
 thrax fix     MAIN.thx          # apply every fix the compiler is sure of
 thrax explain TYPE_MISMATCH     # what a diagnostic code means
-thrax config                    # the thrax.toml options in force
 thrax lsp                       # language server for an editor
 ```
 

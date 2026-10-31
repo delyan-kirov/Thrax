@@ -368,6 +368,11 @@ fn as_byte(v: &PVal) -> Result<u8> {
 
 /// Run a saturated built-in. `a` is already deref'd (the machine derefs an
 /// argument before pushing it onto a builtin's operand list).
+fn outside_build_script(name: &str) -> Diagnostic {
+    Diagnostic::error(Code::BuildScript, Span::at(0), 0, format!("`{name}` outside a project's `BUILD.thx`"))
+        .with_help("call it from the `@build` of the `BUILD.thx` at the project root")
+}
+
 pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
     match name {
         Prim::Iadd | Prim::Isub | Prim::Imul | Prim::Idiv | Prim::Imod | Prim::Udiv | Prim::Umod | Prim::Fadd | Prim::Fsub
@@ -718,16 +723,26 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         }
         Prim::ImportPath => {
             let dir = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
-            if crate::machine::push_import_path(dir) {
+            if crate::machine::record_build(|r| r.import_paths.push(dir)) {
                 Ok(Value::Unit)
             } else {
-                Err(Diagnostic::error(
-                    Code::BuildScript,
-                    Span::at(0),
-                    0,
-                    "`@import_path` outside a project's `BUILD.thx`",
-                )
-                .with_help("call it from the `@build` of the `BUILD.thx` at the project root"))
+                Err(outside_build_script("@import_path"))
+            }
+        }
+        Prim::SetOption => {
+            let key = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            let text = String::from_utf8_lossy(&as_bytes(&a[1])?).into_owned();
+            let setting = utilities::config::parse_setting(&key, &text).map_err(|r| {
+                let d = Diagnostic::error(Code::BuildScript, Span::at(0), 0, r.msg);
+                match r.help {
+                    Some(h) => d.with_help(h),
+                    None => d,
+                }
+            })?;
+            if crate::machine::record_build(|r| r.options.push(setting)) {
+                Ok(Value::Unit)
+            } else {
+                Err(outside_build_script("@option"))
             }
         }
         // Compile-time reflection over a declared type, resolved by the driver's

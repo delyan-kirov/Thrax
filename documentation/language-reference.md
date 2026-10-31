@@ -1377,13 +1377,39 @@ nothing else shows the generated text.
 ## 11.4 `BUILD.thx`, the project file
 A program's own modules are found beside it (section 2). A project that keeps
 them elsewhere says so in a `BUILD.thx`: the module `BUILD`, whose `@build` calls
-`@import_path` once per directory to add to the module search.
+`@import_path` once per directory to add to the module search, and `@option`
+once per project option it sets.
 
 ```thrax
 $ @mod BUILD
 
-$ @build : {} -> <@Meta, @IO> @Code = \_ = @import_path "source"; @parse_items ""
+$ @build : {} -> <@Meta, @IO> @Code = \_ =
+    @import_path "source";
+    @option "format.width" "120";
+    @option "lints.unreachable_arm" "deny";
+    @parse_items ""
 ```
+
+`@option "section.name" "value"` takes the value as text, read in the option's
+kind; an unknown option or a value it does not accept is a `BUILD_SCRIPT` error.
+An option not set keeps its default:
+
+| Option | Default | Accepts | Meaning |
+|---|---|---|---|
+| `format.width` | `100` | 40 to 400 | the line width `thrax fmt` fits code into |
+| `format.indent` | `4` | 1 to 16 | spaces per indentation level |
+| `check.max_errors` | `20` | 1 to 10000 | the most errors `thrax check` prints |
+| `lsp.check` | `type` | `type`, `save` | check as you type, or only when a file is saved |
+| `lsp.focus` | `roots` | `all`, `roots`, `one` | how loudly errors are shown (see `documentation/lsp.md`) |
+| `lsp.debounce_ms` | `150` | 0 to 5000 | how long typing must pause before the file is checked |
+| `lsp.grace` | `true` | `true`, `false` | hold back errors in the definition being typed |
+| `lsp.grace_ms` | `1500` | 0 to 60000 | the pause after which held-back errors are shown |
+| `lsp.max_diagnostics` | `50` | 1 to 10000 | the most diagnostics shown per file |
+| `lints.unreachable_arm` | `warn` | `allow`, `warn`, `deny` | a match arm no value can reach |
+
+An editor's settings override the `lsp` options for that editor. When
+`BUILD.thx` fails, `thrax fmt` and the language server report it and carry on
+with the defaults; a compile stops.
 
 The compiler looks for `BUILD.thx` in the root file's directory and then in each
 directory above it, and runs the nearest one before it loads the program. Its
@@ -1507,7 +1533,6 @@ is `MAIN.thx` in the current directory (or the sole `.thx` file there).
 | `fmt` | format files in place; `fmt --check` only lists unformatted ones |
 | `fix` | apply every fix the compiler is sure of, rechecking until none is left |
 | `explain` | explain a diagnostic code (`thrax explain TYPE_MISMATCH`) |
-| `config` | print the `thrax.toml` options in force and document them all |
 | `lsp` | run the language server on stdin/stdout (see `documentation/lsp.md`) |
 
 Flags: `--target=ARCH-OS` cross-compiles (e.g. `x86_64-linux`, `wasm32-wasi`);

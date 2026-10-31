@@ -1,50 +1,21 @@
-//! Project configuration: `thrax.toml`, layered over built-in defaults and
-//! under an editor's settings.
+//! Project options: set by `@option` in a project's `BUILD.thx`, layered over
+//! built-in defaults and under an editor's settings.
 //!
 //! Every option is one row of [`KEYS`]: its section, name, kind, default and
-//! documentation. The table is the single source of truth: it validates a file
-//! (an unknown key gets a did-you-mean fix, a wrong kind a typed error), it
-//! documents the options (`thrax config`), and it is what the language server
-//! accepts as settings. Adding an option is adding a row and reading it.
-//!
-//! The file format is a TOML subset: `[section]` headers, `key = value` lines
-//! with strings, integers, booleans or arrays of strings, and `#` comments.
+//! documentation. The table is the single source of truth: it validates an
+//! `@option` (an unknown key gets a did-you-mean, a wrong value a typed error),
+//! and it is what the language server accepts as settings. Adding an option is
+//! adding a row and reading it.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
-use crate::error::{closest, Applicability, Code, Diagnostic, Edit, Span};
-
-/// The name of the project file, looked for in the file's directory and then
-/// each parent.
-pub const FILE_NAME: &str = "thrax.toml";
+use crate::error::closest;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Str(String),
     Int(i64),
     Bool(bool),
-    List(Vec<String>),
-}
-
-impl Value {
-    fn kind(&self) -> &'static str {
-        match self {
-            Value::Str(_) => "a string",
-            Value::Int(_) => "an integer",
-            Value::Bool(_) => "a boolean",
-            Value::List(_) => "a list of strings",
-        }
-    }
-
-    fn show(&self) -> String {
-        match self {
-            Value::Str(s) => format!("{s:?}"),
-            Value::Int(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::List(xs) => format!("[{}]", xs.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>().join(", ")),
-        }
-    }
 }
 
 /// What an option accepts.
@@ -66,7 +37,7 @@ pub struct Key {
 
 const LINT_LEVELS: &[&str] = &["allow", "warn", "deny"];
 
-/// Every option. Defaults are written as they would be in the file.
+/// Every option. Defaults are written as an `@option` value would be.
 pub const KEYS: &[Key] = &[
     Key { section: "format", name: "width", kind: Kind::Int { min: 40, max: 400 }, default: "100",
           doc: "The line width the formatter fits code into." },
@@ -74,10 +45,10 @@ pub const KEYS: &[Key] = &[
           doc: "Spaces per indentation level." },
     Key { section: "check", name: "max_errors", kind: Kind::Int { min: 1, max: 10_000 }, default: "20",
           doc: "The most errors `thrax check` prints." },
-    Key { section: "lsp", name: "check", kind: Kind::Choice(&["type", "save"]), default: "\"type\"",
+    Key { section: "lsp", name: "check", kind: Kind::Choice(&["type", "save"]), default: "type",
           doc: "When the editor checks: as you type (`type`), or only when a file is saved (`save`). \
                 Compile-time code (`$ @e`) always runs on save only." },
-    Key { section: "lsp", name: "focus", kind: Kind::Choice(&["all", "roots", "one"]), default: "\"roots\"",
+    Key { section: "lsp", name: "focus", kind: Kind::Choice(&["all", "roots", "one"]), default: "roots",
           doc: "How loudly errors are shown. `all`: every error at full strength. `roots`: errors \
                 that follow from an earlier one are quieter. `one`: only the most important error \
                 per file is an error, the rest are warnings." },
@@ -90,7 +61,7 @@ pub const KEYS: &[Key] = &[
           doc: "The pause after which held-back errors are shown." },
     Key { section: "lsp", name: "max_diagnostics", kind: Kind::Int { min: 1, max: 10_000 }, default: "50",
           doc: "The most diagnostics shown per file." },
-    Key { section: "lints", name: "unreachable_arm", kind: Kind::Choice(LINT_LEVELS), default: "\"warn\"",
+    Key { section: "lints", name: "unreachable_arm", kind: Kind::Choice(LINT_LEVELS), default: "warn",
           doc: "A match arm no value can reach." },
 ];
 
@@ -98,18 +69,16 @@ pub const KEYS: &[Key] = &[
 #[derive(Clone, Debug)]
 pub struct Config {
     values: HashMap<(String, String), Value>,
-    /// The files that contributed, nearest last.
-    pub sources: Vec<PathBuf>,
 }
 
 impl Default for Config {
     fn default() -> Config {
         let mut values = HashMap::new();
         for k in KEYS {
-            let v = parse_value(k.default).expect("defaults are well-formed");
+            let v = parse(k, k.default).expect("defaults are well-formed");
             values.insert((k.section.to_string(), k.name.to_string()), v);
         }
-        Config { values, sources: Vec::new() }
+        Config { values }
     }
 }
 
@@ -148,128 +117,62 @@ impl Config {
         self.values.insert((section.to_string(), name.to_string()), value);
         Ok(())
     }
-
-    /// Layer a `thrax.toml`'s text over this config. Returns the problems found,
-    /// each a diagnostic against `text`; a bad line is skipped, the rest apply.
-    pub fn apply_toml(&mut self, text: &str) -> Vec<Diagnostic> {
-        let mut problems = Vec::new();
-        let mut section = String::new();
-        let mut offset = 0;
-        for (n, raw) in text.split_inclusive('\n').enumerate() {
-            let line_no = n as u32 + 1;
-            let start = offset;
-            offset += raw.len();
-            let line = strip_comment(raw).trim();
-            if line.is_empty() {
-                continue;
-            }
-            let lead = raw.len() - raw.trim_start().len();
-            let span = Span::new(start + lead, start + lead + line.len());
-            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-                let name = name.trim();
-                if !KEYS.iter().any(|k| k.section == name) {
-                    let mut d = Diagnostic::error(Code::UnknownSymbol, span, line_no, format!("unknown section `[{name}]`"));
-                    if let Some(near) = closest(name, sections()) {
-                        d = d.with_fix(format!("did you mean `[{near}]`?"), vec![Edit::new(span, format!("[{near}]"))], Applicability::MaybeIncorrect);
-                    }
-                    problems.push(d);
-                }
-                section = name.to_string();
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
-                problems.push(Diagnostic::error(Code::UnexpectedToken, span, line_no, "expected `key = value` or a `[section]`"));
-                continue;
-            };
-            let key = key.trim();
-            let key_start = start + lead;
-            let key_span = Span::new(key_start, key_start + key.len());
-            let Some(k) = find_key(&section, key) else {
-                let mut d = Diagnostic::error(
-                    Code::UnknownSymbol,
-                    key_span,
-                    line_no,
-                    format!("unknown option `{key}` in `[{section}]`"),
-                );
-                let here = KEYS.iter().filter(|k| k.section == section).map(|k| k.name);
-                if let Some(near) = closest(key, here) {
-                    d = d.with_fix(format!("did you mean `{near}`?"), vec![Edit::new(key_span, near)], Applicability::MaybeIncorrect);
-                } else if let Some(home) = KEYS.iter().find(|k| k.name == key) {
-                    d = d.with_help(format!("`{key}` is an option of `[{}]`", home.section));
-                }
-                problems.push(d);
-                continue;
-            };
-            let value = match parse_value(value.trim()) {
-                Ok(v) => v,
-                Err(msg) => {
-                    problems.push(Diagnostic::error(Code::UnexpectedToken, span, line_no, msg));
-                    continue;
-                }
-            };
-            if let Err(msg) = check_kind(k, &value) {
-                problems.push(Diagnostic::error(Code::TypeMismatch, span, line_no, msg).with_note(k.doc));
-                continue;
-            }
-            self.values.insert((section.clone(), key.to_string()), value);
-        }
-        problems
-    }
-
-    /// The config for a file at `path`: defaults, then the nearest `thrax.toml`
-    /// above it. Problems in that file come back rendered, for the caller to
-    /// report; they never stop the load.
-    pub fn for_path(path: &Path) -> (Config, Vec<String>) {
-        let mut config = Config::default();
-        let mut problems = Vec::new();
-        if let Some(file) = find_file(path) {
-            if let Ok(text) = std::fs::read_to_string(&file) {
-                let shown = file.display().to_string();
-                problems = config.apply_toml(&text).iter().map(|d| d.render(&text, &shown)).collect();
-                config.sources.push(file);
-            }
-        }
-        (config, problems)
-    }
 }
 
-/// The nearest `thrax.toml` in `start`'s directory or above.
-pub fn find_file(start: &Path) -> Option<PathBuf> {
-    let dir = if start.is_dir() { start } else { start.parent()? };
-    dir.ancestors().map(|d| d.join(FILE_NAME)).find(|f| f.is_file())
+/// An option as `@option` names it, `section.name`, with its value as text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Setting {
+    pub section: &'static str,
+    pub name: &'static str,
+    pub value: Value,
 }
 
-/// The option table as documentation, one block per section.
-pub fn document() -> String {
-    let mut out = String::new();
-    let mut last = "";
-    for k in KEYS {
-        if k.section != last {
-            out.push_str(&format!("[{}]\n", k.section));
-            last = k.section;
-        }
-        let accepts = match k.kind {
-            Kind::Int { min, max } => format!("an integer from {min} to {max}"),
-            Kind::Bool => "true or false".to_string(),
-            Kind::Choice(words) => words.iter().map(|w| format!("\"{w}\"")).collect::<Vec<_>>().join(", "),
-        };
-        out.push_str(&format!("{} = {}    # {accepts}\n    # {}\n", k.name, k.default, k.doc));
-    }
-    out
+/// Why an `@option` was refused: the message, and a did-you-mean when one fits.
+#[derive(Debug)]
+pub struct Refusal {
+    pub msg: String,
+    pub help: Option<String>,
 }
 
-fn sections() -> impl Iterator<Item = &'static str> {
-    let mut seen: Vec<&'static str> = Vec::new();
-    for k in KEYS {
-        if !seen.contains(&k.section) {
-            seen.push(k.section);
-        }
-    }
-    seen.into_iter()
+/// Read `@option "section.name" "value"`, validated against [`KEYS`].
+pub fn parse_setting(full: &str, text: &str) -> Result<Setting, Refusal> {
+    let all = || KEYS.iter().map(|k| format!("{}.{}", k.section, k.name));
+    let Some(key) = KEYS.iter().find(|k| format!("{}.{}", k.section, k.name) == full) else {
+        let names: Vec<String> = all().collect();
+        let help = closest(full, names.iter().map(String::as_str))
+            .map(|near| format!("did you mean `{near}`?"))
+            .or_else(|| {
+                let name = full.rsplit('.').next().unwrap_or(full);
+                KEYS.iter().find(|k| k.name == name).map(|k| format!("the option is `{}.{}`", k.section, k.name))
+            });
+        return Err(Refusal { msg: format!("unknown option `{full}`"), help });
+    };
+    let value = parse(key, text).map_err(|msg| Refusal { msg, help: Some(key.doc.to_string()) })?;
+    Ok(Setting { section: key.section, name: key.name, value })
 }
 
 fn find_key(section: &str, name: &str) -> Option<&'static Key> {
     KEYS.iter().find(|k| k.section == section && k.name == name)
+}
+
+/// The value `text` gives `key`, in the kind it takes.
+fn parse(key: &Key, text: &str) -> Result<Value, String> {
+    let full = format!("{}.{}", key.section, key.name);
+    let value = match key.kind {
+        Kind::Int { .. } => text
+            .replace('_', "")
+            .parse::<i64>()
+            .map(Value::Int)
+            .map_err(|_| format!("`{full}` takes an integer, not {text:?}"))?,
+        Kind::Bool => match text {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => return Err(format!("`{full}` takes \"true\" or \"false\", not {text:?}")),
+        },
+        Kind::Choice(_) => Value::Str(text.to_string()),
+    };
+    check_kind(key, &value)?;
+    Ok(value)
 }
 
 fn check_kind(key: &Key, value: &Value) -> Result<(), String> {
@@ -283,52 +186,10 @@ fn check_kind(key: &Key, value: &Value) -> Result<(), String> {
             "`{full}` cannot be {s:?}; it is one of {}",
             words.iter().map(|w| format!("\"{w}\"")).collect::<Vec<_>>().join(", ")
         )),
-        (Kind::Int { .. }, v) => Err(format!("`{full}` takes an integer, not {}", v.kind())),
-        (Kind::Bool, v) => Err(format!("`{full}` takes true or false, not {}", v.kind())),
-        (Kind::Choice(_), v) => Err(format!("`{full}` takes a quoted word, not {} ({})", v.kind(), v.show())),
+        (Kind::Int { .. }, _) => Err(format!("`{full}` takes an integer")),
+        (Kind::Bool, _) => Err(format!("`{full}` takes true or false")),
+        (Kind::Choice(_), _) => Err(format!("`{full}` takes a word")),
     }
-}
-
-/// A `#` outside a string starts a comment.
-fn strip_comment(line: &str) -> &str {
-    let mut in_str = false;
-    for (i, c) in line.char_indices() {
-        match c {
-            '"' => in_str = !in_str,
-            '#' if !in_str => return &line[..i],
-            _ => {}
-        }
-    }
-    line
-}
-
-fn parse_value(text: &str) -> Result<Value, String> {
-    match text {
-        "true" => return Ok(Value::Bool(true)),
-        "false" => return Ok(Value::Bool(false)),
-        _ => {}
-    }
-    if let Some(s) = parse_string(text) {
-        return Ok(Value::Str(s));
-    }
-    if let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
-        return inner
-            .split(',')
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .map(|p| parse_string(p).ok_or_else(|| format!("a list holds quoted strings, not `{p}`")))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::List);
-    }
-    text.replace('_', "")
-        .parse::<i64>()
-        .map(Value::Int)
-        .map_err(|_| format!("`{text}` is not a value: write a number, true/false, a \"string\", or a [list]"))
-}
-
-fn parse_string(text: &str) -> Option<String> {
-    let inner = text.strip_prefix('"')?.strip_suffix('"')?;
-    (!inner.contains('"')).then(|| inner.replace("\\\\", "\\"))
 }
 
 #[cfg(test)]
