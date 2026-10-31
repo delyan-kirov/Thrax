@@ -1,0 +1,3 @@
+$ @mod MAIN
+
+$ x : @Int = 1

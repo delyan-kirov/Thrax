@@ -141,13 +141,14 @@ executable: `<prefix>/bin/thrax` resolves `<prefix>/library`. The search runs on
 disk first and falls back to the embedded copy:
 
 1. the `--import-dir=DIR` directories, in the order given;
-2. the program's own neighbourhood: its `library/`, the `examples/` that
+2. the project's `@import_path` directories (below);
+3. the program's own neighbourhood: its `library/`, the `examples/` that
    `tests/MAIN.thx` imports, then a module file sitting beside it;
-3. the standard libraries on disk: one beside the program's own tree, then the
+4. the standard libraries on disk: one beside the program's own tree, then the
    ones this executable ships with. A directory counts as a standard library only
    when it holds `CORE.thx`, so an unrelated `library/` above a program is never
    mistaken for one;
-4. the embedded copy.
+5. the embedded copy.
 
 First match wins, so a module a program ships beside itself replaces the
 standard-library module of that name rather than merging with it. `CORE` and `C`
@@ -157,6 +158,17 @@ a program reaches are read at all. Diagnostics carry the path the source came
 from, so an error inside a standard-library module names the file it was read
 from.
 
+**The project file.** Before loading, the driver looks for `BUILD.thx` in the
+root file's directory and each one above it, and compiles and runs the nearest
+(`project_paths` / `run_build_script`). Every `@import_path` its `@build` calls
+records a directory, relative to `BUILD.thx`, that step 2 searches. The result is
+cached per file and modification time, so the LSP, the REPL and `@eval` pay for
+it once, and they reach it through the same `resolve_module_file`. While
+`BUILD.thx` itself compiles, step 2 is empty: it cannot import from the
+directories it adds. `@import_path` faults anywhere else, and `$ with BUILD` is
+rejected, so the search never depends on load order. All three are
+`BUILD_SCRIPT` errors (language reference, section 11.4).
+
 ---
 
 ## 5. Tests
@@ -165,6 +177,9 @@ from.
   - `cross_module_overload_dispatches_by_type` (1a),
   - `imported_global_does_not_shadow_a_same_named_effect_op` (the glob order),
   - `same_named_struct_types_in_two_modules_do_not_collide` (per-module layout).
+- `crates/thrax/tests/build_script.rs`: a `BUILD.thx`'s directory reaches the
+  programs at and below it; `tests/diagnostics/BUILD_SCRIPT_*`,
+  `IMPORT_BUILD` and `IMPORT_PATH_OUTSIDE_BUILD` pin its errors.
 - `tests/MAIN.thx` links every example module and is byte-identical between the
   interpreter and the compiled C program. Its imports are injected by `$ @build`,
   so it also covers loading a module that only a metaprogram names: the expansion

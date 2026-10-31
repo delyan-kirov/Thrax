@@ -89,6 +89,7 @@ too, see "Runtime use" below; the rest need the handler's compiler state):
 @fresh  : @Str      -> <@Meta> @Str    -- LANDED. a unique identifier (prefix + counter), for hygiene
 @link      : @Str   -> <@Meta> @Code   -- LANDED. add a library to the link line (empty code)
 @link_path : @Str   -> <@Meta> @Code   -- LANDED. add a search path to the link line (empty code)
+@import_path : @Str -> <@Meta> {}     -- LANDED. add a module directory; `BUILD.thx`'s `@build` only
 @check  : @Code     -> <@Meta> @Code   -- planned
 @here   : ()        -> <@Meta> @span   -- planned
 ```

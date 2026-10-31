@@ -1,0 +1,2 @@
+$ @mod IMPORT_BUILD
+$ with BUILD  #~ error[BUILD_SCRIPT]: `BUILD` configures the build and cannot be imported

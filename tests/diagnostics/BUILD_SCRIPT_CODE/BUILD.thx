@@ -1,0 +1,5 @@
+$ @mod BUILD
+
+# A `BUILD.thx` configures the build and contributes no items.
+$ @build : {} -> <@Meta, @IO> @Code = \_ = @parse_items "$ x : @Int = 1"
+#~ error[BUILD_SCRIPT]: the `@build` of `BUILD.thx` returned code

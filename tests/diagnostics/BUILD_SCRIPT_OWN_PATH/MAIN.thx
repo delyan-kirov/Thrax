@@ -1,0 +1,4 @@
+$ @mod MAIN
+$ with GREET
+
+$ x : @Str = greeting

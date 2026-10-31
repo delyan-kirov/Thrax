@@ -716,6 +716,20 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             crate::machine::push_link(name == Prim::LinkPath, arg);
             Ok(code_value(""))
         }
+        Prim::ImportPath => {
+            let dir = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            if crate::machine::push_import_path(dir) {
+                Ok(Value::Unit)
+            } else {
+                Err(Diagnostic::error(
+                    Code::BuildScript,
+                    Span::at(0),
+                    0,
+                    "`@import_path` outside a project's `BUILD.thx`",
+                )
+                .with_help("call it from the `@build` of the `BUILD.thx` at the project root"))
+            }
+        }
         // Compile-time reflection over a declared type, resolved by the driver's
         // type host (see `crate::machine::set_type_host`), reachable only inside
         // `$ @e`. A derive-style macro reads the shape and generates code for it.

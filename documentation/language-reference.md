@@ -1374,6 +1374,33 @@ source as the checker finally saw it: every `@e` spliced and every
 `@build`'s items appended. That is the view to debug a generator from, since
 nothing else shows the generated text.
 
+## 11.4 `BUILD.thx`, the project file
+A program's own modules are found beside it (section 2). A project that keeps
+them elsewhere says so in a `BUILD.thx`: the module `BUILD`, whose `@build` calls
+`@import_path` once per directory to add to the module search.
+
+```thrax
+$ @mod BUILD
+
+$ @build : {} -> <@Meta, @IO> @Code = \_ = @import_path "source"; @parse_items ""
+```
+
+The compiler looks for `BUILD.thx` in the root file's directory and then in each
+directory above it, and runs the nearest one before it loads the program. Its
+directories are searched for every root at or below it, after `--import-dir`
+and before the program's neighbourhood. A path is relative to `BUILD.thx`.
+
+Rules, each a `BUILD_SCRIPT` error:
+
+- it declares `$ @mod BUILD` and its `@build` returns empty code;
+- `@import_path` works only there, in any other module it faults;
+- nothing imports `BUILD`.
+
+`BUILD.thx` runs before its own directories are searched, so its imports see only
+the standard library, its neighbours and `--import-dir`. `applications/alec` is
+the worked example: `MAIN.thx`, `TEST.thx` and `BENCH.thx` sit at the top and
+every module they import is in `source/`.
+
 ---
 
 # 12. Intrinsic types and primitives
@@ -1450,6 +1477,7 @@ A quick index of the `@`-forms and where each is documented above.
 | `@private` | visibility | 2.4 |
 | `@e` `@abort` | compile-time code insertion | 11 |
 | `@link` `@link_path` | build directives | 11.2 |
+| `@import_path` | module search, in `BUILD.thx` | 11.4 |
 | `@cast` | integer-width reinterpret | 4.11 |
 | `@true` `@false` `@Bool` | boolean | 12.1 |
 | `@Int8..64` `@Nat8..64` `@Float32/64` | sized numerics | 3.2 |

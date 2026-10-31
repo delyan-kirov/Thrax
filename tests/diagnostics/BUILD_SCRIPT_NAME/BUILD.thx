@@ -1,0 +1,4 @@
+$ @mod PROJECT
+#~ error[BUILD_SCRIPT]: `BUILD.thx` does not declare `$ @mod BUILD`
+
+$ @build : {} -> <@Meta, @IO> @Code = \_ = @parse_items ""

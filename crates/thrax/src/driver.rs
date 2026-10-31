@@ -156,8 +156,9 @@ pub(crate) fn load_core(
                 continue;
             }
             let root_span = if name == root_name { Some(span) } else { via.get(&name).copied() };
-            let (path, imp_src) = fetch(&imp).map_err(|msg| LoadError::Import {
-                diag: import_failure(&msg, &imp, span),
+            let fetched = if imp == BUILD_SCRIPT { Err(String::new()) } else { fetch(&imp) };
+            let (path, imp_src) = fetched.map_err(|msg| LoadError::Import {
+                diag: import_failure(&msg, &imp, &name, span),
                 importer: name.clone(),
                 path: src_path.clone(),
                 src: src.clone(),
@@ -199,9 +200,10 @@ fn load_injected_imports(loaded: &mut Loaded, root_dir: &Path) -> Result<(), Str
         if loaded.index.contains_key(&name) {
             continue;
         }
-        let (path, src) = load_module(&name, root_dir).map_err(|msg| {
-            let (_, imp_path, imp_src) = &loaded.sources[importer];
-            import_failure(&msg, &name, span).render(imp_src, imp_path)
+        let fetched = if name == BUILD_SCRIPT { Err(String::new()) } else { load_module(&name, root_dir) };
+        let (path, src) = fetched.map_err(|msg| {
+            let (importer, imp_path, imp_src) = &loaded.sources[importer];
+            import_failure(&msg, &name, importer, span).render(imp_src, imp_path)
         })?;
         let me = loaded.sources.len();
         queue.extend(parse_imports(&src).into_iter().map(|(name, span)| (name, span, me)));
@@ -211,10 +213,25 @@ fn load_injected_imports(loaded: &mut Loaded, root_dir: &Path) -> Result<(), Str
     Ok(())
 }
 
-/// A module that could not be loaded, reported at the `$ with` that names it.
-fn import_failure(msg: &str, name: &str, span: utilities::Span) -> utilities::Diagnostic {
+/// A module that could not be loaded, reported at the `$ with` in `importer` that
+/// names it.
+fn import_failure(msg: &str, name: &str, importer: &str, span: utilities::Span) -> utilities::Diagnostic {
+    if name == BUILD_SCRIPT {
+        return utilities::Diagnostic::error(
+            utilities::Code::BuildScript,
+            span,
+            0,
+            "`BUILD` configures the build and cannot be imported",
+        );
+    }
     let msg = msg.strip_prefix("thrax: ").unwrap_or(msg);
     let mut d = utilities::Diagnostic::error(utilities::Code::UnknownModule, span, 0, msg);
+    if importer == BUILD_SCRIPT {
+        d = d.with_note(
+            "`BUILD.thx` runs before its `@import_path` directories are searched, so it sees only \
+             the standard library, its own neighbours and `--import-dir`",
+        );
+    }
     let known = stdlib::MODULES.iter().map(|(n, _)| *n);
     if let Some(near) = utilities::error::closest(name, known) {
         d = d.with_fix(
@@ -813,6 +830,21 @@ fn lower_all(
     want_entry: bool,
 ) -> Result<(Vec<frontend::core::CoreProgram>, Loaded, BuildPlan), ExitCode> {
     utilities::progress::step("PARSING");
+    if file_stem(path) == BUILD_SCRIPT {
+        return in_build_script(|| expand_all(path, want_entry));
+    }
+    let root_dir = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
+    if project_paths(&root_dir).is_none() {
+        return Err(ExitCode::FAILURE);
+    }
+    expand_all(path, want_entry)
+}
+
+/// [`lower_all`] once the project's `BUILD.thx` has run.
+fn expand_all(
+    path: &str,
+    want_entry: bool,
+) -> Result<(Vec<frontend::core::CoreProgram>, Loaded, BuildPlan), ExitCode> {
     let mut loaded = load_sources(path)?;
     let root_dir = Path::new(path)
         .parent()
@@ -947,7 +979,15 @@ fn lower_all(
         let ran_builds = !build_sites.is_empty();
         for (module, qualified) in build_sites {
             enter(&module);
-            let v = match interpreter::machine::eval_value(&ir, &qualified) {
+            let script = module == BUILD_SCRIPT;
+            if script {
+                interpreter::machine::accept_import_paths();
+            }
+            let v = interpreter::machine::eval_value(&ir, &qualified);
+            if script {
+                BUILT_PATHS.with(|c| *c.borrow_mut() = interpreter::machine::take_import_paths());
+            }
+            let v = match v {
                 Ok(v) => v,
                 Err(d) => {
                     clear_meta_hosts();
@@ -970,6 +1010,18 @@ fn lower_all(
                 );
                 return Err(ExitCode::FAILURE);
             };
+            if script && !items.trim().is_empty() {
+                clear_meta_hosts();
+                let d = utilities::Diagnostic::error(
+                    utilities::Code::BuildScript,
+                    utilities::Span::at(0),
+                    0,
+                    format!("the `{}` of `BUILD.thx` returned code", frontend::BUILD),
+                )
+                .with_help("return `@parse_items \"\"`; `BUILD.thx` configures the build and adds no items");
+                eprint!("{}", render_e_fault(d, &module, utilities::Span::at(0), &loaded.sources));
+                return Err(ExitCode::FAILURE);
+            }
             built.insert(module.clone());
             if let Some(i) = loaded.index.get(&module) {
                 let src = &mut loaded.sources[*i].2;
@@ -1746,13 +1798,14 @@ fn import_dirs() -> &'static [PathBuf] {
 }
 
 /// Find the source file for a module: the `--import-dir` directories, then the
-/// program's own neighbourhood (its `library/`, the `examples/` the combined test
+/// project's `@import_path` ones, then the program's own neighbourhood (its `library/`, the `examples/` the combined test
 /// runner imports, a sibling file), then the standard libraries [`stdlib_dirs`]
 /// found. First match wins, so a module a program ships beside itself shadows the
 /// standard-library module of that name.
 pub(crate) fn resolve_module_file(name: &str, root_dir: &Path) -> Option<PathBuf> {
     let file = format!("{name}.thx");
     let mut candidates: Vec<PathBuf> = import_dirs().iter().map(|d| d.join(&file)).collect();
+    candidates.extend(project_paths(root_dir).unwrap_or_default().iter().map(|d| d.join(&file)));
     candidates.push(root_dir.join("library").join(&file));
     candidates.push(root_dir.join("examples").join(&file));
     if let Some(parent) = root_dir.parent() {
@@ -1761,6 +1814,94 @@ pub(crate) fn resolve_module_file(name: &str, root_dir: &Path) -> Option<PathBuf
     candidates.push(root_dir.join(&file));
     candidates.extend(stdlib_dirs(root_dir).iter().map(|d| d.join(&file)));
     candidates.into_iter().find(|p| p.exists())
+}
+
+/// The module that configures a project, found as `BUILD.thx` in the root file's
+/// directory or the nearest one above it.
+const BUILD_SCRIPT: &str = "BUILD";
+
+/// A `BUILD.thx` that has run, with the modification time it ran at and the
+/// directories it added (`None` when it failed).
+struct Project {
+    file: PathBuf,
+    stamp: Option<std::time::SystemTime>,
+    paths: Option<Vec<PathBuf>>,
+}
+
+static PROJECTS: std::sync::Mutex<Vec<Project>> = std::sync::Mutex::new(Vec::new());
+
+thread_local! {
+    /// Set while a `BUILD.thx` compiles: its own imports never see its paths.
+    static IN_BUILD_SCRIPT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// What the `@import_path` calls of the last `BUILD.thx` `@build` recorded.
+    static BUILT_PATHS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn in_build_script<T>(f: impl FnOnce() -> T) -> T {
+    let outer = IN_BUILD_SCRIPT.with(|c| c.replace(true));
+    let out = f();
+    IN_BUILD_SCRIPT.with(|c| c.set(outer));
+    out
+}
+
+/// The nearest `BUILD.thx` at or above `root_dir`.
+fn find_build_script(root_dir: &Path) -> Option<PathBuf> {
+    let dir = if root_dir.as_os_str().is_empty() { std::env::current_dir().ok()? } else { root_dir.to_path_buf() };
+    let dir = dir.canonicalize().ok()?;
+    dir.ancestors().map(|d| d.join(format!("{BUILD_SCRIPT}.thx"))).find(|f| f.is_file())
+}
+
+/// The module directories the project around `root_dir` adds with `@import_path`,
+/// running its `BUILD.thx` when it has not run since it last changed. `None` when
+/// it fails; the failure has been reported.
+fn project_paths(root_dir: &Path) -> Option<Vec<PathBuf>> {
+    if IN_BUILD_SCRIPT.with(|c| c.get()) {
+        return Some(Vec::new());
+    }
+    let Some(file) = find_build_script(root_dir) else {
+        return Some(Vec::new());
+    };
+    let stamp = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+    {
+        let projects = PROJECTS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(p) = projects.iter().find(|p| p.file == file && p.stamp == stamp) {
+            return p.paths.clone();
+        }
+    }
+    // The lock is released: the run resolves modules, which comes back here.
+    let paths = run_build_script(&file);
+    let mut projects = PROJECTS.lock().unwrap_or_else(|e| e.into_inner());
+    projects.retain(|p| p.file != file);
+    projects.push(Project { file, stamp, paths: paths.clone() });
+    paths
+}
+
+/// Compile `file` and run its `@build`, returning the directories its
+/// `@import_path` calls added, relative to `file`'s directory.
+fn run_build_script(file: &Path) -> Option<Vec<PathBuf>> {
+    let path = file.display().to_string();
+    let src = match std::fs::read_to_string(file) {
+        Ok(src) => src,
+        Err(e) => {
+            eprintln!("thrax: cannot read {path}: {e}");
+            return None;
+        }
+    };
+    if parse_mod_name(&src).as_deref() != Some(BUILD_SCRIPT) {
+        let d = utilities::Diagnostic::error(
+            utilities::Code::BuildScript,
+            utilities::Span::at(0),
+            0,
+            format!("`BUILD.thx` does not declare `$ @mod {BUILD_SCRIPT}`"),
+        )
+        .with_note("a `BUILD.thx` configures every program in the directories below it");
+        eprint!("{}", d.render(&src, &path));
+        return None;
+    }
+    BUILT_PATHS.with(|c| c.borrow_mut().clear());
+    in_build_script(|| expand_all(&path, false)).ok()?;
+    let dir = file.parent().unwrap_or_else(|| Path::new("."));
+    Some(BUILT_PATHS.with(|c| c.take()).into_iter().map(|p| dir.join(p)).collect())
 }
 
 /// The standard libraries on disk, in search order: one beside the program's own
