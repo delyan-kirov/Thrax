@@ -294,19 +294,9 @@ pub(crate) fn parse_all(sources: &[(String, String, String)]) -> Result<ParsedAl
 }
 
 thread_local! {
-    /// The project options of the program being compiled, read once from its
-    /// `thrax.toml` (see [`load_project_config`]).
+    /// The project options of the program being compiled, set by its
+    /// `BUILD.thx` once that has run (see [`lower_all`]).
     static PROJECT: std::cell::RefCell<Option<utilities::config::Config>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Read the `thrax.toml` that governs `path`, reporting its problems once.
-fn load_project_config(path: &str) {
-    let at = Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
-    let (config, problems) = utilities::config::Config::for_path(&at);
-    for p in problems {
-        eprint!("{p}");
-    }
-    PROJECT.with(|c| *c.borrow_mut() = Some(config));
 }
 
 fn project_config() -> utilities::config::Config {
@@ -687,33 +677,37 @@ fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<C
     // library module too), and a metaprogram-expansion round does not: the entry
     // may itself be injected, so the requirement waits for the final strict round.
     if want_entry && !lenient {
-        let entry = lowered[0]
-            .globals
-            .iter()
-            .any(|(n, _)| n == frontend::ENTRY);
-        if !entry {
-            eprintln!(
-                "thrax: module `{}` has no `$ {} : {}` to run",
-                loaded.root_name,
-                frontend::ENTRY,
-                frontend::ENTRY_SIG
-            );
-            return Err(ExitCode::FAILURE);
-        }
-        let ok = results[root]
-            .iter()
-            .find(|(n, _)| *n == frontend::ENTRY)
-            .is_some_and(|(_, ty)| frontend::is_entry_type(checkers[root].types(), *ty));
-        if !ok {
-            eprintln!(
-                "thrax: `{}` must have the signature `{}`",
-                frontend::ENTRY,
-                frontend::ENTRY_SIG
-            );
+        if let Err(msg) = check_entry(&lowered[0], &results[root], &checkers[root], &loaded.root_name) {
+            eprintln!("thrax: {msg}");
             return Err(ExitCode::FAILURE);
         }
     }
     Ok((lowered, reflect))
+}
+
+/// Whether the root module (lowered as `root`, checked as `results` by `checker`)
+/// has an entry to run, with the one signature an entry has.
+fn check_entry(
+    root: &frontend::core::CoreProgram,
+    results: &[(utilities::StrId, frontend::Type)],
+    checker: &frontend::Checker,
+    root_name: &str,
+) -> Result<(), String> {
+    if !root.globals.iter().any(|(n, _)| n == frontend::ENTRY) {
+        return Err(format!(
+            "module `{root_name}` has no `$ {} : {}` to run",
+            frontend::ENTRY,
+            frontend::ENTRY_SIG
+        ));
+    }
+    let ok = results
+        .iter()
+        .find(|(n, _)| *n == frontend::ENTRY)
+        .is_some_and(|(_, ty)| frontend::is_entry_type(checker.types(), *ty));
+    if !ok {
+        return Err(format!("`{}` must have the signature `{}`", frontend::ENTRY, frontend::ENTRY_SIG));
+    }
+    Ok(())
 }
 
 /// Render a compile-time `@e` fault at its call site: fill the fault's (sentinel)
@@ -834,9 +828,10 @@ fn lower_all(
         return in_build_script(|| expand_all(path, want_entry));
     }
     let root_dir = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
-    if project_paths(&root_dir).is_none() {
+    let Some(built) = project(&root_dir) else {
         return Err(ExitCode::FAILURE);
-    }
+    };
+    PROJECT.with(|c| *c.borrow_mut() = Some(built.config));
     expand_all(path, want_entry)
 }
 
@@ -981,11 +976,12 @@ fn expand_all(
             enter(&module);
             let script = module == BUILD_SCRIPT;
             if script {
-                interpreter::machine::accept_import_paths();
+                interpreter::machine::open_build_record();
             }
             let v = interpreter::machine::eval_value(&ir, &qualified);
             if script {
-                BUILT_PATHS.with(|c| *c.borrow_mut() = interpreter::machine::take_import_paths());
+                let record = interpreter::machine::take_build_record();
+                BUILT.with(|c| *c.borrow_mut() = Some(record));
             }
             let v = match v {
                 Ok(v) => v,
@@ -1230,41 +1226,74 @@ pub fn compile_session_query(
     root_dir: &Path,
     query: Option<&str>,
 ) -> Result<Session, String> {
-    compile_in_memory(source, &|name| load_module(name, root_dir), query, true)
+    compile_in_memory("REPL", source, &|name| load_module(name, root_dir), InMemory::Session { open_effects: true, query })
 }
 
-/// Compile an in-memory `$ @mod REPL` module. `open_effects` checks its top level
-/// under an open effect row, as the shell needs to run IO; without it the module
-/// must be pure, like a file's top level.
-fn compile_in_memory(
+/// Compile a whole program held in memory: `source` is the root module, named
+/// by its own `$ @mod`, and `fetch` maps every module it imports (directly or
+/// not, `CORE` and `C` included) to a diagnostic path and source. The root must
+/// have an entry. Returns the lowered modules, root first, or a rendered
+/// diagnostic. This is the pipeline for a host with no filesystem to search,
+/// such as the browser playground; it runs no `$ @e` expansion.
+pub fn compile_program(
     source: &str,
     fetch: &dyn Fn(&str) -> Result<(String, String), String>,
-    query: Option<&str>,
-    open_effects: bool,
+) -> Result<Vec<frontend::core::CoreProgram>, String> {
+    let root_name = parse_mod_name(source).unwrap_or_else(|| "MAIN".to_string());
+    let session = compile_in_memory(&root_name, source, fetch, InMemory::Program)?;
+    Ok(session.lowered)
+}
+
+/// What [`compile_in_memory`] compiles its root as.
+#[derive(Clone, Copy)]
+enum InMemory<'q> {
+    /// A shell or `@eval` module (see [`SessionRoot`]), reporting the declared
+    /// type of `query` when one is asked for.
+    Session { open_effects: bool, query: Option<&'q str> },
+    /// A program, which must have an entry.
+    Program,
+}
+
+/// Compile an in-memory root module. A `Session` with `open_effects` checks its
+/// top level under an open effect row, as the shell needs to run IO; without it
+/// the module must be pure, like a file's top level.
+fn compile_in_memory(
+    root_name: &str,
+    source: &str,
+    fetch: &dyn Fn(&str) -> Result<(String, String), String>,
+    kind: InMemory,
 ) -> Result<Session, String> {
-    let loaded = load_core("REPL".to_string(), "<repl>".to_string(), source.to_string(), fetch)?;
+    let root_path = match kind {
+        InMemory::Session { .. } => "<repl>".to_string(),
+        InMemory::Program => root_name.to_string(),
+    };
+    let loaded = load_core(root_name.to_string(), root_path, source.to_string(), fetch)?;
 
     let ParsedAll { ast, programs, errors, .. } = parse_all(&loaded.sources)?;
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = check_all(
-        &ast,
-        &programs,
-        &graph,
-        &loaded.sources,
-        false,
-        Some(SessionRoot { module: &loaded.root_name, open_effects }),
-        errors,
-    )?;
+    let session = match kind {
+        InMemory::Session { open_effects, .. } => Some(SessionRoot { module: &loaded.root_name, open_effects }),
+        InMemory::Program => None,
+    };
+    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources, false, session, errors)?;
     let resolved = frontend::collect_resolved(&checkers);
 
     let root = loaded.index[&loaded.root_name];
     let mut order: Vec<usize> = (0..programs.len()).collect();
     order.sort_by_key(|&i| i != root);
-    let lowered = order
+    let lowered: Vec<frontend::core::CoreProgram> = order
         .iter()
         .map(|&i| frontend::desugar_program(&ast, &programs[i], &resolved))
         .collect();
+
+    let query = match kind {
+        InMemory::Session { query, .. } => query,
+        InMemory::Program => {
+            check_entry(&lowered[0], &results[root], &checkers[root], &loaded.root_name)?;
+            None
+        }
+    };
 
     let mut checkers = checkers;
     let checker = &mut checkers[root];
@@ -1319,7 +1348,7 @@ fn eval_wrapped(
     }
     module.push_str(&format!("$ {PROBE} =\n"));
     module.push_str(src);
-    let session = compile_in_memory(&module, fetch, None, false)?;
+    let session = compile_in_memory("REPL", &module, fetch, InMemory::Session { open_effects: false, query: None })?;
     let ir = frontend::ir::lower_modules(&session.lowered);
     let v = interpreter::machine::eval_value(&ir, &format!("REPL.{PROBE}"))
         .map_err(|d| d.render("", "@eval"))?;
@@ -1356,7 +1385,6 @@ pub fn install_eval_host(root_dir: PathBuf) {
 }
 
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
-    load_project_config(path);
     start_progress(2);
     // `lower_all` has already expanded every `$ @e` (compile-time execution and
     // code injection); the lowered program is `@e`-free.
@@ -1385,7 +1413,6 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
 /// Lower, then emit a standalone C program for the module to stdout, compiled
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
-    load_project_config(path);
     start_progress(2);
     interpreter::machine::set_reflected_target(Some(target));
     let (lowered, _loaded, _plan) = match lower_all(path, true) {
@@ -1415,7 +1442,6 @@ pub fn cmd_build(
     target: utilities::Target,
     libc: Option<utilities::Libc>,
 ) -> ExitCode {
-    load_project_config(path);
     start_progress(3);
     interpreter::machine::set_reflected_target(Some(target));
     let (lowered, _loaded, plan) = match lower_all(path, true) {
@@ -1688,7 +1714,6 @@ fn libthrax_dir() -> Option<PathBuf> {
 /// The standard library is skipped unless asked for by name, since a program's own
 /// modules are the interesting ones.
 pub fn cmd_expand(path: &str, only: Option<&str>) -> ExitCode {
-    load_project_config(path);
     start_progress(1);
     let (_lowered, loaded, _plan) = match lower_all(path, false) {
         Ok(x) => x,
@@ -1728,7 +1753,6 @@ fn is_stdlib_module(name: &str) -> bool {
 }
 
 pub fn cmd_check(path: &str) -> ExitCode {
-    load_project_config(path);
     start_progress(1);
     // Expanding first means the printed types are the ones the program really has
     // (a `@e`-injected definition included), and that every `$ @e` directive has
@@ -1805,7 +1829,7 @@ fn import_dirs() -> &'static [PathBuf] {
 pub(crate) fn resolve_module_file(name: &str, root_dir: &Path) -> Option<PathBuf> {
     let file = format!("{name}.thx");
     let mut candidates: Vec<PathBuf> = import_dirs().iter().map(|d| d.join(&file)).collect();
-    candidates.extend(project_paths(root_dir).unwrap_or_default().iter().map(|d| d.join(&file)));
+    candidates.extend(project(root_dir).unwrap_or_default().paths.iter().map(|d| d.join(&file)));
     candidates.push(root_dir.join("library").join(&file));
     candidates.push(root_dir.join("examples").join(&file));
     if let Some(parent) = root_dir.parent() {
@@ -1820,12 +1844,20 @@ pub(crate) fn resolve_module_file(name: &str, root_dir: &Path) -> Option<PathBuf
 /// directory or the nearest one above it.
 const BUILD_SCRIPT: &str = "BUILD";
 
-/// A `BUILD.thx` that has run, with the modification time it ran at and the
-/// directories it added (`None` when it failed).
+/// What a project's `BUILD.thx` configures: the module directories it adds and
+/// the options it sets over the defaults.
+#[derive(Clone, Default)]
+struct Built {
+    paths: Vec<PathBuf>,
+    config: utilities::config::Config,
+}
+
+/// A `BUILD.thx` that has run, with the modification time it ran at and what it
+/// configured (`None` when it failed).
 struct Project {
     file: PathBuf,
     stamp: Option<std::time::SystemTime>,
-    paths: Option<Vec<PathBuf>>,
+    built: Option<Built>,
 }
 
 static PROJECTS: std::sync::Mutex<Vec<Project>> = std::sync::Mutex::new(Vec::new());
@@ -1833,8 +1865,8 @@ static PROJECTS: std::sync::Mutex<Vec<Project>> = std::sync::Mutex::new(Vec::new
 thread_local! {
     /// Set while a `BUILD.thx` compiles: its own imports never see its paths.
     static IN_BUILD_SCRIPT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// What the `@import_path` calls of the last `BUILD.thx` `@build` recorded.
-    static BUILT_PATHS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// What the last `BUILD.thx` `@build` recorded.
+    static BUILT: std::cell::RefCell<Option<interpreter::machine::BuildRecord>> = const { std::cell::RefCell::new(None) };
 }
 
 fn in_build_script<T>(f: impl FnOnce() -> T) -> T {
@@ -1851,34 +1883,40 @@ fn find_build_script(root_dir: &Path) -> Option<PathBuf> {
     dir.ancestors().map(|d| d.join(format!("{BUILD_SCRIPT}.thx"))).find(|f| f.is_file())
 }
 
-/// The module directories the project around `root_dir` adds with `@import_path`,
-/// running its `BUILD.thx` when it has not run since it last changed. `None` when
-/// it fails; the failure has been reported.
-fn project_paths(root_dir: &Path) -> Option<Vec<PathBuf>> {
+/// What the project around `root_dir` configures, running its `BUILD.thx` when it
+/// has not run since it last changed. `None` when it fails; the failure has been
+/// reported.
+fn project(root_dir: &Path) -> Option<Built> {
     if IN_BUILD_SCRIPT.with(|c| c.get()) {
-        return Some(Vec::new());
+        return Some(Built::default());
     }
     let Some(file) = find_build_script(root_dir) else {
-        return Some(Vec::new());
+        return Some(Built::default());
     };
     let stamp = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
     {
         let projects = PROJECTS.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(p) = projects.iter().find(|p| p.file == file && p.stamp == stamp) {
-            return p.paths.clone();
+            return p.built.clone();
         }
     }
     // The lock is released: the run resolves modules, which comes back here.
-    let paths = run_build_script(&file);
+    let built = run_build_script(&file);
     let mut projects = PROJECTS.lock().unwrap_or_else(|e| e.into_inner());
     projects.retain(|p| p.file != file);
-    projects.push(Project { file, stamp, paths: paths.clone() });
-    paths
+    projects.push(Project { file, stamp, built: built.clone() });
+    built
 }
 
-/// Compile `file` and run its `@build`, returning the directories its
-/// `@import_path` calls added, relative to `file`'s directory.
-fn run_build_script(file: &Path) -> Option<Vec<PathBuf>> {
+/// The options in force for a file in `dir`: what its project's `BUILD.thx` sets,
+/// or the defaults when there is none or it fails.
+pub fn project_options(dir: &Path) -> utilities::config::Config {
+    project(dir).map(|b| b.config).unwrap_or_default()
+}
+
+/// Compile `file` and run its `@build`, returning what it configured. Its
+/// `@import_path` directories are relative to `file`'s directory.
+fn run_build_script(file: &Path) -> Option<Built> {
     let path = file.display().to_string();
     let src = match std::fs::read_to_string(file) {
         Ok(src) => src,
@@ -1898,10 +1936,15 @@ fn run_build_script(file: &Path) -> Option<Vec<PathBuf>> {
         eprint!("{}", d.render(&src, &path));
         return None;
     }
-    BUILT_PATHS.with(|c| c.borrow_mut().clear());
+    BUILT.with(|c| c.borrow_mut().take());
     in_build_script(|| expand_all(&path, false)).ok()?;
+    let record = BUILT.with(|c| c.take()).unwrap_or_default();
     let dir = file.parent().unwrap_or_else(|| Path::new("."));
-    Some(BUILT_PATHS.with(|c| c.take()).into_iter().map(|p| dir.join(p)).collect())
+    let mut config = utilities::config::Config::default();
+    for o in record.options {
+        config.set(o.section, o.name, o.value).expect("`@option` validated it");
+    }
+    Some(Built { paths: record.import_paths.into_iter().map(|p| dir.join(p)).collect(), config })
 }
 
 /// The standard libraries on disk, in search order: one beside the program's own

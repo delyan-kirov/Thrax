@@ -214,7 +214,8 @@ A match arm can never be chosen, because earlier arms already match every value
 it would. This is a warning.
 
 Delete the arm, or move it above the arm that covers it. The level is set by
-`[lints] unreachable_arm` in `thrax.toml` (`allow`, `warn` or `deny`).
+`@option "lints.unreachable_arm" "..."` in the project's `BUILD.thx` (`allow`,
+`warn` or `deny`).
 
 ## RUNTIME_FAULT
 

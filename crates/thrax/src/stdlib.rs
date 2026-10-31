@@ -40,7 +40,7 @@ pub fn source(name: &str) -> Option<&'static str> {
 
 /// The path diagnostics render for an embedded module: the file it was taken
 /// from, so a span still names a location a reader can look up.
-pub(crate) fn path(name: &str) -> String {
+pub fn path(name: &str) -> String {
     format!("library/{name}.thx")
 }
 

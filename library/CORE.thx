@@ -150,15 +150,16 @@ $ @eval : @Code -> a = @extern "thrax"
 # (inside `@e`). `@abort` fails the build with its message, and `@emit` prints one
 # and continues. `@fresh prefix` mints a unique identifier for hygienic generated
 # binders. `@link` / `@link_path` add a library or a search path to the link line
-# and insert nothing. `@import_path` adds a directory to the module search; only
-# the `@build` of a project's `BUILD.thx` may call it, and the path is relative
-# to that file.
+# and insert nothing. `@import_path` adds a directory to the module search, and
+# `@option "format.width" "120"` sets a project option; only the `@build` of a
+# project's `BUILD.thx` may call them, and a path is relative to that file.
 $ @abort : @Str -> <@Meta> a = @extern "thrax"
 $ @emit : @Str -> <@Meta> {} = @extern "thrax"
 $ @fresh : @Str -> <@Meta> @Str = @extern "thrax"
 $ @link : @Str -> <@Meta> @Code = @extern "thrax"
 $ @link_path : @Str -> <@Meta> @Code = @extern "thrax"
 $ @import_path : @Str -> <@Meta> {} = @extern "thrax"
+$ @option : @Str -> @Str -> <@Meta> {} = @extern "thrax"
 
 # Reflection over a declared type, by name. `@type_kind` is `"struct"` or
 # `"union"`; `@type_fields` lists a struct's fields, `@type_variants` a union's

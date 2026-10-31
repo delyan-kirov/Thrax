@@ -196,7 +196,6 @@ $ compiling : @Str =
                 "thrax fmt     MAIN.thx          # format in place (--check only reports)\n"
                     ++ "thrax fix     MAIN.thx          # apply every fix the compiler is sure of\n"
                     ++ "thrax explain TYPE_MISMATCH     # what a diagnostic code means\n"
-                    ++ "thrax config                    # the thrax.toml options in force\n"
                     ++ "thrax lsp                       # language server for an editor"
             )
         ++ "\n`thrax lsp` serves diagnostics, fixes, hover, go-to-definition, completion,\n"

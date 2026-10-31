@@ -1,0 +1,5 @@
+$ @mod OPTION_OUTSIDE_BUILD
+
+# Only the `@build` of a project's `BUILD.thx` sets project options.
+$ @build : {} -> <@Meta, @IO> @Code = \_ = @option "format.width" "80"; @parse_items ""
+#~ error[BUILD_SCRIPT]: `@option` outside a project's `BUILD.thx`

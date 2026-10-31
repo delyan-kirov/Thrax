@@ -502,6 +502,7 @@ builtins! {
     Link = compile_time("@link", 1),
     LinkPath = compile_time("@link_path", 1),
     ImportPath = compile_time("@import_path", 1),
+    SetOption = compile_time("@option", 2),
     TypeKind = compile_time("@type_kind", 1),
     TypeFields = compile_time("@type_fields", 1),
     TypeVariants = compile_time("@type_variants", 1),
