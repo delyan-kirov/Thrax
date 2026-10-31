@@ -1471,6 +1471,28 @@ pub fn take_link_directives() -> Vec<(bool, String)> {
 }
 
 thread_local! {
+    /// The directories `@import_path` added, while a project's `BUILD.thx` runs.
+    /// `None` at every other time, so a call anywhere else faults.
+    static IMPORT_PATHS: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Accept `@import_path` calls until [`take_import_paths`].
+pub fn accept_import_paths() {
+    IMPORT_PATHS.with(|c| *c.borrow_mut() = Some(Vec::new()));
+}
+
+/// Record an `@import_path`; false when no `BUILD.thx` is running.
+pub fn push_import_path(dir: String) -> bool {
+    IMPORT_PATHS.with(|c| c.borrow_mut().as_mut().map(|dirs| dirs.push(dir)).is_some())
+}
+
+/// Stop accepting `@import_path` and drain what it recorded.
+pub fn take_import_paths() -> Vec<String> {
+    IMPORT_PATHS.with(|c| c.borrow_mut().take().unwrap_or_default())
+}
+
+thread_local! {
     /// The target `TARGET` reflects, when it is not the host: the driver sets it
     /// for a cross build, so the compile-time code of a program built for wasm
     /// sees wasm.

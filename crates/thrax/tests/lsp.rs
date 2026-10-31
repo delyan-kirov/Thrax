@@ -298,6 +298,48 @@ fn unsaved_sibling_buffer_is_a_module() {
 // hears why: at the import that names it, or at the root's import it is
 // reached through.
 #[test]
+fn build_script_import_path_reaches_the_editor() {
+    let dir = std::env::temp_dir().join(format!("thrax-lsp-build-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("source")).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    std::fs::write(
+        dir.join("BUILD.thx"),
+        "$ @mod BUILD\n$ @build : {} -> <@Meta, @IO> @Code = \\_ = @import_path \"source\"; @parse_items \"\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("source/GREET.thx"), "$ @mod GREET\n$ greeting : @Str = \"hi\"\n").unwrap();
+    let src = "$ @mod MAIN\n$ with GREET\n$ g : @Int = greeting\n";
+    std::fs::write(dir.join("MAIN.thx"), src).unwrap();
+    let uri = thrax::lsp::path_to_uri(&dir.join("MAIN.thx"));
+
+    let mut c = Client::start();
+    c.request(
+        "initialize",
+        Json::obj([("initializationOptions", Json::obj([("lsp", Json::obj([("grace", Json::Bool(false))]))]))]),
+    );
+    c.notify("initialized", Json::obj([]));
+    c.notify(
+        "textDocument/didOpen",
+        Json::obj([(
+            "textDocument",
+            Json::obj([
+                ("uri", Json::str(uri.as_str())),
+                ("languageId", Json::str("thrax")),
+                ("version", Json::int(1)),
+                ("text", Json::str(src)),
+            ]),
+        )]),
+    );
+    // `GREET` loads from `source/`, so the one error is the type of its value.
+    let diags = c.diagnostics(&uri);
+    let codes: Vec<&str> = diags.iter().filter_map(|d| d.get("code").as_str()).collect();
+    assert_eq!(codes, ["TYPE_MISMATCH"], "{diags:?}");
+    let _ = c.child.kill();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_import_that_cannot_be_loaded_is_reported() {
     let dir = std::env::temp_dir().join(format!("thrax-lsp-missing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

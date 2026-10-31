@@ -1,0 +1,5 @@
+$ @mod IMPORT_PATH_OUTSIDE_BUILD
+
+# Only the `@build` of a project's `BUILD.thx` extends the module search.
+$ @build : {} -> <@Meta, @IO> @Code = \_ = @import_path "source"; @parse_items ""
+#~ error[BUILD_SCRIPT]: `@import_path` outside a project's `BUILD.thx`

@@ -1,0 +1,5 @@
+$ @mod BUILD
+$ with GREET  #~ error[UNKNOWN_MODULE]: cannot find module `GREET`
+
+# `BUILD.thx` cannot import from the directories it adds.
+$ @build : {} -> <@Meta, @IO> @Code = \_ = @import_path "source"; @parse_items ""
