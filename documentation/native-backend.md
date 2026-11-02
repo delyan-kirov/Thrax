@@ -131,6 +131,33 @@ non-tail `THxK_apply` pushes one `KRet` on the heap continuation stack, so **dee
 non-tail recursion grows the heap, not the C stack** (this lifts the old v1
 stack-overflow limit).
 
+### Direct functions and unboxed integers
+
+Most calls cannot perform an effect, and those need none of the machine. A
+known global function (a closure literal, seen through its currying) whose body
+provably never suspends (no handler, no `defer`, every call a built-in, a
+partial application, or another such function) also gets a plain C function
+`d_<code>`: its activation is a `Frame` on the C stack, a saturated call of it
+from a block or another direct function is a C call, and a self tail call is a
+`goto`. The analysis is a greatest fixpoint over the IR (`direct_safe` in
+`gen.rs`), so mutual recursion qualifies.
+
+The C stack is finite, so a direct call is made only while `THxD_room()` says
+the thread is within `THX_DIRECT_STACK` bytes (portable.h) of where it started;
+past that a direct function runs its callee on a nested machine and blocks take
+the ordinary heap path, so deep recursion still works.
+
+Integer intrinsics (`@iadd`, `@ilt`, ...) compile to C arithmetic on
+`int64_t`; a result used only as another intrinsic's operand or a literal
+case's scrutinee stays a C scalar. A direct function's arguments and result
+cross as `int64_t` when its body shows them to be integers. See
+Note [Direct functions] and Note [Unboxed integers] in `crates/ccg/src/gen.rs`.
+
+Two middle-end changes feed this: match compilation inlines a fallthrough
+thunk that has a single call site (an `if` no longer allocates a closure), and
+`sink_partials` also moves partial applications of curried global functions
+down to the application that saturates them.
+
 ## The "exploreable" / domino-failure discipline
 
 The backend is built so that adding or removing an IR node, a value tag or a
@@ -352,10 +379,11 @@ example is thereby also a leak regression test. Under `-DTHX_MEM_BUMP`,
 
 ## Missing features and where they plug in
 
-### Unboxing *(optimization)*
+### Unboxing beyond integers *(optimization)*
 
-Values are pointer-boxed. A later representation pass could keep `@Int`/`Real`
-unboxed in registers for true low-level performance.
+Integers are unboxed inside and between direct functions (below). Reals,
+booleans across calls, and the values flowing through block code are still
+pointer-boxed.
 
 ## Known limitations
 
@@ -370,9 +398,9 @@ unboxed in registers for true low-level performance.
   x)`) would leak the same class the interpreter's weak-`VRec` assumption
   covers; such bindings do not occur in practice (recursive lets bind
   functions).
-- Values are pointer-boxed, not register-unboxed; RC is runtime-seam-based, not
-  a Perceus-style compile-time dup/drop pass: apart from `@vec_push` and
-  `@vec_set`, a dead cell is never reused for a new value.
+- Outside direct functions values are pointer-boxed. RC is runtime-seam-based,
+  not a full Perceus-style compile-time dup/drop pass: a dead cell is reused in
+  place only by `@vec_push`/`@vec_set` and by constructor reuse of variants.
 
 ## Verification
 

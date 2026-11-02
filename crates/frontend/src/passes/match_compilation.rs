@@ -96,13 +96,14 @@ impl MatchCompiler {
     // rest runs only on failure, because a lambda's body does not run until it
     // is called. See Note [Case is never lowered to application].
     //
-    // An arm that can fail at only one point, before it binds any variable
-    // (a literal, or a constructor whose fields are all irrefutable, with no
-    // guard), needs no thunk: the remaining arms go at that one point as the
-    // case default, copied nowhere else, and no binding of the arm can shadow
-    // a variable they read. Most matches are of this kind (every `if`, and
-    // the `[]` / `h :: t` split), and a thunk there would cost a closure per
-    // match and capture every variable the remaining arms read.
+    // Most arms fail at one point only (an `if`, a literal, a constructor whose
+    // fields are all variables), and a thunk called from one place is just an
+    // indirect jump that allocates a closure, capturing every variable the
+    // remaining arms read. So when the arm has a single failure point, the
+    // remaining arms go there directly, copied nowhere else, unless the arm
+    // binds a name around that point which they mention. An arm that fails at
+    // most once before binding anything (`fails_at_most_once_unbound`) takes
+    // that path without searching for the point.
 
     /// The code for arms `i..`: try arm `i`, falling through to arms `i+1..` on
     /// any mismatch, or to `fail` when the arms are exhausted.
@@ -123,6 +124,16 @@ impl MatchCompiler {
         let unit = t.add(Term::Unit);
         let on_fail = t.app(fkv, unit);
         let arm_code = self.compile_arm(t, s, &arms[i], on_fail);
+        let opaque: Vec<Aol<Term>> = std::iter::once(arms[i].body).chain(arms[i].guard).collect();
+        let mut sites = Vec::new();
+        failure_sites(t, arm_code, on_fail, &opaque, &mut Vec::new(), &mut sites);
+        match sites.as_slice() {
+            [] => return arm_code,
+            [scope] if !scope.iter().any(|n| t.mentions(fail_rest, *n)) => {
+                return replace_node(t, arm_code, on_fail, fail_rest, &opaque);
+            }
+            _ => {}
+        }
         let thunk = t.lam(StrId::intern("_"), fail_rest);
         t.let_(fk, thunk, arm_code)
     }
@@ -506,6 +517,43 @@ fn irrefutable(pat: &Pat) -> bool {
         Pat::Struct { fields, .. } => fields.iter().all(|(_, p)| irrefutable(p)),
         _ => false,
     }
+}
+
+/// Collect, for each occurrence of node `target` under `t`, the user names bound
+/// around it within `t` (fresh `%` names cannot clash). The `opaque` subterms
+/// are known not to contain `target` and are skipped.
+fn failure_sites(
+    t: &Terms,
+    node: Aol<Term>,
+    target: Aol<Term>,
+    opaque: &[Aol<Term>],
+    scope: &mut Vec<StrId>,
+    sites: &mut Vec<Vec<StrId>>,
+) {
+    if node == target {
+        sites.push(scope.clone());
+        return;
+    }
+    if opaque.contains(&node) {
+        return;
+    }
+    t.for_each_child(node, &mut |child, bound| {
+        let depth = scope.len();
+        scope.extend(bound.iter().filter(|n| !n.as_str().starts_with('%')));
+        failure_sites(t, child, target, opaque, scope, sites);
+        scope.truncate(depth);
+    });
+}
+
+/// `t` with every occurrence of node `target` replaced by `with`.
+fn replace_node(t: &mut Terms, node: Aol<Term>, target: Aol<Term>, with: Aol<Term>, opaque: &[Aol<Term>]) -> Aol<Term> {
+    if node == target {
+        return with;
+    }
+    if opaque.contains(&node) {
+        return node;
+    }
+    t.map_children(node, &mut |t, child, _| replace_node(t, child, target, with, opaque))
 }
 
 /// `view sv`: apply the resolved `sequence_view` hook global to the scrutinee.

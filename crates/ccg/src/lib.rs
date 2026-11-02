@@ -80,7 +80,7 @@ pub fn emit_program(
 ) -> Emitted {
     let prog = ir::lower_modules(modules);
     let reachable = reachable_codes(&prog, entry);
-    let (blocks, code_entry, mut externs, uses_compiler, uses_par) =
+    let (blocks, (direct_decls, direct_defs), code_entry, mut externs, uses_compiler, uses_par) =
         Emitter::new(&prog, reachable.clone()).run();
     for e in &mut externs {
         if let Some((args, ret)) =
@@ -198,10 +198,12 @@ pub fn emit_program(
     for i in 0..blocks.len() {
         out.push_str(&format!("static void blk_{i}(Frame*, Value*);\n"));
     }
+    out.push_str(&direct_decls);
     out.push('\n');
     for b in &blocks {
         out.push_str(b);
     }
+    out.push_str(&direct_defs);
 
     // The foreign-function wrappers and their dispatch table (empty table + count
     // 0 when the program has no `@extern`).

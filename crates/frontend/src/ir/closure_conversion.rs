@@ -54,9 +54,24 @@ pub fn convert_closures_after(core: &CoreProgram, first: usize, before: &HashSet
     let mut codes = conv.codes;
     let mut names: HashSet<StrId> = globals.iter().map(|(n, _)| *n).collect();
     names.extend(before.iter().copied());
+    let mut arities: HashMap<StrId, usize> = HashMap::new();
+    for &(name, id) in &globals {
+        let mut arity = 0;
+        let mut code = id;
+        while let Some(IrExpr::Ret(Atom::Clos { code: next, .. })) = codes.get(code - first).map(|c| &c.body) {
+            arity += 1;
+            code = *next;
+        }
+        arities.entry(name).or_insert(arity);
+    }
+    let arity = |name: &StrId| match arities.get(name) {
+        Some(&n) => Some(n),
+        None if names.contains(name) => None,
+        None => builtin_arity(name.as_str()),
+    };
     for code in &mut codes {
         let body = std::mem::replace(&mut code.body, IrExpr::Fault(String::new()));
-        code.body = propagate_copies(sink_partials(body, &names));
+        code.body = propagate_copies(sink_partials(body, &arity, &HashMap::new()));
     }
     data::IrProgram {
         codes,
@@ -482,23 +497,36 @@ impl<'c> ClosureConverter<'c> {
     }
 }
 
-/// Move each partial application of a built-in down to the application that
-/// saturates it. A-normal form evaluates `@iadd x (f y)` as `let p = @iadd x in
-/// let a = f y in p a`; this gives `let a = f y in let p = @iadd x in p a`, which
-/// a backend can run as one direct call. Applying a built-in to fewer operands
-/// than its arity does nothing but collect them, so the move changes no
-/// behaviour, and `x`'s slots stay bound across the body it moves through.
-fn sink_partials(e: IrExpr, globals: &HashSet<StrId>) -> IrExpr {
+/// Move each partial application of a built-in or a curried global function
+/// down to the application that saturates it. A-normal form evaluates `@iadd x
+/// (f y)` as `let p = @iadd x in let a = f y in p a`; this gives `let a = f y in
+/// let p = @iadd x in p a`, which a backend can run as one direct call.
+/// Applying a built-in to fewer operands than its arity does nothing but
+/// collect them, as does applying a global whose lambdas each just return the
+/// next one (`arity` counts them), so the move changes no behaviour, and `x`'s
+/// slots stay bound across the body it moves through. `partials` holds the
+/// slots in scope bound to such a partial application, with how many more
+/// operands each takes.
+fn sink_partials(e: IrExpr, arity: &impl Fn(&StrId) -> Option<usize>, partials: &HashMap<usize, usize>) -> IrExpr {
     match e {
         IrExpr::Let { slot, rhs, body } => {
-            let rhs = sink_partials(*rhs, globals);
-            let body = sink_partials(*body, globals);
-            let partial = match &rhs {
-                IrExpr::App {
-                    fun: Atom::Glob { name },
-                    ..
-                } => !globals.contains(name) && builtin_arity(name.as_str()).is_some_and(|n| n >= 2),
-                _ => false,
+            let rhs = sink_partials(*rhs, arity, partials);
+            let left = match &rhs {
+                IrExpr::App { fun: Atom::Glob { name }, .. } => arity(name).map(|n| n.saturating_sub(1)),
+                IrExpr::App { fun: Atom::Local(s), .. } => partials.get(s).map(|n| n - 1),
+                _ => None,
+            };
+            let partial = left.is_some_and(|n| n >= 1);
+            let body = if partial {
+                let mut inner = partials.clone();
+                inner.insert(slot, left.unwrap_or(0));
+                sink_partials(*body, arity, &inner)
+            } else if partials.contains_key(&slot) {
+                let mut inner = partials.clone();
+                inner.remove(&slot);
+                sink_partials(*body, arity, &inner)
+            } else {
+                sink_partials(*body, arity, partials)
             };
             if partial {
                 match place_partial(slot, &rhs, body) {
@@ -526,20 +554,20 @@ fn sink_partials(e: IrExpr, globals: &HashSet<StrId>) -> IrExpr {
             alts: alts
                 .into_iter()
                 .map(|a| Alt {
-                    body: sink_partials(a.body, globals),
+                    body: sink_partials(a.body, arity, partials),
                     ..a
                 })
                 .collect(),
-            default: Box::new(sink_partials(*default, globals)),
+            default: Box::new(sink_partials(*default, arity, partials)),
         },
         IrExpr::Handle { body, clauses, els } => IrExpr::Handle {
-            body: Box::new(sink_partials(*body, globals)),
+            body: Box::new(sink_partials(*body, arity, partials)),
             clauses,
             els,
         },
         IrExpr::Defer { cleanup, body } => IrExpr::Defer {
             cleanup,
-            body: Box::new(sink_partials(*body, globals)),
+            body: Box::new(sink_partials(*body, arity, partials)),
         },
         e => e,
     }

@@ -1440,3 +1440,56 @@ fn a_shallow_arm_with_wildcard_fields_binds_the_right_slots() {
     assert_matches(src, "test");
     assert_eq!(interp_show(src, "test"), "24027");
 }
+
+/// Known functions that cannot perform an effect are compiled as C functions
+/// with unboxed integers; the results, and the exact reference counts the leak
+/// check verifies, must not change. The recursion here is deeper than the C
+/// stack budget of direct calls, so it also covers the fall back to the machine.
+#[test]
+fn direct_functions_match_interpreter() {
+    let src = "$ @mod M\n\
+               $ Acc : @effect = add : @Int -> {},\n\
+               $ fib : @Int -> @Int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ go : @Int -> @Int -> @Int = \\i acc = if i == 0 => acc else go (i - 1) (acc + i % 7)\n\
+               $ even : @Int -> @Bool = \\n = if n == 0 => @true else odd (n - 1)\n\
+               $ odd : @Int -> @Bool = \\n = if n == 0 => @false else even (n - 1)\n\
+               $ sumto : @Int -> @Int = \\n = if n == 0 => 0 else n + sumto (n - 1)\n\
+               $ len : List @Int -> @Int -> @Int = \\l n = is l | [] => n | x :: xs => len xs (n + x / 2)\n\
+               $ upto : @Int -> List @Int = \\n = if n == 0 => [] else n :: upto (n - 1)\n\
+               $ tell : @Int -> <Acc> @Int = \\n = if n == 0 => 0 else Acc.add n; tell (n - 1)\n\
+               $ test : @Int =\n\
+               \tlet e = if even 50001 => 1 else 0 in\n\
+               \tlet t = do tell 100 ctl k | Acc.add n => n + k {} | r => r in\n\
+               \tfib 15 + go 20000 0 + e + sumto 50000 + len (upto 2000) 0 + t\n";
+    assert_matches(src, "test");
+    let code = ccg::emit(&lower(src), "test", ccg::Entry::Show, utilities::Target::host());
+    assert!(code.contains("static int64_t d_"), "fib should compile to a direct function on integers");
+    assert!(code.contains("goto top;"), "go's self tail call should be a loop");
+}
+
+/// An integer intrinsic computed in C must fault like the boxed one does.
+#[test]
+fn unboxed_division_by_zero_faults() {
+    let src = "$ @mod M\n\
+               $ div : @Int -> @Int -> @Int = \\a b = a / b\n\
+               $ test : @Int = div 7 (@isub 3 3)\n";
+    let lowered = lower(src);
+    let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
+    let mut c_path = std::env::temp_dir();
+    c_path.push(format!("ccg_{}_divzero.c", std::process::id()));
+    let bin_path = c_path.with_extension("bin");
+    std::fs::write(&c_path, &code).expect("write C");
+    let status = Command::new(c_compiler())
+        .args(["-w", "-O1", "-pthread", "-o"])
+        .arg(&bin_path)
+        .arg(&c_path)
+        .arg("-lm")
+        .status()
+        .expect("run C compiler");
+    assert!(status.success());
+    let out = Command::new(&bin_path).output().expect("run compiled program");
+    let _ = std::fs::remove_file(&c_path);
+    let _ = std::fs::remove_file(&bin_path);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("division by zero"));
+}

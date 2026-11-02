@@ -2528,6 +2528,86 @@ Value *THxRT_variant_at(Frame *fr, size_t token, const char *ty, const char *tag
   return v;
 }
 
+/* -- direct functions ---------------------------------------------------- */
+
+/* A value a direct function returns is owned; the pool takes that reference,
+ * so to its caller it is a temporary like any fresh value. */
+static inline Value *THxK_own(Value *v) {
+  pool_adopt(v);
+  return v;
+}
+
+/* The integer intrinsics on C scalars, for generated code that keeps integers
+ * unboxed; the boxed versions are in `arith_intrinsic`. */
+static inline int64_t THxI(Value *v) { return v->u.i; }
+static inline int64_t THxI_div(int64_t a, int64_t b) {
+  if (b == 0) thrax_fault("division by zero");
+  return a / b;
+}
+static inline int64_t THxI_mod(int64_t a, int64_t b) {
+  if (b == 0) thrax_fault("division by zero");
+  return a % b;
+}
+static inline int64_t THxI_udiv(int64_t a, int64_t b) {
+  if (b == 0) thrax_fault("division by zero");
+  return (int64_t)((uint64_t)a / (uint64_t)b);
+}
+static inline int64_t THxI_umod(int64_t a, int64_t b) {
+  if (b == 0) thrax_fault("division by zero");
+  return (int64_t)((uint64_t)a % (uint64_t)b);
+}
+
+/* Whether a direct call may still use the C stack: within THX_DIRECT_STACK
+ * bytes of where this thread first asked. Past it, calls go through the
+ * machine, whose continuation lives on the heap. */
+static THX_TLS uintptr_t g_dbase = 0;
+static inline int THxD_room(void) {
+  uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
+  if (!g_dbase) g_dbase = sp;
+  return sp >= g_dbase || g_dbase - sp < THX_DIRECT_STACK;
+}
+
+/* A direct function's activation: a Frame on the C stack over the slot array
+ * `locals` and the environment `env`, both C arrays of the function. */
+static inline void THxD_frame(Frame *fr, Value **locals, size_t nlocals, Value **env, size_t nenv) {
+  fr->rc = 1;
+  fr->lent = 0;
+  fr->clos = NULL;
+  fr->locals = locals;
+  fr->nlocals = nlocals;
+  fr->env = env;
+  fr->nenv = nenv;
+  memset(locals, 0, (nlocals ? nlocals : 1) * sizeof(Value *));
+}
+
+/* Release a direct activation: its slots, its arguments `params`, and the
+ * temporaries it made since `mark`. */
+static void THxD_reset(Frame *fr, Value **params, size_t nparams, size_t mark) {
+  for (size_t i = 0; i < fr->nlocals; i++) THxMEM_release(fr->locals[i]);
+  for (size_t i = 0; i < nparams; i++) THxMEM_release(params[i]);
+  THxMEM_pool_drain(mark);
+}
+
+/* Return `v` from a direct activation, as an owned reference. */
+static Value *THxD_leave(Frame *fr, Value **params, size_t nparams, size_t mark, Value *v) {
+  THxMEM_retain(v);
+  THxD_reset(fr, params, nparams, mark);
+  return v;
+}
+
+/* Return the integer `r` from a direct activation with an unboxed result. */
+static int64_t THxD_leave_i(Frame *fr, Value **params, size_t nparams, size_t mark, int64_t r) {
+  THxD_reset(fr, params, nparams, mark);
+  return r;
+}
+
+/* The integer an owned boxed result holds, releasing the box. */
+static inline int64_t THxI_own(Value *v) {
+  int64_t r = v->u.i;
+  THxMEM_release(v);
+  return r;
+}
+
 /* -- the machine --------------------------------------------------------- */
 
 /* Enter a closure `clo`, placing `args[0..nargs)` in the leading local slots

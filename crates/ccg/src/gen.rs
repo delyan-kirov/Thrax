@@ -12,18 +12,107 @@
 //! continuation (`RET`) or written to a frame slot before jumping to a
 //! continuation block (`SLOT`). Pure lets stay inline; only suspending
 //! sub-expressions split into fresh blocks.
+//!
+//! Known global functions that can never suspend are also emitted as plain C
+//! functions that blocks and each other call directly, with integers unboxed
+//! where the code shows them to be integers. See Note [Direct functions].
+//! See Note [Unboxed integers].
 
 use std::collections::{HashMap, HashSet};
 
 use frontend::ir::data::{native_builtin, native_builtins, Atom, AltKind, BuiltinHost, IrExpr, IrProgram, ResumeUse, Unpack};
 use utilities::StrId;
 
-/// A saturated built-in call found by `prim_chain`.
-struct PrimCall<'e> {
+/// What a saturated call found by `call_chain` calls.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Callee {
+    /// A built-in.
+    Prim,
+    /// A known global function (see [`KnownFn`]), by the code of its CAF.
+    Known(usize),
+}
+
+/// A function applied to all its operands, found by `call_chain`.
+struct Call<'e> {
     name: &'e str,
+    callee: Callee,
     args: Vec<&'e Atom>,
     drops: Vec<usize>,
     rest: Option<(usize, &'e IrExpr)>,
+}
+
+/// A global whose value is a closure literal, seen through its currying: the
+/// codes of its lambdas, outermost first, where each but the last only captures
+/// its parameter and what it was given and returns the next closure. Applied to
+/// `codes.len()` arguments, it runs the last code with field `j` of its
+/// environment bound to argument `env[j]`, which is what lets a saturated call
+/// skip building the intermediate closures.
+#[derive(Clone)]
+struct KnownFn {
+    codes: Vec<usize>,
+    env: Vec<usize>,
+}
+
+impl KnownFn {
+    fn arity(&self) -> usize {
+        self.codes.len()
+    }
+
+    fn inner(&self) -> usize {
+        *self.codes.last().expect("a known function has a code")
+    }
+}
+
+/// Which of a direct function's arguments, and whether its result, cross as C
+/// `int64_t` rather than boxed. See Note [Unboxed integers].
+#[derive(Clone, PartialEq)]
+struct Sig {
+    int_params: Vec<bool>,
+    int_ret: bool,
+}
+
+/// What `int_walk` knows at a point of a direct function's body: whether slot
+/// 0 still holds the last argument, which slots hold integers, and which
+/// arguments have been seen used as integers.
+struct IntState {
+    p0: bool,
+    ints: HashSet<usize>,
+    evidence: Vec<bool>,
+}
+
+/// The closure a code returns, under the drop of its unread parameter.
+fn returned_closure(e: &IrExpr) -> Option<(usize, &[Atom])> {
+    match e {
+        IrExpr::Ret(Atom::Clos { code, captures }) => Some((*code, captures)),
+        IrExpr::Drop { slots, body } if slots.as_slice() == [0] => returned_closure(body),
+        _ => None,
+    }
+}
+
+/// The global function a CAF defines, if its body is a closure literal.
+fn known_fn(prog: &IrProgram, caf: usize) -> Option<KnownFn> {
+    let (first, captures) = returned_closure(&prog.codes[caf].body)?;
+    if !captures.is_empty() || prog.codes[first].nparams != 1 {
+        return None;
+    }
+    let mut f = KnownFn { codes: vec![first], env: Vec::new() };
+    'chain: while let Some((next, captures)) = returned_closure(&prog.codes[f.inner()].body) {
+        if prog.codes[next].nparams != 1 {
+            break;
+        }
+        let param = f.arity() - 1;
+        let mut env = Vec::with_capacity(captures.len());
+        for c in captures {
+            match c {
+                Atom::Local(0) | Atom::Move(0) => env.push(param),
+                Atom::Env(i) | Atom::MoveEnv(i) if *i < f.env.len() => env.push(f.env[*i]),
+                _ => break 'chain,
+            }
+        }
+        f.codes.push(next);
+        f.env = env;
+    }
+    Some(f)
 }
 
 /// Where a computed value goes.
@@ -35,6 +124,40 @@ enum Sink {
     /// `Some`, control jumps to that continuation block. `None` is the pure-into
     /// sink (back-patch and fall through, used by a pure Case's branches).
     Slot { slot: usize, cont: Option<usize> },
+}
+
+// Note [Direct functions]
+//
+// Running every call through the machine (a heap frame, a continuation frame,
+// a bounce through the driver) is what effects need: a handler captures the
+// continuation as heap data. A call that cannot perform an effect needs none of
+// it, so a known global function whose body provably never suspends also gets
+// a plain C function `d_<code>` with its activation on the C stack: arguments
+// borrowed, result owned, the frame's slots in a C array behind a stack
+// `Frame` so the ordinary slot helpers work unchanged. Saturated calls to it
+// from anywhere become C calls, and its self tail calls a loop.
+//
+// "Never suspends" is decided on the IR alone (`direct_safe`): no handler, no
+// `defer`, and every call either a built-in, a partial application of a known
+// function or built-in (which only builds a value), or a saturated call of
+// another direct function. A greatest fixpoint, so mutual recursion qualifies.
+// Forcing a thunk or running a higher-order built-in nests a machine run, as it
+// does for the block code.
+//
+// The C stack is finite where the machine's heap continuation is not, so a call
+// is made directly only while `THxD_room()` says the stack has room. Past that
+// a direct function runs the callee on a nested machine, and blocks take the
+// ordinary machine path, where further recursion grows the heap. So deep
+// recursion still works, only slower.
+
+/// The direct function being emitted. See Note [Direct functions].
+#[derive(Clone, Copy)]
+struct Direct {
+    /// Its last code, which a self tail call loops back into.
+    inner: usize,
+    arity: usize,
+    /// Whether it returns an unboxed integer.
+    int_ret: bool,
 }
 
 /// A distinct `@extern` binding the C backend emits a wrapper for. Deduplicated
@@ -84,7 +207,37 @@ pub struct Emitter<'p> {
     /// the runtime must be built thread-ready (`THRAX_THREADS`); every other
     /// program keeps plain, non-atomic counts.
     uses_threads: std::cell::Cell<bool>,
+    /// The known global functions, by the code of their CAF.
+    known: HashMap<usize, KnownFn>,
+    /// The CAFs of the known functions compiled as direct C functions.
+    direct_fns: HashSet<usize>,
+    /// The signatures of the direct functions, by the code of their CAF.
+    sigs: HashMap<usize, Sig>,
+    /// Set while emitting a direct function's body.
+    direct: Option<Direct>,
+    /// While emitting a direct function: its environment fields that hold an
+    /// unboxed argument -> the C variable.
+    env_ints: HashMap<usize, String>,
+    /// Whether the direct function being emitted loops on a self tail call.
+    looped: bool,
+    /// The slots whose value lives in a C scalar instead: slot -> the C
+    /// variable, and whether it holds a boolean. See Note [Unboxed integers].
+    scalars: HashMap<usize, (String, bool)>,
 }
+
+// Note [Unboxed integers]
+//
+// A boxed value is a heap allocation, and for integer arithmetic it is most of
+// the cost: `if n < 2` allocates the literal and the boolean. The integer
+// intrinsics only ever see integers (the type-directed instances guarantee the
+// tags, which is why the runtime reads `u.i` unchecked), so a saturated one is
+// emitted as C arithmetic on `int64_t` operands: a literal operand is a C
+// literal, a boxed one is read in place.
+//
+// Its result stays a C scalar when every use of the slot is another such
+// operand or the scrutinee of a literal case, and all of them are in the same
+// C function (`scalar_uses`). Otherwise it is boxed once, as before. A slot
+// rebound after its scalar's last use is boxed as usual from then on.
 
 /// The C enum constant the runtime dispatches a built-in on: `@vec_get` is
 /// `THxB_VEC_GET`, an operator spells its symbol out.
@@ -205,9 +358,32 @@ fn emit_let_slot(rhs: &IrExpr, slot: usize, out: &mut String) {
     }
 }
 
-fn emit_drops(slots: &[usize], out: &mut String) {
-    for s in slots {
-        out.push_str(&format!("  THxK_drop(fr, {s});\n"));
+/// The C of an integer intrinsic on `int64_t` operands, and whether its result
+/// is a boolean (else an integer). Arithmetic wraps, as the boxed runtime's
+/// does in practice, without C's signed-overflow undefined behaviour.
+fn int_intrinsic(name: &str, a: &str, b: &str) -> Option<(String, bool)> {
+    let wrap = |op: &str| format!("(int64_t)((uint64_t)({a}) {op} (uint64_t)({b}))");
+    Some(match name {
+        "@iadd" => (wrap("+"), false),
+        "@isub" => (wrap("-"), false),
+        "@imul" => (wrap("*"), false),
+        "@idiv" => (format!("THxI_div({a}, {b})"), false),
+        "@imod" => (format!("THxI_mod({a}, {b})"), false),
+        "@udiv" => (format!("THxI_udiv({a}, {b})"), false),
+        "@umod" => (format!("THxI_umod({a}, {b})"), false),
+        "@ieq" => (format!("(({a}) == ({b}))"), true),
+        "@ilt" => (format!("(({a}) < ({b}))"), true),
+        "@ult" => (format!("((uint64_t)({a}) < (uint64_t)({b}))"), true),
+        _ => return None,
+    })
+}
+
+/// A C `int64_t` literal; the most negative one has no literal of its own.
+fn clit(n: i64) -> String {
+    if n == i64::MIN {
+        "(-9223372036854775807LL - 1)".to_string()
+    } else {
+        format!("{n}LL")
     }
 }
 
@@ -872,7 +1048,15 @@ impl<'p> Emitter<'p> {
                 collect_externs(&code.body, &mut externs, &mut extern_idx);
             }
         }
-        Emitter {
+        let mut known = HashMap::new();
+        for (_, caf) in &prog.globals {
+            if reachable.contains(caf) && !known.contains_key(caf) {
+                if let Some(f) = known_fn(prog, *caf) {
+                    known.insert(*caf, f);
+                }
+            }
+        }
+        let mut em = Emitter {
             prog,
             globals,
             bare,
@@ -886,18 +1070,263 @@ impl<'p> Emitter<'p> {
             tmp: 0,
             uses_compiler: std::cell::Cell::new(false),
             uses_threads: std::cell::Cell::new(false),
+            known,
+            direct_fns: HashSet::new(),
+            sigs: HashMap::new(),
+            direct: None,
+            env_ints: HashMap::new(),
+            looped: false,
+            scalars: HashMap::new(),
+        };
+        em.direct_fns = em.direct_safe();
+        em.sigs = em.signatures();
+        em
+    }
+
+    /// The known functions whose bodies never suspend, assuming the same of each
+    /// other: start from all of them and drop any that fails, until none does.
+    /// See Note [Direct functions].
+    fn direct_safe(&self) -> HashSet<usize> {
+        let mut safe: HashSet<usize> = self.known.keys().copied().collect();
+        loop {
+            let failed: Vec<usize> = safe
+                .iter()
+                .copied()
+                .filter(|caf| !self.never_suspends(&self.prog.codes[self.known[caf].inner()].body, &safe))
+                .collect();
+            if failed.is_empty() {
+                return safe;
+            }
+            for caf in failed {
+                safe.remove(&caf);
+            }
         }
     }
 
-    /// Emit every code, then return the finished block function texts, the code
-    /// index -> entry block map, the foreign-function table, and whether the
+    /// Whether `e` runs without suspending, given the direct functions `safe`.
+    /// Mirrors how a direct function's body is emitted.
+    fn never_suspends(&self, e: &IrExpr, safe: &HashSet<usize>) -> bool {
+        let callee_ok = |c: Callee| match c {
+            Callee::Prim => true,
+            Callee::Known(caf) => safe.contains(&caf),
+        };
+        match e {
+            IrExpr::Let { slot, rhs, body } => match self.call_chain(*slot, rhs, body) {
+                Some(call) => {
+                    callee_ok(call.callee)
+                        && call.rest.is_none_or(|(_, rest)| self.never_suspends(rest, safe))
+                }
+                None => self.never_suspends(rhs, safe) && self.never_suspends(body, safe),
+            },
+            IrExpr::App { fun, arg, .. } => match self.lone_call(fun, arg) {
+                Some(call) => callee_ok(call.callee),
+                None => self.partial_callee(fun),
+            },
+            IrExpr::Case { alts, default, .. } => {
+                alts.iter().all(|a| self.never_suspends(&a.body, safe)) && self.never_suspends(default, safe)
+            }
+            IrExpr::Drop { body, .. } => self.never_suspends(body, safe),
+            IrExpr::Handle { .. } | IrExpr::Defer { .. } => false,
+            IrExpr::Ret(_)
+            | IrExpr::MkStruct { .. }
+            | IrExpr::Field { .. }
+            | IrExpr::MkVariant { .. }
+            | IrExpr::MkTuple(_)
+            | IrExpr::Fault(_) => true,
+        }
+    }
+
+    /// The signature of every direct function. An argument is unboxed when the
+    /// body uses it as an integer: an integer intrinsic's operand, a literal
+    /// case's scrutinee, or an unboxed argument of a call (a least fixpoint, so
+    /// every such claim rests on a real use; the types guarantee an `@Int` is an
+    /// evaluated integer). The result is unboxed when every value returned is an
+    /// integer (a greatest fixpoint: a function returning only through calls of
+    /// itself returns nothing at all).
+    fn signatures(&self) -> HashMap<usize, Sig> {
+        let mut sigs: HashMap<usize, Sig> = self
+            .direct_fns
+            .iter()
+            .map(|caf| (*caf, Sig { int_params: vec![false; self.known[caf].arity()], int_ret: true }))
+            .collect();
+        // The arguments first: the result's analysis reads them, theirs never
+        // reads the result.
+        for results in [false, true] {
+            loop {
+                let mut next = sigs.clone();
+                for caf in &self.direct_fns {
+                    let f = &self.known[caf];
+                    let sig = &sigs[caf];
+                    let mut st = IntState {
+                        p0: true,
+                        ints: if sig.int_params[f.arity() - 1] { [0].into() } else { HashSet::new() },
+                        evidence: vec![false; f.arity()],
+                    };
+                    let ret = self.int_walk(&self.prog.codes[f.inner()].body, f, &sigs, sig, &mut st);
+                    let entry = next.get_mut(caf).expect("every direct function has a signature");
+                    if results {
+                        entry.int_ret = entry.int_ret && ret;
+                    } else {
+                        for (p, e) in entry.int_params.iter_mut().zip(&st.evidence) {
+                            *p = *p || *e;
+                        }
+                    }
+                }
+                if next == sigs {
+                    break;
+                }
+                sigs = next;
+            }
+        }
+        sigs
+    }
+
+    /// Walk a direct function's body for `signatures`: collect the integer uses
+    /// of its arguments into `st`, and return whether every value it returns is
+    /// an integer.
+    fn int_walk(&self, e: &IrExpr, f: &KnownFn, sigs: &HashMap<usize, Sig>, sig: &Sig, st: &mut IntState) -> bool {
+        let param_of = |a: &Atom, st: &IntState| match a {
+            Atom::Env(j) | Atom::MoveEnv(j) => Some(f.env[*j]),
+            Atom::Local(0) | Atom::Move(0) if st.p0 => Some(f.arity() - 1),
+            _ => None,
+        };
+        let is_int = |a: &Atom, st: &IntState| match a {
+            Atom::LitI(_) => true,
+            Atom::Env(j) | Atom::MoveEnv(j) => sig.int_params[f.env[*j]],
+            Atom::Local(s) | Atom::Move(s) => st.ints.contains(s),
+            _ => false,
+        };
+        // What a call yields, after noting the integer uses of its arguments.
+        let call = |c: &Call, st: &mut IntState| -> bool {
+            match c.callee {
+                Callee::Prim => match int_intrinsic(c.name, "", "") {
+                    Some((_, boolean)) => {
+                        for a in &c.args {
+                            if let Some(p) = param_of(a, st) {
+                                st.evidence[p] = true;
+                            }
+                        }
+                        !boolean
+                    }
+                    None => false,
+                },
+                Callee::Known(caf) => match sigs.get(&caf) {
+                    Some(callee) => {
+                        for (a, int) in c.args.iter().zip(&callee.int_params) {
+                            if let Some(p) = param_of(a, st).filter(|_| *int) {
+                                st.evidence[p] = true;
+                            }
+                        }
+                        callee.int_ret
+                    }
+                    None => false,
+                },
+            }
+        };
+        let rebind = |s: usize, int: bool, st: &mut IntState| {
+            if s == 0 {
+                st.p0 = false;
+            }
+            if int {
+                st.ints.insert(s);
+            } else {
+                st.ints.remove(&s);
+            }
+        };
+        match e {
+            IrExpr::Let { slot, rhs, body } => match self.call_chain(*slot, rhs, body) {
+                Some(c) => {
+                    let int = call(&c, st);
+                    match c.rest {
+                        Some((r, rest)) => {
+                            rebind(*slot, false, st);
+                            rebind(r, int, st);
+                            self.int_walk(rest, f, sigs, sig, st)
+                        }
+                        None => int,
+                    }
+                }
+                None => {
+                    let int = self.int_walk(rhs, f, sigs, sig, st);
+                    rebind(*slot, int, st);
+                    self.int_walk(body, f, sigs, sig, st)
+                }
+            },
+            IrExpr::App { fun, arg, .. } => match self.lone_call(fun, arg) {
+                Some(c) => call(&c, st),
+                None => false,
+            },
+            IrExpr::Case { scrut, alts, default } => {
+                if alts.iter().any(|a| matches!(a.kind, AltKind::Int(_))) {
+                    if let Some(p) = param_of(scrut, st) {
+                        st.evidence[p] = true;
+                    }
+                }
+                let mut all = true;
+                for a in alts {
+                    let mut branch = IntState { p0: st.p0, ints: st.ints.clone(), evidence: Vec::new() };
+                    std::mem::swap(&mut branch.evidence, &mut st.evidence);
+                    if let AltKind::Con(_) = a.kind {
+                        for i in 0..a.binders.len() {
+                            rebind(a.binder_base + i, false, &mut branch);
+                        }
+                    }
+                    all &= self.int_walk(&a.body, f, sigs, sig, &mut branch);
+                    std::mem::swap(&mut branch.evidence, &mut st.evidence);
+                }
+                let mut branch = IntState { p0: st.p0, ints: st.ints.clone(), evidence: Vec::new() };
+                std::mem::swap(&mut branch.evidence, &mut st.evidence);
+                all &= self.int_walk(default, f, sigs, sig, &mut branch);
+                std::mem::swap(&mut branch.evidence, &mut st.evidence);
+                all
+            }
+            IrExpr::Drop { body, .. } => self.int_walk(body, f, sigs, sig, st),
+            IrExpr::Ret(a) => is_int(a, st),
+            IrExpr::Fault(_) => true,
+            IrExpr::MkStruct { .. }
+            | IrExpr::Field { .. }
+            | IrExpr::MkVariant { .. }
+            | IrExpr::MkTuple(_)
+            | IrExpr::Handle { .. }
+            | IrExpr::Defer { .. } => false,
+        }
+    }
+
+    /// Whether applying `fun` to one argument only builds a value: a built-in or
+    /// a known function short of its arity.
+    fn partial_callee(&self, fun: &Atom) -> bool {
+        let Atom::Glob { name } = fun else {
+            return false;
+        };
+        let name = name.as_str();
+        match self.globals.get(name) {
+            Some(caf) => self.known.get(caf).is_some_and(|f| f.arity() > 1),
+            None => native_builtin(name).is_some_and(|b| b.arity > 1),
+        }
+    }
+
+    /// Emit every code, then return the finished block function texts, the
+    /// declarations and definitions of the direct functions, the code index ->
+    /// entry block map, the foreign-function table, and whether the
     /// program uses a [`BuiltinHost::Compiler`] builtin and a [`BuiltinHost::Parallel`] one.
-    pub fn run(mut self) -> (Vec<String>, Vec<usize>, Vec<ExternSite>, bool, bool) {
+    pub fn run(mut self) -> (Vec<String>, (String, String), Vec<usize>, Vec<ExternSite>, bool, bool) {
         for id in 0..self.prog.codes.len() {
             self.emit_code(id);
         }
+        let mut cafs: Vec<usize> = self.direct_fns.iter().copied().collect();
+        cafs.sort_unstable();
+        let mut decls = String::new();
+        let mut defs = String::new();
+        for caf in cafs {
+            let (f, sig) = (&self.known[&caf], &self.sigs[&caf]);
+            let ctype = |int: bool| if int { "int64_t" } else { "Value*" };
+            let params: Vec<&str> = sig.int_params.iter().map(|&i| ctype(i)).collect();
+            decls.push_str(&format!("static {} d_{}({});\n", ctype(sig.int_ret), f.inner(), params.join(", ")));
+            defs.push_str(&self.emit_direct_fn(caf));
+        }
         (
             self.blocks,
+            (decls, defs),
             self.code_entry,
             self.externs,
             self.uses_compiler.get(),
@@ -971,8 +1400,15 @@ impl<'p> Emitter<'p> {
     /// Each atom is a single, side-effect-light C expression.
     fn atom(&self, a: &Atom) -> String {
         match a {
+            Atom::Local(i) | Atom::Move(i) if self.scalars.contains_key(i) => {
+                let (v, boolean) = &self.scalars[i];
+                format!("{}({v})", if *boolean { "THxRT_bool" } else { "THxRT_int" })
+            }
             Atom::Local(i) => format!("THxVALUE_local(fr->locals, fr->nlocals, {i})"),
             Atom::Move(i) => format!("THxVALUE_take(fr, {i})"),
+            Atom::Env(i) | Atom::MoveEnv(i) if self.env_ints.contains_key(i) => {
+                format!("THxRT_int({})", self.env_ints[i])
+            }
             Atom::Env(i) => format!("THxVALUE_env(fr->env, fr->nenv, {i})"),
             Atom::MoveEnv(i) => format!("THxVALUE_take_env(fr, {i})"),
             Atom::Glob { name } => self.glob_atom(name.as_str()),
@@ -1095,6 +1531,13 @@ impl<'p> Emitter<'p> {
     /// Deliver a finished value C-expression to its sink.
     fn deliver(&self, val: &str, sink: Sink, out: &mut String) {
         match sink {
+            Sink::Ret if self.direct.is_some_and(|d| d.int_ret) => {
+                self.return_int(&format!("THxI({val})"), out)
+            }
+            Sink::Ret if self.direct.is_some() => {
+                let n = self.direct.map_or(0, |d| d.arity);
+                out.push_str(&format!("  return THxD_leave(fr, P, {n}, mark, {val});\n"))
+            }
             Sink::Ret => out.push_str(&format!("  THxK_ret({val});\n")),
             Sink::Slot { slot, cont } => {
                 out.push_str(&format!("  THxK_backpatch(fr, {slot}, {val});\n"));
@@ -1103,6 +1546,12 @@ impl<'p> Emitter<'p> {
                 }
             }
         }
+    }
+
+    /// Return the integer `val` from a direct function with an unboxed result.
+    fn return_int(&self, val: &str, out: &mut String) {
+        let n = self.direct.map_or(0, |d| d.arity);
+        out.push_str(&format!("  return THxD_leave_i(fr, P, {n}, mark, {val});\n"));
     }
 
     /// Compute a pure (suspension-free) expression's value into frame `slot`,
@@ -1131,12 +1580,13 @@ impl<'p> Emitter<'p> {
                 rhs,
                 body,
             } => {
+                self.scalars.remove(inner);
                 emit_let_slot(rhs, *inner, out);
                 self.emit_pure_into(rhs, *inner, out);
                 self.emit_pure_into(body, slot, out);
             }
             IrExpr::Drop { slots, body } => {
-                emit_drops(slots, out);
+                self.emit_drops(slots, out);
                 self.emit_pure_into(body, slot, out);
             }
             IrExpr::App { .. } | IrExpr::Handle { .. } | IrExpr::Defer { .. } => {
@@ -1149,6 +1599,9 @@ impl<'p> Emitter<'p> {
     /// `sink`.
     fn emit_expr(&mut self, e: &IrExpr, sink: Sink, out: &mut String) {
         match e {
+            IrExpr::Ret(a) if matches!(sink, Sink::Ret) && self.direct.is_some_and(|d| d.int_ret) => {
+                self.return_int(&self.int_atom(a), out)
+            }
             IrExpr::Ret(_)
             | IrExpr::MkStruct { .. }
             | IrExpr::Field { .. }
@@ -1161,7 +1614,26 @@ impl<'p> Emitter<'p> {
                 out.push_str(&format!("  thrax_fault({});\n", cstr(msg.as_bytes())))
             }
 
+            IrExpr::App { fun, arg, .. } if self.direct.is_some() => match self.lone_call(fun, arg) {
+                Some(call) if call.callee == Callee::Prim => self.emit_prim(call, sink, out),
+                Some(call) => self.emit_call(call, sink, out),
+                None => {
+                    let r = self.fresh("part");
+                    out.push_str(&format!(
+                        "  Value* {r} = THxK_own(THxK_call({}, {}));\n",
+                        self.atom(fun),
+                        self.atom(arg)
+                    ));
+                    self.deliver(&r, sink, out);
+                }
+            },
             IrExpr::App { fun, arg: arg_atom, lend, .. } => {
+                if let Some(call) = self.lone_call(fun, arg_atom) {
+                    if matches!(call.callee, Callee::Known(caf) if self.direct_fns.contains(&caf)) {
+                        self.emit_call(call, sink, out);
+                        return;
+                    }
+                }
                 let fn_ = self.atom(fun);
                 let arg = self.atom(arg_atom);
                 // Tail-ness follows the sink, not the ANF flag: only a RET sink is a
@@ -1204,7 +1676,7 @@ impl<'p> Emitter<'p> {
             IrExpr::Handle { .. } => self.emit_handle(e, sink, out),
             IrExpr::Defer { .. } => self.emit_defer(e, sink, out),
             IrExpr::Drop { slots, body } => {
-                emit_drops(slots, out);
+                self.emit_drops(slots, out);
                 self.emit_expr(body, sink, out);
             }
         }
@@ -1214,12 +1686,21 @@ impl<'p> Emitter<'p> {
         let IrExpr::Let { slot, rhs, body } = e else {
             unreachable!()
         };
-        if let Some(call) = self.prim_chain(*slot, rhs, body) {
-            self.emit_prim(call, sink, out);
-            return;
+        self.scalars.remove(slot);
+        if let Some(call) = self.call_chain(*slot, rhs, body) {
+            match call.callee {
+                Callee::Prim => return self.emit_prim(call, sink, out),
+                Callee::Known(caf) if self.direct_fns.contains(&caf) => {
+                    return self.emit_call(call, sink, out);
+                }
+                Callee::Known(_) => {}
+            }
         }
         emit_let_slot(rhs, *slot, out);
-        if self.has_call(rhs) {
+        if self.direct.is_some() {
+            self.emit_expr(rhs, Sink::Slot { slot: *slot, cont: None }, out);
+            self.emit_expr(body, sink, out);
+        } else if self.has_call(rhs) {
             // The body becomes a continuation block; the rhs delivers into the slot
             // then control transfers there.
             let body_blk = self.reserve_block();
@@ -1232,7 +1713,7 @@ impl<'p> Emitter<'p> {
                 out,
             );
             let mut body_out = String::new();
-            self.emit_expr(body, sink, &mut body_out);
+            self.emit_detached(body, sink, &mut body_out);
             self.set_block(body_blk, &body_out);
         } else {
             // Pure rhs: compute into the slot inline, then continue in the same
@@ -1242,11 +1723,33 @@ impl<'p> Emitter<'p> {
         }
     }
 
-    /// A built-in applied to all its operands, which ANF spells as a chain of
-    /// lets each applying the previous partial application to one more operand:
-    /// `let a = b x in let c = a y in rest`, or with the last application in tail
-    /// position. Each partial must be used once, by the next application.
-    fn prim_chain<'e>(&self, slot: usize, rhs: &'e IrExpr, body: &'e IrExpr) -> Option<PrimCall<'e>> {
+    /// What a global named `name` calls, and its arity: a known function or a
+    /// built-in.
+    fn callee(&self, name: &str) -> Option<(Callee, usize)> {
+        match self.globals.get(name) {
+            Some(caf) => self.known.get(caf).map(|f| (Callee::Known(*caf), f.arity())),
+            None => native_builtin(name).map(|b| (Callee::Prim, b.arity)),
+        }
+    }
+
+    /// A one-argument built-in or known function applied by `fun arg`.
+    fn lone_call<'e>(&self, fun: &'e Atom, arg: &'e Atom) -> Option<Call<'e>> {
+        let Atom::Glob { name } = fun else {
+            return None;
+        };
+        let name = name.as_str();
+        match self.callee(name)? {
+            (callee, 1) => Some(Call { name, callee, args: vec![arg], drops: Vec::new(), rest: None }),
+            _ => None,
+        }
+    }
+
+    /// A built-in or known function applied to all its operands, which ANF
+    /// spells as a chain of lets each applying the previous partial application
+    /// to one more operand: `let a = b x in let c = a y in rest`, or with the
+    /// last application in tail position. Each partial must be used once, by the
+    /// next application.
+    fn call_chain<'e>(&self, slot: usize, rhs: &'e IrExpr, body: &'e IrExpr) -> Option<Call<'e>> {
         let IrExpr::App {
             fun: Atom::Glob { name },
             arg,
@@ -1256,17 +1759,15 @@ impl<'p> Emitter<'p> {
             return None;
         };
         let name = name.as_str();
-        if self.globals.contains_key(name) {
-            return None;
-        }
-        let arity = native_builtin(name)?.arity;
+        let (callee, arity) = self.callee(name)?;
         let mut args = vec![arg];
         let mut drops = Vec::new();
         let (mut partial, mut cur) = (slot, body);
         loop {
             if args.len() == arity {
-                return Some(PrimCall {
+                return Some(Call {
                     name,
+                    callee,
                     args,
                     drops,
                     rest: Some((partial, cur)),
@@ -1283,8 +1784,9 @@ impl<'p> Emitter<'p> {
                     ..
                 } if *s == partial && args.len() + 1 == arity => {
                     args.push(arg);
-                    return Some(PrimCall {
+                    return Some(Call {
                         name,
+                        callee,
                         args,
                         drops,
                         rest: None,
@@ -1314,8 +1816,14 @@ impl<'p> Emitter<'p> {
     /// Call a saturated built-in directly. Its result goes to `rest`'s slot (then
     /// `rest` runs) or, with no `rest`, to `sink`. A drop between the
     /// applications waits until the operands have been read.
-    fn emit_prim(&mut self, call: PrimCall, sink: Sink, out: &mut String) {
+    fn emit_prim(&mut self, call: Call, sink: Sink, out: &mut String) {
         self.glob_atom(call.name);
+        if let [a, b] = call.args.as_slice() {
+            let (ia, ib) = (self.int_atom(a), self.int_atom(b));
+            if let Some((expr, boolean)) = int_intrinsic(call.name, &ia, &ib) {
+                return self.emit_int_prim(&call, expr, boolean, sink, out);
+            }
+        }
         let mut args: Vec<String> = call.args.iter().map(|a| self.atom(a)).collect();
         let val = if matches!(call.name, "@vec_push" | "@vec_set") {
             // A moved vector may be updated in place when nothing else holds it.
@@ -1347,18 +1855,355 @@ impl<'p> Emitter<'p> {
         };
         match call.rest {
             Some((slot, rest)) => {
+                self.scalars.remove(&slot);
                 out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
                 out.push_str(&format!("  THxK_backpatch(fr, {slot}, {val});\n"));
-                emit_drops(&call.drops, out);
+                self.emit_drops(&call.drops, out);
                 self.emit_expr(rest, sink, out);
             }
             None => {
                 let r = self.fresh("prim");
                 out.push_str(&format!("  Value* {r} = {val};\n"));
-                emit_drops(&call.drops, out);
+                self.emit_drops(&call.drops, out);
                 self.deliver(&r, sink, out);
             }
         }
+    }
+
+    /// An integer intrinsic computed in C, its result kept in a scalar when
+    /// `scalar_uses` allows, else boxed. See Note [Unboxed integers].
+    fn emit_int_prim(&mut self, call: &Call, expr: String, boolean: bool, sink: Sink, out: &mut String) {
+        let (ctype, boxer) = if boolean { ("int", "THxRT_bool") } else { ("int64_t", "THxRT_int") };
+        match call.rest {
+            Some((slot, rest)) if self.scalar_uses(rest, slot) => {
+                let v = self.fresh("iv");
+                out.push_str(&format!("  {ctype} {v} = {expr};\n"));
+                self.emit_drops(&call.drops, out);
+                self.scalars.insert(slot, (v, boolean));
+                self.emit_expr(rest, sink, out);
+                self.scalars.remove(&slot);
+            }
+            Some((slot, rest)) => {
+                self.scalars.remove(&slot);
+                out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
+                out.push_str(&format!("  THxK_backpatch(fr, {slot}, {boxer}({expr}));\n"));
+                self.emit_drops(&call.drops, out);
+                self.emit_expr(rest, sink, out);
+            }
+            None if matches!(sink, Sink::Ret) && !boolean && self.direct.is_some_and(|d| d.int_ret) => {
+                let r = self.fresh("iv");
+                out.push_str(&format!("  int64_t {r} = {expr};\n"));
+                self.emit_drops(&call.drops, out);
+                self.return_int(&r, out);
+            }
+            None => {
+                let r = self.fresh("prim");
+                out.push_str(&format!("  Value* {r} = {boxer}({expr});\n"));
+                self.emit_drops(&call.drops, out);
+                self.deliver(&r, sink, out);
+            }
+        }
+    }
+
+    /// A saturated call of a direct function. See Note [Direct functions].
+    fn emit_call(&mut self, call: Call, sink: Sink, out: &mut String) {
+        let Callee::Known(caf) = call.callee else {
+            unreachable!("emit_call on a built-in")
+        };
+        let f = self.known[&caf].clone();
+        let sig = self.sigs[&caf].clone();
+        let names: Vec<String> = (0..call.args.len()).map(|_| self.fresh("ka")).collect();
+        out.push_str("  {\n");
+        for (k, (n, a)) in names.iter().zip(&call.args).enumerate() {
+            if sig.int_params[k] {
+                out.push_str(&format!("  int64_t {n} = {};\n", self.int_atom(a)));
+            } else {
+                out.push_str(&format!("  Value* {n} = {};\n", self.atom(a)));
+            }
+        }
+        let boxed = |k: usize| {
+            if sig.int_params[k] {
+                format!("THxRT_int({})", names[k])
+            } else {
+                names[k].clone()
+            }
+        };
+        let direct = format!("d_{}({})", f.inner(), names.join(", "));
+        let env: Vec<String> = f.env.iter().map(|&i| boxed(i)).collect();
+        let clos = if env.is_empty() {
+            format!("THxRT_closure({}, NULL, 0)", f.inner())
+        } else {
+            format!("THxRT_closure({}, (Value*[]){{ {} }}, {})", f.inner(), env.join(", "), env.len())
+        };
+        let last = boxed(names.len() - 1);
+        match self.direct {
+            Some(d) if d.inner == f.inner() && call.rest.is_none() && matches!(sink, Sink::Ret) => {
+                for (k, n) in names.iter().enumerate() {
+                    if !sig.int_params[k] {
+                        out.push_str(&format!("  THxMEM_retain({n});\n"));
+                    }
+                }
+                out.push_str(&format!("  THxD_reset(fr, P, {}, mark);\n", d.arity));
+                for (k, n) in names.iter().enumerate() {
+                    if sig.int_params[k] {
+                        out.push_str(&format!("  I{k} = {n};\n"));
+                    } else {
+                        out.push_str(&format!("  P[{k}] = {n};\n"));
+                    }
+                }
+                out.push_str("  goto top;\n  }\n");
+                assert_eq!(d.arity, names.len());
+                self.looped = true;
+            }
+            Some(d) => {
+                let r = self.fresh("call");
+                if sig.int_ret {
+                    out.push_str(&format!(
+                        "  int64_t {r} = THxD_room() ? {direct} : THxI_own(THxK_call({clos}, {last}));\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "  Value* {r} = THxK_own(THxD_room() ? {direct} : THxK_call({clos}, {last}));\n"
+                    ));
+                }
+                self.emit_drops(&call.drops, out);
+                match call.rest {
+                    Some((slot, rest)) => {
+                        self.scalars.remove(&slot);
+                        if sig.int_ret && self.scalar_uses(rest, slot) {
+                            self.scalars.insert(slot, (r, false));
+                            self.emit_expr(rest, sink, out);
+                            self.scalars.remove(&slot);
+                        } else {
+                            let v = if sig.int_ret { format!("THxRT_int({r})") } else { r };
+                            out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
+                            out.push_str(&format!("  THxK_backpatch(fr, {slot}, {v});\n"));
+                            self.emit_expr(rest, sink, out);
+                        }
+                    }
+                    None if sig.int_ret && d.int_ret && matches!(sink, Sink::Ret) => self.return_int(&r, out),
+                    None if sig.int_ret => self.deliver(&format!("THxRT_int({r})"), sink, out),
+                    None => self.deliver(&r, sink, out),
+                }
+                out.push_str("  }\n");
+            }
+            None => {
+                let (slot, cont) = match (call.rest, sink) {
+                    (Some((slot, rest)), _) => {
+                        let k = self.reserve_block();
+                        let mut body = String::new();
+                        self.scalars.remove(&slot);
+                        self.emit_detached(rest, sink, &mut body);
+                        self.set_block(k, &body);
+                        (Some(slot), Some(k))
+                    }
+                    (None, Sink::Ret) => (None, None),
+                    (None, Sink::Slot { slot, cont }) => {
+                        (Some(slot), Some(cont.expect("a call in a block needs a continuation")))
+                    }
+                };
+                out.push_str("  if (THxD_room()) {\n");
+                let r = self.fresh("call");
+                if sig.int_ret {
+                    out.push_str(&format!("  Value* {r} = THxRT_int({direct});\n"));
+                } else {
+                    out.push_str(&format!("  Value* {r} = THxK_own({direct});\n"));
+                }
+                self.emit_drops(&call.drops, out);
+                match (slot, cont) {
+                    (Some(slot), Some(k)) => {
+                        if call.rest.is_some() {
+                            out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
+                        }
+                        out.push_str(&format!("  THxK_backpatch(fr, {slot}, {r});\n"));
+                        out.push_str(&format!("  THxK_jump(blk_{k});\n"));
+                    }
+                    _ => out.push_str(&format!("  THxK_ret({r});\n")),
+                }
+                out.push_str("  } else {\n");
+                self.emit_drops(&call.drops, out);
+                match (slot, cont) {
+                    (Some(slot), Some(k)) => {
+                        if call.rest.is_some() {
+                            out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
+                        }
+                        out.push_str(&format!("  THxK_apply(fr, {clos}, {last}, blk_{k}, {slot});\n"));
+                    }
+                    _ => out.push_str(&format!("  THxK_tailcall({clos}, {last});\n")),
+                }
+                out.push_str("  }\n  }\n");
+            }
+        }
+    }
+
+    /// The C function of a direct known function: `P` owns the arguments, `L`
+    /// is the last code's slot array and `E` its environment, read straight
+    /// from `P`. See Note [Direct functions].
+    fn emit_direct_fn(&mut self, caf: usize) -> String {
+        let prog = self.prog;
+        let f = self.known[&caf].clone();
+        let sig = self.sigs[&caf].clone();
+        let inner = f.inner();
+        let code = &prog.codes[inner];
+        let n = f.arity();
+        let params: Vec<String> = (0..n)
+            .map(|i| if sig.int_params[i] { format!("int64_t a{i}") } else { format!("Value* a{i}") })
+            .collect();
+        let boxed: Vec<String> =
+            (0..n).map(|i| if sig.int_params[i] { "NULL".to_string() } else { format!("a{i}") }).collect();
+        self.direct = Some(Direct { inner, arity: n, int_ret: sig.int_ret });
+        self.looped = false;
+        self.scalars.clear();
+        self.env_ints.clear();
+        for (j, &p) in f.env.iter().enumerate() {
+            if sig.int_params[p] {
+                self.env_ints.insert(j, format!("I{p}"));
+            }
+        }
+        if sig.int_params[n - 1] {
+            self.scalars.insert(0, (format!("I{}", n - 1), false));
+        }
+        let mut body = String::new();
+        self.emit_expr(&code.body, Sink::Ret, &mut body);
+        self.direct = None;
+        self.scalars.clear();
+        self.env_ints.clear();
+        let ret = if sig.int_ret { "int64_t" } else { "Value*" };
+        let mut out = format!("/* {} */\n", prog.codes[inner].name);
+        out.push_str(&format!("static {ret} d_{inner}({}) {{\n", params.join(", ")));
+        out.push_str(&format!("  Value* P[{n}] = {{ {} }};\n", boxed.join(", ")));
+        for i in (0..n).filter(|&i| sig.int_params[i]) {
+            out.push_str(&format!("  int64_t I{i} = a{i};\n"));
+        }
+        out.push_str(&format!("  Value* L[{}];\n", code.nlocals.max(1)));
+        out.push_str(&format!("  Value* E[{}];\n", f.env.len().max(1)));
+        out.push_str("  Frame F;\n  Frame* fr = &F;\n");
+        out.push_str(&format!("  for (size_t i = 0; i < {n}; i++) THxMEM_retain(P[i]);\n"));
+        out.push_str("  size_t mark = THxMEM_pool_mark();\n");
+        if self.looped {
+            out.push_str("top:\n");
+        }
+        for (j, p) in f.env.iter().enumerate() {
+            out.push_str(&format!("  E[{j}] = P[{p}];\n"));
+        }
+        out.push_str(&format!(
+            "  THxD_frame(fr, L, {}, E, {});\n",
+            code.nlocals,
+            f.env.len()
+        ));
+        if !sig.int_params[n - 1] {
+            out.push_str(&format!("  THxK_setlocal(fr, 0, P[{}]);\n", n - 1));
+        }
+        out.push_str(&body);
+        out.push_str("}\n\n");
+        out
+    }
+
+    /// Release the listed slots; a slot held in a scalar has nothing to release.
+    fn emit_drops(&self, slots: &[usize], out: &mut String) {
+        for s in slots {
+            if !self.scalars.contains_key(s) {
+                out.push_str(&format!("  THxK_drop(fr, {s});\n"));
+            }
+        }
+    }
+
+    /// An integer atom as a C `int64_t` expression.
+    fn int_atom(&self, a: &Atom) -> String {
+        match a {
+            Atom::LitI(n) => clit(*n),
+            Atom::Local(s) | Atom::Move(s) if self.scalars.contains_key(s) => self.scalars[s].0.clone(),
+            Atom::Env(i) | Atom::MoveEnv(i) if self.env_ints.contains_key(i) => self.env_ints[i].clone(),
+            _ => format!("THxI({})", self.atom(a)),
+        }
+    }
+
+    /// Whether every use of `slot` in `e`, up to a rebinding of it, is an
+    /// integer intrinsic's operand or a literal case's scrutinee, all of them
+    /// emitted in the current C function. See Note [Unboxed integers].
+    fn scalar_uses(&self, e: &IrExpr, slot: usize) -> bool {
+        let reads = |a: &Atom| a.mentions(slot);
+        let block = self.direct.is_none();
+        match e {
+            IrExpr::Let { slot: s, rhs, body } => {
+                if let Some(call) = self.call_chain(*s, rhs, body) {
+                    if *s == slot {
+                        return false;
+                    }
+                    if !self.int_args_only(&call, slot) {
+                        return false;
+                    }
+                    let Some((r, rest)) = call.rest else {
+                        return true;
+                    };
+                    if r == slot {
+                        return true;
+                    }
+                    if block && call.callee != Callee::Prim {
+                        return !rest.mentions(slot);
+                    }
+                    return self.scalar_uses(rest, slot);
+                }
+                if !self.scalar_uses(rhs, slot) {
+                    return false;
+                }
+                if *s == slot {
+                    return true;
+                }
+                if block && self.has_call(rhs) {
+                    return !body.mentions(slot);
+                }
+                self.scalar_uses(body, slot)
+            }
+            IrExpr::Case { scrut, alts, default } => {
+                if reads(scrut) && alts.iter().any(|a| matches!(a.kind, AltKind::Con(_) | AltKind::Real(_))) {
+                    return false;
+                }
+                alts.iter().all(|a| {
+                    let rebinds = matches!(a.kind, AltKind::Con(_))
+                        && (a.binder_base..a.binder_base + a.binders.len()).contains(&slot);
+                    rebinds || self.scalar_uses(&a.body, slot)
+                }) && self.scalar_uses(default, slot)
+            }
+            IrExpr::Drop { body, .. } => self.scalar_uses(body, slot),
+            IrExpr::Handle { .. } | IrExpr::Defer { .. } => !e.mentions(slot),
+            IrExpr::App { fun, arg, .. } if !fun.mentions(slot) => match self.lone_call(fun, arg) {
+                Some(call) => self.int_args_only(&call, slot),
+                None => !arg.mentions(slot),
+            },
+            IrExpr::App { .. }
+            | IrExpr::Ret(_)
+            | IrExpr::MkStruct { .. }
+            | IrExpr::Field { .. }
+            | IrExpr::MkVariant { .. }
+            | IrExpr::MkTuple(_)
+            | IrExpr::Fault(_) => {
+                let mut hit = false;
+                e.for_each_atom(&mut |a| hit = hit || reads(a));
+                !hit
+            }
+        }
+    }
+
+    /// Whether `call` reads `slot` only as integer operands: of an integer
+    /// intrinsic, or unboxed arguments of a direct function.
+    fn int_args_only(&self, call: &Call, slot: usize) -> bool {
+        let int_op = call.callee == Callee::Prim && int_intrinsic(call.name, "", "").is_some();
+        let sig = match call.callee {
+            Callee::Known(caf) => self.sigs.get(&caf),
+            Callee::Prim => None,
+        };
+        call.args.iter().enumerate().all(|(k, a)| {
+            !a.mentions(slot) || int_op || sig.is_some_and(|s| s.int_params[k])
+        })
+    }
+
+    /// Emit `e` into a C function of its own (a continuation block): the scalars
+    /// of the current one are out of scope there.
+    fn emit_detached(&mut self, e: &IrExpr, sink: Sink, out: &mut String) {
+        let saved = std::mem::take(&mut self.scalars);
+        self.emit_expr(e, sink, out);
+        self.scalars = saved;
     }
 
     fn emit_case(&mut self, e: &IrExpr, sink: Sink, out: &mut String) {
@@ -1371,12 +2216,21 @@ impl<'p> Emitter<'p> {
             unreachable!()
         };
         let s = self.fresh("scrut");
-        // Scrutinising is what forces a lazy slot.
-        out.push_str(&format!("  Value* {s} = THxVALUE_force({});\n", self.atom(scrut)));
+        let scalar = match scrut {
+            Atom::Local(i) | Atom::Move(i) => self.scalars.get(i).map(|(v, _)| v.clone()),
+            _ => None,
+        };
+        match &scalar {
+            Some(v) => out.push_str(&format!("  int64_t {s} = {v};\n")),
+            // Scrutinising is what forces a lazy slot.
+            None => out.push_str(&format!("  Value* {s} = THxVALUE_force({});\n", self.atom(scrut))),
+        }
         let mut first = true;
         for al in alts {
             let cond = match &al.kind {
-                AltKind::Int(n) => format!("THxVALUE_as_int({s}) == {n}LL"),
+                AltKind::Int(n) if scalar.is_some() => format!("{s} == {}", clit(*n)),
+                AltKind::Bool(b) if scalar.is_some() => format!("{s} == {}", *b as i32),
+                AltKind::Int(n) => format!("THxVALUE_as_int({s}) == {}", clit(*n)),
                 AltKind::Real(r) => format!("THxVALUE_as_num({s}) == {}", cdbl(*r)),
                 AltKind::Bool(b) => {
                     format!("THxVALUE_as_bool({s}) == {}", if *b { 1 } else { 0 })
@@ -1389,6 +2243,12 @@ impl<'p> Emitter<'p> {
                 "  {} ({cond}) {{\n",
                 if first { "if" } else { "else if" }
             ));
+            let saved = self.scalars.clone();
+            if let AltKind::Con(_) = &al.kind {
+                for i in 0..al.binders.len() {
+                    self.scalars.remove(&(al.binder_base + i));
+                }
+            }
             match (&al.kind, al.unpack) {
                 (AltKind::Con(_), Unpack::Consume { slot, token }) => {
                     let bind: Vec<&str> =
@@ -1418,11 +2278,14 @@ impl<'p> Emitter<'p> {
                 _ => {}
             }
             self.emit_branch(&al.body, sink, out);
+            self.scalars = saved;
             out.push_str("  }\n");
             first = false;
         }
         out.push_str(if first { "  {\n" } else { "  else {\n" });
+        let saved = self.scalars.clone();
         self.emit_branch(default, sink, out);
+        self.scalars = saved;
         out.push_str("  }\n");
     }
 
@@ -1430,7 +2293,7 @@ impl<'p> Emitter<'p> {
     /// fall through, so the enclosing pure let continues after the if/else).
     fn emit_branch(&mut self, e: &IrExpr, sink: Sink, out: &mut String) {
         match sink {
-            Sink::Slot { slot, cont: None } => self.emit_pure_into(e, slot, out),
+            Sink::Slot { slot, cont: None } if self.direct.is_none() => self.emit_pure_into(e, slot, out),
             _ => self.emit_expr(e, sink, out),
         }
     }
@@ -1494,7 +2357,7 @@ impl<'p> Emitter<'p> {
             clauses.len()
         ));
         let mut body_out = String::new();
-        self.emit_expr(body, Sink::Ret, &mut body_out);
+        self.emit_detached(body, Sink::Ret, &mut body_out);
         self.set_block(hbody, &body_out);
     }
 
@@ -1515,7 +2378,7 @@ impl<'p> Emitter<'p> {
             "  THxK_defer_run(fr, {cont}, {slot}, {cl}, blk_{hbody});\n"
         ));
         let mut body_out = String::new();
-        self.emit_expr(body, Sink::Ret, &mut body_out);
+        self.emit_detached(body, Sink::Ret, &mut body_out);
         self.set_block(hbody, &body_out);
     }
 
