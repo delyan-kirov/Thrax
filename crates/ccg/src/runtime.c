@@ -91,6 +91,7 @@ struct Value {
     struct {
       uint8_t *data;
       size_t len;
+      size_t cap; /* bytes `data` holds before its trailing NUL; cap >= len */
     } str;
     struct {
       Value **items;
@@ -649,6 +650,7 @@ Value *THxRT_str(const char *data, size_t len) {
   memcpy(v->u.str.data, data, len);
   v->u.str.data[len] = 0;
   v->u.str.len = len;
+  v->u.str.cap = len;
   return v;
 }
 /* Take ownership of an already-THxMEM_alloc'd buffer. */
@@ -656,6 +658,7 @@ static Value *mk_str_owned(uint8_t *data, size_t len) {
   Value *v = alloc_value(T_STR);
   v->u.str.data = data;
   v->u.str.len = len;
+  v->u.str.cap = len;
   return v;
 }
 
@@ -1924,6 +1927,7 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
       if (len) memcpy(b, v->u.str.data, len);
       b[len] = 0;
       dst->u.str.data = b;
+      dst->u.str.cap = len;
       break;
     }
     case T_TUPLE:
@@ -2800,6 +2804,28 @@ static Value *rt_generate(Value *tmpl, Value *f) {
   for (size_t i = 0; i < len; i++) THxMEM_release(items[i]); /* drop generate's ref */
   free(items);
   return v;
+}
+
+/* `@array_push` on a byte vector the caller moved in (`s` came from a local's
+ * last use, so the temp pool holds the reference the slot gave up). When that is
+ * the only reference the push grows `s` in place, doubling its capacity, and
+ * returns `s` itself, which the consumer retains like any prim result. A buffer
+ * built by pushing is then linear instead of quadratic. */
+Value *THxK_array_push_owned(Value *s, Value *b) {
+  if (s->tag != T_STR || !THxMEM_unique(s)) return run_builtin(THxB_ARRAY_PUSH, (Value *[]){s, b});
+  uint8_t byte = as_byte(b);
+  size_t len = s->u.str.len;
+  if (len == s->u.str.cap) {
+    size_t cap = len < 8 ? 16 : 2 * len;
+    uint8_t *data = realloc(s->u.str.data, cap + 1);
+    if (!data) thrax_fault("out of memory");
+    s->u.str.data = data;
+    s->u.str.cap = cap;
+  }
+  s->u.str.data[len] = byte;
+  s->u.str.data[len + 1] = 0;
+  s->u.str.len = len + 1;
+  return s;
 }
 
 /* A built-in applied to all `n` of its operands at once, which are borrowed.

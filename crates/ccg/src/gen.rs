@@ -1846,6 +1846,10 @@ impl<'p> Emitter<'p> {
                 builtin_ident(call.name),
                 args.join(", ")
             )
+        } else if call.name == "@array_push" && matches!(call.args[0], Atom::Move(_)) {
+            // Only a local's last use may be pushed onto in place: a moved
+            // capture is still a borrow whenever the closure has other owners.
+            format!("THxK_array_push_owned({})", args.join(", "))
         } else {
             format!(
                 "THxK_prim({}, (Value*[]){{ {} }})",

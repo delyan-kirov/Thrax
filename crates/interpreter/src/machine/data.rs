@@ -430,8 +430,21 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .ok_or_else(|| fault("array index out of bounds"))
         }
         Prim::ArrayPush => {
+            // In place under the same ownership test as `VecPush`: a byte loop
+            // that grows a string by pushing would otherwise be quadratic.
+            let byte = as_byte(&a[1])?;
+            let unshared = Rc::strong_count(&a[0]) == 1 && Rc::weak_count(&a[0]) == 0;
+            if unshared {
+                let mut cell = a[0].borrow_mut();
+                if let Value::Str(bytes) = &mut *cell {
+                    if let Some(buf) = Rc::get_mut(bytes) {
+                        buf.push(byte);
+                        return Ok(Value::Str(bytes.clone()));
+                    }
+                }
+            }
             let mut bytes = as_bytes(&a[0])?.as_ref().clone();
-            bytes.push(as_byte(&a[1])?);
+            bytes.push(byte);
             Ok(Value::Str(Rc::new(bytes)))
         }
         Prim::ArraySet => {

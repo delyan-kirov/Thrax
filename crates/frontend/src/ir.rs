@@ -105,9 +105,7 @@ pub fn lower_prefix(modules: &[CoreProgram]) -> LoweredPrefix {
 pub fn lower_onto(prefix: &LoweredPrefix, rest: &[CoreProgram]) -> IrProgram {
     let mut merged = merge(rest);
     let mut prims = passes::eta_fold::primitive_methods(&merged);
-    for (k, v) in &prefix.prims {
-        prims.entry(*k).or_insert(*v);
-    }
+    prims.inherit(&prefix.prims);
     passes::eta_fold::fold_primitive_methods_with(&mut merged, &prims);
     run_passes(&mut merged);
     let mut own = closure_conversion::convert_closures_after(&merged, prefix.ir.codes.len(), &prefix.names);

@@ -39,9 +39,10 @@ type FrameP<'p> = Rc<RefCell<Frame<'p>>>;
 /// A return continuation: on a value `v`, back-patch the let's placeholder box
 /// with `v`, bind the box into the saved frame's slot, and resume `cont`. Binding
 /// the box (not `v`) lets a recursive binding's closure, which captured the box
-/// weakly, observe the finished value.
+/// weakly, observe the finished value. A non-recursive let has no box (`None`)
+/// and binds `v` itself.
 pub(crate) struct KRet<'p> {
-    boxed: PVal<'p>,
+    boxed: Option<PVal<'p>>,
     slot: usize,
     cont: &'p IrExpr,
     frame: FrameP<'p>,
@@ -135,10 +136,13 @@ pub struct Machine<'p> {
     bare: HashMap<StrId, usize>,
     /// What each name a `Glob` atom has read resolved to, so the resolution's
     /// string work happens once per name rather than once per evaluation.
-    resolved: RefCell<HashMap<StrId, Glob>>,
-    /// CAF memo keyed by code index, so a global reached by its canonical and its
+    resolved: RefCell<IdMap<StrId, Glob>>,
+    /// The address of every recursive `let` (its right-hand side reads its own
+    /// slot), the only kind that needs a placeholder box. See [`KRet`].
+    rec_lets: IdMap<usize, ()>,
+    /// CAF memo indexed by code, so a global reached by its canonical and its
     /// bare name is still evaluated once.
-    memo: RefCell<HashMap<usize, PVal<'p>>>,
+    memo: RefCell<Vec<Option<PVal<'p>>>>,
     in_progress: RefCell<HashSet<usize>>,
     ops_by_effect: HashMap<StrId, Vec<StrId>>,
     ops_by_name: HashMap<StrId, Vec<StrId>>,
@@ -151,6 +155,53 @@ pub struct Machine<'p> {
 }
 
 type TVarP<'p> = Rc<RefCell<TVar<'p>>>;
+
+/// Hashes a key that is already a distinct integer (an interned name, a node
+/// address): one multiply instead of SipHash on the per-reference global lookup.
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(u64::from(b));
+        }
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(u64::from(n));
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+type IdMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
+
+/// The most operands a [`PrimChain`] carries; a wider built-in goes the slow way.
+const MAX_CHAIN: usize = 4;
+
+/// A saturated built-in call found by [`Machine::prim_chain`]: its operands in
+/// order, the slots of its partial applications (the last one receives the
+/// result), the drops interleaved with them, and what runs next (`None` when
+/// the last application is in tail position).
+struct PrimChain<'e> {
+    op: &'static Builtin,
+    args: [&'e Atom; MAX_CHAIN],
+    slots: [usize; MAX_CHAIN],
+    len: usize,
+    drops: Vec<usize>,
+    rest: Option<(usize, &'e IrExpr)>,
+}
 
 /// What a global name resolves to (see [`Machine::glob`]).
 #[derive(Clone, Copy)]
@@ -243,12 +294,24 @@ impl<'p> Machine<'p> {
                 effects.push(e.effect);
             }
         }
+        let mut rec_lets = IdMap::default();
+        for code in &prog.codes {
+            code.body.any_node(&mut |e| {
+                if let IrExpr::Let { slot, rhs, .. } = e {
+                    if rhs.mentions(*slot) {
+                        rec_lets.insert(e as *const IrExpr as usize, ());
+                    }
+                }
+                false
+            });
+        }
         Machine {
             prog,
             globals,
+            rec_lets,
             bare,
-            resolved: RefCell::new(HashMap::new()),
-            memo: RefCell::new(HashMap::new()),
+            resolved: RefCell::new(IdMap::default()),
+            memo: RefCell::new(vec![None; prog.codes.len()]),
             in_progress: RefCell::new(HashSet::new()),
             ops_by_effect,
             ops_by_name,
@@ -430,7 +493,7 @@ impl<'p> Machine<'p> {
     /// Force a lazy-memoized CAF (keyed by code index, so the canonical and bare
     /// names of one global share a single evaluation).
     fn force(&self, code: usize) -> Result<PVal<'p>> {
-        if let Some(v) = self.memo.borrow().get(&code) {
+        if let Some(Some(v)) = self.memo.borrow().get(code) {
             return Ok(v.clone());
         }
         if self.in_progress.borrow().contains(&code) {
@@ -440,7 +503,7 @@ impl<'p> Machine<'p> {
         let result = self.run(code, Vec::new(), Vec::new());
         self.in_progress.borrow_mut().remove(&code);
         let v = result?;
-        self.memo.borrow_mut().insert(code, v.clone());
+        self.memo.borrow_mut()[code] = Some(v.clone());
         Ok(v)
     }
 
@@ -453,16 +516,7 @@ impl<'p> Machine<'p> {
     /// same-named operation. The `C` libc namespace resolves as exact `@extern`
     /// globals (`C.sqrt`, ...).
     fn glob(&self, name: StrId) -> Result<PVal<'p>> {
-        let cached = self.resolved.borrow().get(&name).copied();
-        let kind = match cached {
-            Some(kind) => kind,
-            None => {
-                let kind = self.resolve_glob(name);
-                self.resolved.borrow_mut().insert(name, kind);
-                kind
-            }
-        };
-        match kind {
+        match self.glob_kind(name) {
             Glob::Code(code) => self.force(code),
             Glob::Builtin(op) => Ok(mk(Value::Builtin { op, args: Vec::new() })),
             Glob::Target => {
@@ -471,6 +525,19 @@ impl<'p> Machine<'p> {
             }
             Glob::Op(effect, op) => Ok(mk(Value::Op { effect, op })),
             Glob::Unbound => Err(fault(format!("unbound name `{name}`"))),
+        }
+    }
+
+    /// What `name` resolves to, cached.
+    fn glob_kind(&self, name: StrId) -> Glob {
+        let cached = self.resolved.borrow().get(&name).copied();
+        match cached {
+            Some(kind) => kind,
+            None => {
+                let kind = self.resolve_glob(name);
+                self.resolved.borrow_mut().insert(name, kind);
+                kind
+            }
         }
     }
 
@@ -714,9 +781,20 @@ impl<'p> Machine<'p> {
                 }
 
                 IrExpr::Let { slot, rhs, body } => {
-                    let boxed = mk(Value::Unk);
-                    let self_ = mk(Value::Rec(Rc::downgrade(&boxed)));
-                    ex.frame.borrow_mut().locals[*slot] = self_;
+                    if let Some(chain) = self.prim_chain(*slot, rhs, body) {
+                        if let Some(r) = self.run_prim_chain(&mut ex, chain)? {
+                            return Ok(r);
+                        }
+                        continue;
+                    }
+                    let boxed = if self.rec_lets.contains_key(&(ex.ctrl as *const IrExpr as usize)) {
+                        let boxed = mk(Value::Unk);
+                        let self_ = mk(Value::Rec(Rc::downgrade(&boxed)));
+                        ex.frame.borrow_mut().locals[*slot] = self_;
+                        Some(boxed)
+                    } else {
+                        None
+                    };
                     ex.kont.push(KFrame::Ret(KRet {
                         boxed,
                         slot: *slot,
@@ -958,6 +1036,117 @@ impl<'p> Machine<'p> {
         (unique && matches!(&*cell.borrow(), Value::Variant { .. })).then_some(cell)
     }
 
+    /// A saturated built-in that is not deep-strict.
+    fn call_builtin(&self, op: &'static Builtin, args: &[PVal<'p>]) -> Result<PVal<'p>> {
+        if let Some(v) = self.run_concurrency(op.prim, args)? {
+            return Ok(v);
+        }
+        if op.prim == Prim::TensorCreate {
+            // Higher-order: apply `f` at each index of the template's leading
+            // axis, which needs the machine, then stack the results into a tensor.
+            let (_, _, shape, _) = data::tensor_fields(&args[0])?;
+            let len = shape.first().copied().unwrap_or(0);
+            let f = args[1].clone();
+            let mut out = Vec::with_capacity(len);
+            for i in 0..len {
+                out.push(self.apply(f.clone(), mk(Value::Int(i as i64)))?);
+            }
+            return Ok(mk(data::tensor_stack(&out)?));
+        }
+        Ok(mk(run_builtin(op.prim, args)?))
+    }
+
+    /// A built-in applied to all its operands, which ANF spells as a chain of
+    /// lets each applying the previous partial application to one more operand:
+    /// `let a = @b x in let c = a y in rest`, or with the last application in
+    /// tail position. Each partial is used once, by the next application, so the
+    /// chain can run as one call without building the partials or a return frame
+    /// per operand. Mirrors the native backend's `prim_chain`.
+    fn prim_chain<'e>(&self, slot: usize, rhs: &'e IrExpr, body: &'e IrExpr) -> Option<PrimChain<'e>> {
+        let IrExpr::App { fun: Atom::Glob { name }, arg, .. } = rhs else {
+            return None;
+        };
+        let Glob::Builtin(op) = self.glob_kind(*name) else {
+            return None;
+        };
+        if op.strictness == Strictness::Deep {
+            return None;
+        }
+        if op.arity == 0 || op.arity > MAX_CHAIN {
+            return None;
+        }
+        let mut chain = PrimChain {
+            op,
+            args: [arg; MAX_CHAIN],
+            slots: [slot; MAX_CHAIN],
+            len: 1,
+            drops: Vec::new(),
+            rest: None,
+        };
+        let mut cur = body;
+        loop {
+            let partial = chain.slots[chain.len - 1];
+            if chain.len == op.arity {
+                chain.rest = Some((partial, cur));
+                break;
+            }
+            match cur {
+                IrExpr::Drop { slots, body } => {
+                    chain.drops.extend(slots.iter().copied());
+                    cur = body;
+                }
+                IrExpr::App { fun: Atom::Move(s), arg, .. } if *s == partial && chain.len + 1 == op.arity => {
+                    chain.args[chain.len] = arg;
+                    chain.slots[chain.len] = partial;
+                    chain.len += 1;
+                    break;
+                }
+                IrExpr::Let { slot: next, rhs, body } => match rhs.as_ref() {
+                    IrExpr::App { fun: Atom::Move(s), arg, .. } if *s == partial => {
+                        chain.args[chain.len] = arg;
+                        chain.slots[chain.len] = *next;
+                        chain.len += 1;
+                        cur = body;
+                    }
+                    _ => return None,
+                },
+                _ => return None,
+            }
+        }
+        // An operand naming one of the chain's own slots would read a partial the
+        // chain never builds.
+        let slots = &chain.slots[..chain.len];
+        let reads_chain = chain.args[..chain.len]
+            .iter()
+            .any(|a| matches!(a, Atom::Local(i) | Atom::Move(i) if slots.contains(i)));
+        (!reads_chain).then_some(chain)
+    }
+
+    /// Run a [`PrimChain`]: read every operand, apply the drops, call the
+    /// built-in, and bind its result or return it.
+    fn run_prim_chain(&self, ex: &mut Exec<'p>, chain: PrimChain<'p>) -> Result<Option<PVal<'p>>> {
+        let mut args: [PVal<'p>; MAX_CHAIN] = std::array::from_fn(|_| self.unk.clone());
+        for (slot, a) in args.iter_mut().zip(&chain.args[..chain.len]) {
+            *slot = deref(self.eval_atom(a, &ex.frame)?);
+        }
+        if !chain.drops.is_empty() {
+            let mut f = ex.frame.borrow_mut();
+            for &s in &chain.drops {
+                f.locals[s] = self.unk.clone();
+            }
+        }
+        let v = self.call_builtin(chain.op, &args[..chain.len])?;
+        drop(args);
+        match chain.rest {
+            Some((slot, rest)) => {
+                ex.frame.borrow_mut().locals[slot] = v;
+                ex.ctrl = rest;
+                Ok(None)
+            }
+            None => ex.ret(self, v),
+        }
+    }
+
     /// Dispatch an application inside the run loop: a closure jumps in place (a
     /// tail call reusing the loop), a builtin runs or accumulates, an operation
     /// performs, a resumption splices its captured slice back on. Returns
@@ -1042,22 +1231,8 @@ impl<'p> Machine<'p> {
                             self.force_deep(a)?;
                         }
                         mk(run_builtin(op.prim, &args)?)
-                    } else if let Some(v) = self.run_concurrency(op.prim, &args)? {
-                        v
-                    } else if op.prim == Prim::TensorCreate {
-                        // Higher-order: apply `f` at each index of the template's
-                        // leading axis, which needs the machine, then stack the
-                        // results into a tensor.
-                        let (_, _, shape, _) = data::tensor_fields(&args[0])?;
-                        let len = shape.first().copied().unwrap_or(0);
-                        let f = args[1].clone();
-                        let mut out = Vec::with_capacity(len);
-                        for i in 0..len {
-                            out.push(self.apply(f.clone(), mk(Value::Int(i as i64)))?);
-                        }
-                        mk(data::tensor_stack(&out)?)
                     } else {
-                        mk(run_builtin(op.prim, &args)?)
+                        self.call_builtin(op, &args)?
                     }
                 } else {
                     mk(Value::Builtin { op, args })
@@ -1233,17 +1408,21 @@ fn copy_segment<'p>(seg: &[KFrame<'p>]) -> Vec<KFrame<'p>> {
         .map(|kf| match kf {
             KFrame::Ret(kr) => {
                 let frame = clone_frame(&kr.frame, &mut seen);
-                let boxed = mk(kr.boxed.borrow().clone_shallow());
-                // The slot holds a weak cell pointing at the box while the right-
-                // hand side runs (so a recursive binding can reach itself); point
-                // the copy's at the copy's box, so no copy outlives the other's.
-                let rebind = match &*frame.borrow().locals[kr.slot].borrow() {
-                    Value::Rec(w) => w.upgrade().is_some_and(|t| Rc::ptr_eq(&t, &kr.boxed)),
-                    _ => false,
-                };
-                if rebind {
-                    frame.borrow_mut().locals[kr.slot] = mk(Value::Rec(Rc::downgrade(&boxed)));
-                }
+                let boxed = kr.boxed.as_ref().map(|old| {
+                    let boxed = mk(old.borrow().clone_shallow());
+                    // The slot holds a weak cell pointing at the box while the
+                    // right-hand side runs (so a recursive binding can reach
+                    // itself); point the copy's at the copy's box, so no copy
+                    // outlives the other's.
+                    let rebind = match &*frame.borrow().locals[kr.slot].borrow() {
+                        Value::Rec(w) => w.upgrade().is_some_and(|t| Rc::ptr_eq(&t, old)),
+                        _ => false,
+                    };
+                    if rebind {
+                        frame.borrow_mut().locals[kr.slot] = mk(Value::Rec(Rc::downgrade(&boxed)));
+                    }
+                    boxed
+                });
                 KFrame::Ret(KRet {
                     boxed,
                     slot: kr.slot,
@@ -1325,26 +1504,32 @@ impl<'p> Exec<'p> {
                 return Ok(Some(v));
             };
             match kf {
-                KFrame::Ret(kr) => {
+                KFrame::Ret(KRet { boxed: None, slot, cont, frame }) => {
+                    frame.borrow_mut().locals[slot] = v;
+                    self.frame = frame;
+                    self.ctrl = cont;
+                    return Ok(None);
+                }
+                KFrame::Ret(KRet { boxed: Some(boxed), slot, cont, frame }) => {
                     let filled = v.borrow().clone_shallow();
-                    *kr.boxed.borrow_mut() = filled;
+                    *boxed.borrow_mut() = filled;
                     // A closure built by the right-hand side holds the slot's weak
                     // cell, possibly behind other closures (#250), and may outlive
                     // the slot through a tail call or by escaping. The capture
                     // pinning on call only sees direct captures, so pin here.
                     let captured = {
-                        let f = kr.frame.borrow();
-                        let cell = &f.locals[kr.slot];
+                        let f = frame.borrow();
+                        let cell = &f.locals[slot];
                         Rc::strong_count(cell) > 1
                             && matches!(&*cell.borrow(), Value::Rec(w)
-                                if w.upgrade().is_some_and(|t| Rc::ptr_eq(&t, &kr.boxed)))
+                                if w.upgrade().is_some_and(|t| Rc::ptr_eq(&t, &boxed)))
                     };
-                    if captured && self.live.last().is_none_or(|l| !Rc::ptr_eq(l, &kr.boxed)) {
-                        self.live.push(kr.boxed.clone());
+                    if captured && self.live.last().is_none_or(|l| !Rc::ptr_eq(l, &boxed)) {
+                        self.live.push(boxed.clone());
                     }
-                    kr.frame.borrow_mut().locals[kr.slot] = kr.boxed.clone();
-                    self.frame = kr.frame;
-                    self.ctrl = kr.cont;
+                    frame.borrow_mut().locals[slot] = boxed;
+                    self.frame = frame;
+                    self.ctrl = cont;
                     return Ok(None);
                 }
                 KFrame::Prompt(kp) => {
