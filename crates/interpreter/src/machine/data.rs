@@ -613,9 +613,23 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 ))
             }
         }
+        // In place under the same condition as `VecPush`.
         Prim::VecSet => {
-            let mut v = as_vec(&a[0])?.as_ref().clone();
             let i = as_index(&a[1])?;
+            let unshared = Rc::strong_count(&a[0]) == 1 && Rc::weak_count(&a[0]) == 0;
+            if unshared {
+                let mut cell = a[0].borrow_mut();
+                if let Value::Vector(items) = &mut *cell {
+                    if let Some(buf) = Rc::get_mut(items) {
+                        let Some(slot) = buf.get_mut(i) else {
+                            return Err(fault("vec index out of bounds"));
+                        };
+                        *slot = a[2].clone();
+                        return Ok(Value::Vector(items.clone()));
+                    }
+                }
+            }
+            let mut v = as_vec(&a[0])?.as_ref().clone();
             if i >= v.len() {
                 return Err(fault("vec index out of bounds"));
             }

@@ -92,6 +92,7 @@ struct Value {
     struct {
       Value **items;
       size_t len;
+      size_t cap; /* slots allocated in `items`, at least `len` */
     } seq; /* tuple and vec */
     struct {
       const char *name;
@@ -317,6 +318,15 @@ static void *THxMEM_alloc(size_t size) {
   if (!p) thrax_fault("out of memory");
   ++g_live;
   return p;
+}
+
+/* Resize a THxMEM_alloc'd block (or allocate one for NULL). Bytes past the
+ * old size are not zeroed. */
+static void *THxMEM_realloc(void *p, size_t size) {
+  void *q = realloc(p, size ? size : 1);
+  if (!q) thrax_fault("out of memory");
+  if (!p) ++g_live;
+  return q;
 }
 
 static void THxMEM_free(void *p) {
@@ -609,6 +619,7 @@ Value *THxRT_tuple(Value **items, size_t len) {
     THxMEM_retain(items[i]);
   }
   v->u.seq.len = len;
+  v->u.seq.cap = len;
   return v;
 }
 static Value *mk_vec(Value **items, size_t len) {
@@ -619,6 +630,7 @@ static Value *mk_vec(Value **items, size_t len) {
     THxMEM_retain(items[i]);
   }
   v->u.seq.len = len;
+  v->u.seq.cap = len;
   return v;
 }
 Value *THxRT_struct(const char *name, size_t len, const char **fnames,
@@ -1333,6 +1345,56 @@ static Value *THxSTM_commit(void);
 static Value *THxSTM_wait(void);
 static Value *THxSTM_save(void);
 static Value *THxSTM_rollback(Value *mark);
+#ifdef THRAX_THREADS
+static void mark_shared(Value *v);
+#endif
+
+/* `@vec_push v x` (a[0], a[1]) or `@vec_set v i x` (a[0], a[1], a[2]). With
+ * `owned`, the caller's reference on a[0] is one it gave up (a moved local, or
+ * the operand row of a partial application nothing else holds), so when that
+ * is a[0]'s only reference nobody can observe the update and it happens in
+ * place, returning a[0] itself. Otherwise the result is a fresh vector. A push
+ * in place grows the block geometrically, so building by pushes is linear. */
+static Value *vec_update(int id, Value **a, int owned) {
+  Value *v = a[0];
+  if (v->tag != T_VEC) thrax_fault("expected a vector");
+  size_t len = v->u.seq.len;
+  int push = id == THxB_VEC_PUSH;
+  size_t at = push ? len : as_index(a[1]);
+  if (at >= len && !push) thrax_fault("vec index out of bounds");
+  Value *x = a[push ? 1 : 2];
+  if (owned && THxMEM_unique(v)) {
+#ifdef THRAX_THREADS
+    if (sh_load(v) != SH_LOCAL) mark_shared(x);
+#endif
+    THxMEM_retain(x);
+    if (push) {
+      if (len == v->u.seq.cap) {
+        size_t cap = len < 4 ? 4 : len * 2;
+        v->u.seq.items = THxMEM_realloc(v->u.seq.items, cap * sizeof(Value *));
+        v->u.seq.cap = cap;
+      }
+      v->u.seq.items[len] = x;
+      v->u.seq.len = len + 1;
+    } else {
+      Value *old = v->u.seq.items[at];
+      v->u.seq.items[at] = x;
+      THxMEM_release(old);
+    }
+    return v;
+  }
+  size_t n = push ? len + 1 : len;
+  Value *r = alloc_value(T_VEC);
+  r->u.seq.items = n ? THxMEM_alloc(n * sizeof(Value *)) : NULL;
+  for (size_t i = 0; i < len; i++) r->u.seq.items[i] = v->u.seq.items[i];
+  r->u.seq.items[at] = x;
+  for (size_t i = 0; i < n; i++) THxMEM_retain(r->u.seq.items[i]);
+  r->u.seq.len = n;
+  r->u.seq.cap = n;
+  return r;
+}
+
+static int is_vec_update(int id) { return id == THxB_VEC_PUSH || id == THxB_VEC_SET; }
 
 static Value *run_builtin(int id, Value **a) {
   switch (id) {
@@ -1591,16 +1653,7 @@ static Value *run_builtin(int id, Value **a) {
     if (i >= a[0]->u.seq.len) thrax_fault("vec index out of bounds");
     return a[0]->u.seq.items[i]; /* borrowed; the caller (do_ret) retains it */
   }
-  case THxB_VEC_PUSH: {
-    if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
-    size_t len = a[0]->u.seq.len + 1;
-    Value **items = xmalloc(len * sizeof(Value *));
-    memcpy(items, a[0]->u.seq.items, a[0]->u.seq.len * sizeof(Value *));
-    items[a[0]->u.seq.len] = a[1];
-    Value *v = mk_vec(items, len);
-    free(items);
-    return v;
-  }
+  case THxB_VEC_PUSH: return vec_update(id, a, 0);
   case THxB_VEC_SLICE: {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t n = a[0]->u.seq.len;
@@ -1663,18 +1716,7 @@ static Value *run_builtin(int id, Value **a) {
     free(strides);
     return r;
   }
-  case THxB_VEC_SET: {
-    if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
-    size_t i = as_index(a[1]);
-    if (i >= a[0]->u.seq.len) thrax_fault("vec index out of bounds");
-    Value **items = xmalloc((a[0]->u.seq.len ? a[0]->u.seq.len : 1) *
-                            sizeof(Value *));
-    memcpy(items, a[0]->u.seq.items, a[0]->u.seq.len * sizeof(Value *));
-    items[i] = a[2];
-    Value *v = mk_vec(items, a[0]->u.seq.len);
-    free(items);
-    return v;
-  }
+  case THxB_VEC_SET: return vec_update(id, a, 0);
 
   default: break;
   }
@@ -1810,6 +1852,7 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
     case T_TUPLE:
     case T_VEC:
       dst->u.seq.items = copy_children(self, v->u.seq.items, dst->u.seq.len);
+      dst->u.seq.cap = dst->u.seq.len;
       break;
     case T_STRUCT: {
       size_t n = dst->u.strct.len;
@@ -2436,6 +2479,13 @@ Value *THxK_prim(int id, Value **a) {
   if (id == THxB_TENSOR_CREATE) return rt_generate(a[0], a[1]);
   return run_builtin(id, a);
 }
+/* THxK_prim for `@vec_push` / `@vec_set`. `owned` says the caller moved its
+ * first operand out of a slot or captured field (the temp pool now holds that
+ * reference), rather than borrowing one that may still be read. */
+Value *THxK_vec_update(int id, Value **a, int owned) {
+  if (!is_vec_update(id)) thrax_fault("vec_update: not a vector update");
+  return vec_update(id, a, owned);
+}
 
 static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
                     size_t base, int owned) {
@@ -2455,11 +2505,16 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       if (nn + 1 == fn->u.builtin.arity) {
         /* borrow the operand row: fn (retained) keeps args[0..nn) alive, and
          * arg is retained; run_builtin only reads them and returns fresh (or a
-         * child do_ret then retains). */
+         * child do_ret then retains). A partial application this call solely
+         * owns gives up its row, so its vector may be updated in place; one
+         * still held elsewhere (`let f = @vec_push v in (f 1, f 2)`) may not. */
         Value **args = THxMEM_cell((nn + 1) * sizeof(Value *));
         for (size_t i = 0; i < nn; i++) args[i] = fn->u.builtin.args[i];
         args[nn] = arg;
-        Value *res = THxK_prim(fn->u.builtin.id, args);
+        int id = fn->u.builtin.id;
+        Value *res = nn > 0 && owned && is_vec_update(id) && THxMEM_unique(fn)
+                         ? vec_update(id, args, 1)
+                         : THxK_prim(id, args);
         THxMEM_cell_free(args, (nn + 1) * sizeof(Value *));
         r = do_ret(cur, fr, in, res, base);
       } else {

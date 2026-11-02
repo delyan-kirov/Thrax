@@ -678,12 +678,16 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     MOVE at each local's last use (`Atom::Move`, `Atom::MoveEnv`) and an
     `Expr::Drop` where a value dies unread, which gives the same precision as
     Perceus' owned-by-default `dup`/`drop` for locals. Used for exact resumption
-    uniqueness (section 2) and, in the interpreter, in-place `@vec_push` on a
-    uniquely owned vector (a push loop went from quadratic to linear).
-  - [ ] Reuse in the C backend. Moves already make values unique there, but a
-    `let` box takes a deep copy of an aggregate's payload
-    (`THxVALUE_patch_box`), so every binding of a vector costs O(n) whatever
-    the push does. Boxes that share instead of copy come first.
+    uniqueness (section 2) and in-place `@vec_push` / `@vec_set` on a
+    uniquely owned vector in both engines (a push loop went from quadratic to
+    linear).
+  - [X] **Vector updates in place in the C backend (issues #248, #382).** A
+    non-recursive `let` moves its value into the slot (only a recursive `let`
+    keeps a copying box), and a moved vector operand reaches the built-in
+    as owned (`THxK_vec_update`), so a push or set on a vector nothing else
+    holds updates it in place, growing pushes geometrically.
+  - [ ] General reuse in the C backend: a dead constructor's cell reused for a
+    new one of the same shape (Perceus reuse, issue #384).
 
 ---
 

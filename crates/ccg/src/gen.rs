@@ -1296,12 +1296,35 @@ impl<'p> Emitter<'p> {
     /// applications waits until the operands have been read.
     fn emit_prim(&mut self, call: PrimCall, sink: Sink, out: &mut String) {
         self.glob_atom(call.name);
-        let args: Vec<String> = call.args.iter().map(|a| self.atom(a)).collect();
-        let val = format!(
-            "THxK_prim({}, (Value*[]){{ {} }})",
-            builtin_ident(call.name),
-            args.join(", ")
-        );
+        let mut args: Vec<String> = call.args.iter().map(|a| self.atom(a)).collect();
+        let val = if matches!(call.name, "@vec_push" | "@vec_set") {
+            // A moved vector may be updated in place when nothing else holds it.
+            // `THxVALUE_take_env` moves only when its closure is unshared, so
+            // whether it did is read back from the emptied field, in a statement
+            // of its own since operand evaluation order is unspecified.
+            let owned = match call.args[0] {
+                Atom::Move(_) => "1".to_string(),
+                Atom::MoveEnv(i) => {
+                    let v = self.fresh("vec");
+                    out.push_str(&format!("  Value* {v} = {};\n", args[0]));
+                    out.push_str(&format!("  int {v}_own = fr->env[{i}] == NULL;\n"));
+                    args[0] = v.clone();
+                    format!("{v}_own")
+                }
+                _ => "0".to_string(),
+            };
+            format!(
+                "THxK_vec_update({}, (Value*[]){{ {} }}, {owned})",
+                builtin_ident(call.name),
+                args.join(", ")
+            )
+        } else {
+            format!(
+                "THxK_prim({}, (Value*[]){{ {} }})",
+                builtin_ident(call.name),
+                args.join(", ")
+            )
+        };
         match call.rest {
             Some((slot, rest)) => {
                 out.push_str(&format!("  THxK_drop(fr, {slot});\n"));

@@ -89,12 +89,13 @@ straight-line C and ends by calling exactly one **terminator**; the driver
 - **`Ret`/`MkStruct`/`Field`/`MkVariant`/`Unk`/`Extern`** compute one value
   expression and `deliver` it to the block's sink (a `THxK_ret`, or a slot
   back-patch + `THxK_jump`).
-- **`Let`** places a placeholder box in the slot (`THxK_setbox`) so recursive
-  closures can capture it, then: if the rhs **suspends** (a non-tail `App` or a
+- **`Let`** empties its slot (`THxK_drop`); a recursive `let` (its rhs mentions
+  the slot) instead places a placeholder box there (`THxK_setbox`) so recursive
+  closures can capture it. Then: if the rhs **suspends** (a non-tail `App` or a
   `Handle`), the body becomes a fresh continuation block and the rhs delivers
-  into the slot (the driver back-patches the box on return, exactly as `IT.cpp`
-  `KRet`); otherwise the pure rhs is computed into the slot and the body is
-  emitted **inline** in the same block (the pure path stays flat).
+  into the slot on return (an empty slot adopts the value, a box is
+  back-patched); otherwise the pure rhs is computed into the slot and the body
+  is emitted **inline** in the same block (the pure path stays flat).
 - **`App`** tail -> `THxK_tailcall`; non-tail (always a let rhs, by ANF) ->
   `THxK_apply` with the let body as its continuation block.
 - **`Case`** evaluates the scrutinee once, then an if/else chain on
@@ -108,7 +109,13 @@ straight-line C and ends by calling exactly one **terminator**; the driver
 - **Built-ins** are numbered by `frontend::ir::data::BUILTINS`: the generator
   emits that table as the `THxB_*` enum ahead of the runtime, and a saturated
   call is `THxK_prim(THxB_<NAME>, args)`, which the runtime dispatches with a
-  `switch`.
+  `switch`. `@vec_push` and `@vec_set` go through `THxK_vec_update`, which also
+  says whether the vector operand was moved (a last use): a moved vector whose
+  count is 1 is updated in place, its item block growing geometrically, and any
+  other is copied once. A partial application of either updates in place only
+  when the applying call owns it alone (`let f = @vec_push v in (f 1, f 2)`
+  copies). `THxMEM_unique` reads a shared value's atomic count, so a vector
+  another thread can reach is never mutated under it.
 - **Entry**: the generated C `main` forces every global reachable from the entry,
   then applies `@main` (`THxK_call`) to the argument vector as a `@Vec @Str` and
   returns its `@Int` as the exit code. A harness mode (`ccg::Entry::Show`) instead
@@ -299,8 +306,8 @@ so those functions carry the ownership rules:
   garbage of a long-running loop dies immediately. (Measured on
   `examples/RC_LOOP.thx`, 200k iterations of struct allocation: **1.3 MB peak
   RSS under RC vs 277 MB under bump**.)
-- **Box back-patch** (`THxVALUE_patch_box`): the KRet delivery content-copies
-  into the let box, deep-copying payload arrays (a shared array would be freed
+- **Box back-patch** (`THxVALUE_patch_box`): only a recursive `let` has a box.
+  The KRet delivery content-copies into it, deep-copying payload arrays (a shared array would be freed
   twice) and retaining children *except a child pointing back at the box
   itself*, the **weak self edge** of a recursive-`let` closure that captured
   its own box. That is the one genuine RC cycle (the interpreter's `VRec`
@@ -345,11 +352,6 @@ unboxed in registers for true low-level performance.
 
 - A stored continuation dropped without ever resuming never runs its `defer`
   (inherited from the interpreter) though its memory *is* reclaimed.
-- A `let` box takes a deep copy of an aggregate's payload
-  (`THxVALUE_patch_box`), so binding a vector costs O(n). The ownership pass
-  makes such values uniquely owned often enough for in-place reuse (the
-  interpreter's `@vec_push` uses it), but here the copy at the next binding
-  would undo it.
 - FFI marshals the base scalar/pointer types; aggregates (struct/variant) are
   not passed across the boundary, and only libc-resolvable libraries are
   exercised (others just need the right `-l`/path).
@@ -360,7 +362,8 @@ unboxed in registers for true low-level performance.
   covers; such bindings do not occur in practice (recursive lets bind
   functions).
 - Values are pointer-boxed, not register-unboxed; RC is runtime-seam-based, not
-  a Perceus-style compile-time dup/drop pass (no in-place reuse optimization).
+  a Perceus-style compile-time dup/drop pass: apart from `@vec_push` and
+  `@vec_set`, a dead cell is never reused for a new value.
 
 ## Verification
 
