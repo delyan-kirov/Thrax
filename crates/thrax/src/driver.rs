@@ -12,6 +12,9 @@ use frontend::{Item, Program};
 
 use crate::stdlib;
 
+mod resident;
+use resident::ModuleRun;
+
 // These shadow the std macros for this whole module, so a diagnostic printed
 // while a progress line is open starts on a line of its own.
 macro_rules! eprint {
@@ -359,13 +362,6 @@ fn build_import_hints() -> HashMap<utilities::StrId, Vec<utilities::StrId>> {
     hints
 }
 
-/// Type-check every module in dependency order, returning the per-module
-/// checkers (or the first error, rendered).
-type CheckOut<'a> = (
-    Vec<frontend::Checker<'a>>,
-    Vec<Vec<(utilities::StrId, frontend::Type)>>,
-);
-
 /// Print a rendered warning once per process. A module is checked again on
 /// every metaprogram-expansion round and every REPL entry, and would otherwise
 /// repeat the same warning each time.
@@ -377,85 +373,101 @@ fn report_warning(rendered: String) {
     }
 }
 
-fn check_all<'a>(
-    ast: &'a frontend::Ast,
-    programs: &[Program],
-    graph: &[Vec<usize>],
-    sources: &[(String, String, String)],
-    lenient: bool,
-    session: Option<SessionRoot<'_>>,
-    parse_errors: Vec<Vec<utilities::Diagnostic>>,
-) -> Result<CheckOut<'a>, String> {
-    let mut checked = check_modules(ast, programs, graph, sources, lenient, session, parse_errors);
+/// Type-check every module in dependency order, reusing the modules an earlier
+/// compile kept (see [`resident`]), and report what the check found: warnings
+/// printed, errors rendered as the `Err` (or sent to the editor's sink). A header
+/// that does not parse is an `Err` too.
+fn check_all(loaded: &Loaded, lenient: bool, session: Option<SessionRoot<'_>>) -> Result<ModuleRun, String> {
+    let mut run = ModuleRun::check(&loaded.sources, &loaded.index, lenient, session)?;
+    let sources = &loaded.sources;
     let level = project_config().word("lints", "unreachable_arm").to_string();
-    for &i in &checked.order {
+    for &i in &run.order.clone() {
         let (_name, src_path, src) = &sources[i];
-        for w in std::mem::take(&mut checked.warnings[i]) {
+        for w in run.warnings[i].clone() {
             match level.as_str() {
                 "allow" if w.root().code == utilities::Code::UnreachableArm => {}
                 "deny" if w.root().code == utilities::Code::UnreachableArm => {
-                    checked.errors[i].push(w.with_note("`[lints] unreachable_arm = \"deny\"` makes this an error"));
+                    run.errors[i].push(w.with_note("`[lints] unreachable_arm = \"deny\"` makes this an error"));
                 }
                 _ => report_warning(w.render_warning(src, src_path)),
             }
         }
     }
-    if checked.errors.iter().any(|e| !e.is_empty()) {
+    if run.errors.iter().any(|e| !e.is_empty()) {
         if sink_active() {
-            for &i in &checked.order {
-                for d in &checked.errors[i] {
+            for &i in &run.order {
+                for d in &run.errors[i] {
                     sink_push(&sources[i].0, d.clone());
                 }
             }
             return Err(String::new());
         }
-        return Err(render_errors(&checked.order, &checked.errors, sources));
+        return Err(render_errors(&run.order, &run.errors, sources));
     }
-    Ok((checked.checkers, checked.results))
+    Ok(run)
 }
 
-/// The outcome of checking every module, failed ones included. Indexed by
-/// module; `order` is the order they were checked in (dependencies first), which
-/// is also the order their diagnostics are worth reading in.
-pub(crate) struct Checked<'a> {
-    pub checkers: Vec<frontend::Checker<'a>>,
-    pub results: Vec<Vec<(utilities::StrId, frontend::Type)>>,
-    pub errors: Vec<Vec<utilities::Diagnostic>>,
-    pub warnings: Vec<Vec<utilities::Diagnostic>>,
-    pub order: Vec<usize>,
-    pub types: Rc<frontend::Types>,
-}
-
+/// Every module checked from scratch over a type store of its own, failed ones
+/// included: the checkers, indexed by module, and the store. For an editor's
+/// base, which keeps its own checkers.
 pub(crate) fn check_modules<'a>(
     ast: &'a frontend::Ast,
     programs: &[Program],
     graph: &[Vec<usize>],
     sources: &[(String, String, String)],
-    lenient: bool,
-    session: Option<SessionRoot<'_>>,
     parse_errors: Vec<Vec<utilities::Diagnostic>>,
-) -> Checked<'a> {
-    check_modules_with(ast, programs, graph, sources, lenient, session, parse_errors, false)
+) -> (Vec<frontend::Checker<'a>>, Rc<frontend::Types>) {
+    // One type store for the whole compilation: a `Type` is a handle into it, so a
+    // type crossing a module boundary has to address the same store.
+    let types = Rc::new(frontend::Types::new());
+    let modules = ModuleSet { ast, programs, graph, sources };
+    let setup = Setup { lenient: false, open_effects: false, record_types: false, probe: false };
+    let over = check_modules_over(modules, &types, setup, None, parse_errors, &|_| None, &mut |_| {});
+    (over.checkers.into_iter().map(|c| c.expect("nothing reused")).collect(), types)
 }
 
-/// [`check_modules`] that can also keep every expression's type (for an editor).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn check_modules_with<'a>(
-    ast: &'a frontend::Ast,
-    programs: &[Program],
-    graph: &[Vec<usize>],
-    sources: &[(String, String, String)],
-    lenient: bool,
+/// The modules of one compilation, parsed into one tree.
+#[derive(Clone, Copy)]
+pub(crate) struct ModuleSet<'a, 's> {
+    pub ast: &'a frontend::Ast,
+    pub programs: &'s [Program],
+    pub graph: &'s [Vec<usize>],
+    pub sources: &'s [(String, String, String)],
+}
+
+/// What [`check_modules_over`] found, indexed by module: each checker (none for
+/// a module that was reused), its definitions' types, its errors and warnings,
+/// and the order the modules were checked in, dependencies first, which is also
+/// the order their diagnostics are worth reading in.
+pub(crate) struct CheckedOver<'a> {
+    pub checkers: Vec<Option<frontend::Checker<'a>>>,
+    pub results: Vec<Vec<(utilities::StrId, frontend::Type)>>,
+    pub errors: Vec<Vec<utilities::Diagnostic>>,
+    pub warnings: Vec<Vec<utilities::Diagnostic>>,
+    pub order: Vec<usize>,
+}
+
+/// A module checked by an earlier compilation and reused as it is: its checker
+/// and its definitions' types.
+pub(crate) type Reused<'c, 'a> = (&'c frontend::Checker<'a>, &'c [(utilities::StrId, frontend::Type)]);
+
+/// Type-check every module in dependency order over the type store `types`,
+/// except those `reused` supplies, which their dependents import from as they
+/// are. `checked` is told each module this checks, right after it does.
+/// `setup` holds the options of every module but the session root's.
+pub(crate) fn check_modules_over<'a, 'c>(
+    modules: ModuleSet<'a, '_>,
+    types: &Rc<frontend::Types>,
+    setup: Setup,
     session: Option<SessionRoot<'_>>,
     parse_errors: Vec<Vec<utilities::Diagnostic>>,
-    record_types: bool,
-) -> Checked<'a> {
+    reused: &dyn Fn(usize) -> Option<Reused<'c, 'a>>,
+    checked: &mut dyn FnMut(usize),
+) -> CheckedOver<'a> {
+    let ModuleSet { ast, programs, graph, sources } = modules;
     let mut errors = parse_errors;
     errors.resize_with(programs.len(), Vec::new);
     let mut warnings = vec![Vec::new(); programs.len()];
-    // One type store for the whole compilation: a `Type` is a handle into it, so a
-    // type crossing a module boundary has to address the same store.
-    let types = std::rc::Rc::new(frontend::Types::new());
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
     let mut results: Vec<Vec<(utilities::StrId, frontend::Type)>> = vec![Vec::new(); programs.len()];
 
@@ -471,20 +483,24 @@ pub(crate) fn check_modules_with<'a>(
     }
     let mut hollow = vec![false; programs.len()];
     for &i in &order {
+        if let Some((_, defs)) = reused(i) {
+            results[i] = defs.to_vec();
+            continue;
+        }
         let root = session.filter(|s| s.module == sources[i].0);
         let setup = Setup {
-            lenient,
             open_effects: root.is_some_and(|s| s.open_effects),
-            record_types,
             probe: root.is_some(),
+            ..setup
         };
-        let mut checker = prepare_checker(ast, &programs[i], &types, &|k| checkers[k].as_ref(), &graph[i], c_idx, core_idx, i, setup);
-        let checked = checker.check_program(&programs[i]);
+        let lookup = |k: usize| reused(k).map(|(c, _)| c).or(checkers[k].as_ref());
+        let mut checker = prepare_checker(ast, &programs[i], types, &lookup, &graph[i], c_idx, core_idx, i, setup);
+        let outcome = checker.check_program(&programs[i]);
         // A dependency that failed before exporting anything leaves every name it
         // defines unbound here, so this module's errors would only echo it.
         let echo = graph[i].iter().any(|&d| hollow[d]);
         warnings[i] = checker.warnings().to_vec();
-        match checked {
+        match outcome {
             Ok(defs) => results[i] = defs,
             Err(diag) => {
                 hollow[i] = echo || checker.own_values().is_empty();
@@ -498,15 +514,9 @@ pub(crate) fn check_modules_with<'a>(
             }
         }
         checkers[i] = Some(checker);
+        checked(i);
     }
-    Checked {
-        checkers: checkers.into_iter().map(|c| c.expect("all checked")).collect(),
-        results,
-        errors,
-        warnings,
-        order,
-        types,
-    }
+    CheckedOver { checkers, results, errors, warnings, order }
 }
 
 /// Where the auto-injected `C` and the implicit `CORE` sit among the modules.
@@ -615,54 +625,40 @@ pub(crate) fn dotted(ast: &frontend::Ast, parts: utilities::Slice<utilities::Str
 type Compiled = (
     Vec<frontend::core::CoreProgram>,
     frontend::ReflectInfo,
+    Vec<Option<u64>>,
 );
 
 fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<Compiled, ExitCode> {
-    let ParsedAll { ast, programs, errors, .. } = parse_all(&loaded.sources).map_err(|rendered| {
-        eprint!("{rendered}");
-        ExitCode::FAILURE
-    })?;
-
-    let graph = import_graph(&ast, &programs, &loaded.index);
     // A lenient round tolerates unbound names a generator may still inject. Once
     // the round fails anyway those names are worth reporting too, so the report
     // comes from a strict check of the same sources.
-    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources, lenient, None, errors.clone()) {
-        Ok(out) => out,
+    let mut run = match check_all(loaded, lenient, None) {
+        Ok(run) => run,
         Err(rendered) => {
-            let rendered = if lenient {
-                check_all(&ast, &programs, &graph, &loaded.sources, false, None, errors)
-                    .err()
-                    .unwrap_or(rendered)
-            } else {
-                rendered
-            };
+            let rendered = if lenient { check_all(loaded, false, None).err().unwrap_or(rendered) } else { rendered };
             eprint!("{rendered}");
             return Err(ExitCode::FAILURE);
         }
     };
 
-    let resolved = frontend::collect_resolved(&checkers);
+    let resolved = frontend::collect_resolved(run.checkers());
 
     // Lower every module; put the root first so its names win when resolving an
     // unqualified reference defined in more than one module.
     let reflect = resolved.declarations.reflect();
     let root = loaded.index[&loaded.root_name];
-    let mut order: Vec<usize> = (0..programs.len()).collect();
+    let mut order: Vec<usize> = (0..run.programs.len()).collect();
     order.sort_by_key(|&i| i != root);
-    let lowered: Vec<frontend::core::CoreProgram> = order
-        .iter()
-        .map(|&i| frontend::desugar_program(&ast, &programs[i], &resolved))
-        .collect();
+    let lowered = run.desugar(&order, &resolved);
 
     // `$ @build` has one signature, like the entry: one name, one shape. Its own
     // annotation is known even in a lenient round, so this is checked every round
     // and a wrong shape is reported before the build function is ever run.
-    for (i, defs) in results.iter().enumerate() {
+    for (i, defs) in run.results.iter().enumerate() {
         let Some((_, ty)) = defs.iter().find(|(n, _)| *n == frontend::BUILD) else {
             continue;
         };
-        if !frontend::is_build_type(checkers[i].types(), *ty) {
+        if !frontend::is_build_type(run.checker(i).types(), *ty) {
             eprintln!(
                 "thrax: `{}` of module `{}` must have the signature `{}`",
                 frontend::BUILD,
@@ -677,12 +673,13 @@ fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<C
     // library module too), and a metaprogram-expansion round does not: the entry
     // may itself be injected, so the requirement waits for the final strict round.
     if want_entry && !lenient {
-        if let Err(msg) = check_entry(&lowered[0], &results[root], &checkers[root], &loaded.root_name) {
+        if let Err(msg) = check_entry(&lowered[0], &run.results[root], run.checker(root), &loaded.root_name) {
             eprintln!("thrax: {msg}");
             return Err(ExitCode::FAILURE);
         }
     }
-    Ok((lowered, reflect))
+    let kept = run.kept_ids(&order);
+    Ok((lowered, reflect, kept))
 }
 
 /// Whether the root module (lowered as `root`, checked as `results` by `checker`)
@@ -949,7 +946,7 @@ fn expand_all(
             }
             return Err(ExitCode::FAILURE);
         }
-        let ir = frontend::ir::lower_modules(&compiled.0);
+        let ir = resident::lower_reusing(&compiled.0, &compiled.2);
         let reflect = reflect_tables(compiled.1);
         let round_sources: Rc<HashMap<String, (String, String)>> = Rc::new(
             loaded
@@ -1205,9 +1202,19 @@ fn splice_sources(sources: &mut [(String, String, String)], mut edits: Vec<(Stri
 /// root module's top-level bindings as `(name, rendered type)`.
 pub struct Session {
     pub lowered: Vec<frontend::core::CoreProgram>,
+    /// Per module of `lowered`, the id of the kept module it is, if it is one.
+    kept: Vec<Option<u64>>,
     pub decls: Vec<(String, String)>,
     /// The declared type of the name `queried` asked about, when one was asked for.
     pub queried: Option<String>,
+}
+
+impl Session {
+    /// The session lowered to the IR. The library modules it shares with the
+    /// compile before it are not lowered again.
+    pub fn ir(&self) -> frontend::ir::IrProgram {
+        resident::lower_reusing(&self.lowered, &self.kept)
+    }
 }
 
 /// Compile an in-memory `$ @mod REPL` session `source` against the standard
@@ -1269,42 +1276,37 @@ fn compile_in_memory(
     };
     let loaded = load_core(root_name.to_string(), root_path, source.to_string(), fetch)?;
 
-    let ParsedAll { ast, programs, errors, .. } = parse_all(&loaded.sources)?;
-
-    let graph = import_graph(&ast, &programs, &loaded.index);
     let session = match kind {
         InMemory::Session { open_effects, .. } => Some(SessionRoot { module: &loaded.root_name, open_effects }),
         InMemory::Program => None,
     };
-    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources, false, session, errors)?;
-    let resolved = frontend::collect_resolved(&checkers);
+    let mut run = check_all(&loaded, false, session)?;
+    let resolved = frontend::collect_resolved(run.checkers());
 
     let root = loaded.index[&loaded.root_name];
-    let mut order: Vec<usize> = (0..programs.len()).collect();
+    let mut order: Vec<usize> = (0..run.programs.len()).collect();
     order.sort_by_key(|&i| i != root);
-    let lowered: Vec<frontend::core::CoreProgram> = order
-        .iter()
-        .map(|&i| frontend::desugar_program(&ast, &programs[i], &resolved))
-        .collect();
+    let lowered = run.desugar(&order, &resolved);
+    let kept = run.kept_ids(&order);
 
     let query = match kind {
         InMemory::Session { query, .. } => query,
         InMemory::Program => {
-            check_entry(&lowered[0], &results[root], &checkers[root], &loaded.root_name)?;
+            check_entry(&lowered[0], &run.results[root], run.checker(root), &loaded.root_name)?;
             None
         }
     };
 
-    let mut checkers = checkers;
-    let checker = &mut checkers[root];
-    let queried = query.and_then(|n| checker.show_name(n.into()));
-    let decls = results[root]
+    let queried = query.and_then(|n| run.checker_mut(root).show_name(n.into()));
+    let checker = run.checker(root);
+    let decls = run.results[root]
         .iter()
         .map(|(n, ty)| (n.to_string(), checker.show_decl(*n, *ty)))
         .collect();
 
     Ok(Session {
         lowered,
+        kept,
         decls,
         queried,
     })
@@ -1349,7 +1351,7 @@ fn eval_wrapped(
     module.push_str(&format!("$ {PROBE} =\n"));
     module.push_str(src);
     let session = compile_in_memory("REPL", &module, fetch, InMemory::Session { open_effects: false, query: None })?;
-    let ir = frontend::ir::lower_modules(&session.lowered);
+    let ir = session.ir();
     let v = interpreter::machine::eval_value(&ir, &format!("REPL.{PROBE}"))
         .map_err(|d| d.render("", "@eval"))?;
     interpreter::machine::reify(&v)
@@ -1762,17 +1764,8 @@ pub fn cmd_check(path: &str) -> ExitCode {
         Err(code) => return code,
     };
 
-    let ParsedAll { ast, programs, errors, .. } = match parse_all(&loaded.sources) {
-        Ok(p) => p,
-        Err(rendered) => {
-            eprint!("{rendered}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources, false, None, errors) {
-        Ok(out) => out,
+    let run = match check_all(&loaded, false, None) {
+        Ok(run) => run,
         Err(rendered) => {
             eprint!("{rendered}");
             return ExitCode::FAILURE;
@@ -1781,8 +1774,8 @@ pub fn cmd_check(path: &str) -> ExitCode {
 
     utilities::progress::end();
     let root = loaded.index[&loaded.root_name];
-    let checker = &checkers[root];
-    for (name, ty) in &results[root] {
+    let checker = run.checker(root);
+    for (name, ty) in &run.results[root] {
         println!("{name} : {}", checker.show_decl(*name, *ty));
     }
     ExitCode::SUCCESS
@@ -1989,20 +1982,37 @@ pub(crate) fn parse_mod_name(src: &str) -> Option<String> {
 /// empty if even its header does not parse (the errors are reported later, against the
 /// shared arena).
 pub(crate) fn parse_imports(src: &str) -> Vec<(String, utilities::Span)> {
+    thread_local! {
+        /// Imports by source text: every compile loads the same library, and
+        /// finding a module's imports means parsing all of it.
+        static SEEN: std::cell::RefCell<HashMap<String, Vec<(String, utilities::Span)>>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    if let Some(found) = SEEN.with(|s| s.borrow().get(src).cloned()) {
+        return found;
+    }
     // Recovering, so a broken item elsewhere in the file does not hide its
     // imports (every use of an imported name would then be reported unbound).
     let (ast, program, _) = frontend::parse_recovering(frontend::Ast::new(), src);
-    let Ok(program) = program else {
-        return Vec::new();
+    let found: Vec<(String, utilities::Span)> = match program {
+        Ok(program) => ast
+            .slice(program.items)
+            .iter()
+            .filter_map(|item| match item {
+                Item::Import { module, span, .. } => Some((dotted(&ast, *module), *span)),
+                _ => None,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
     };
-    ast
-        .slice(program.items)
-        .iter()
-        .filter_map(|item| match item {
-            Item::Import { module, span, .. } => Some((dotted(&ast, *module), *span)),
-            _ => None,
-        })
-        .collect()
+    SEEN.with(|s| {
+        let mut seen = s.borrow_mut();
+        if seen.len() >= 512 {
+            seen.clear();
+        }
+        seen.insert(src.to_string(), found.clone());
+    });
+    found
 }
 
 /// A source's `$ with` items, re-rendered as source lines.

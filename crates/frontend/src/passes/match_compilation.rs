@@ -95,6 +95,15 @@ impl MatchCompiler {
     // patterns, a false guard falls through exactly like a mismatch, and the
     // rest runs only on failure, because a lambda's body does not run until it
     // is called. See Note [Case is never lowered to application].
+    //
+    // Most arms fail at one point only (an `if`, a literal, a constructor whose
+    // fields are all variables), and a thunk called from one place is just an
+    // indirect jump that allocates a closure, capturing every variable the
+    // remaining arms read. So when the arm has a single failure point, the
+    // remaining arms go there directly, copied nowhere else, unless the arm
+    // binds a name around that point which they mention. An arm that fails at
+    // most once before binding anything (`fails_at_most_once_unbound`) takes
+    // that path without searching for the point.
 
     /// The code for arms `i..`: try arm `i`, falling through to arms `i+1..` on
     /// any mismatch, or to `fail` when the arms are exhausted.
@@ -103,14 +112,103 @@ impl MatchCompiler {
         if i == arms.len() {
             return fail;
         }
+        if let Some(group) = self.shallow_group(t, s, arms, i, fail) {
+            return group;
+        }
         let fail_rest = self.compile_arms(t, s, arms, i + 1, fail);
+        if fails_at_most_once_unbound(&arms[i]) {
+            return self.compile_arm(t, s, &arms[i], fail_rest);
+        }
         let fk = self.fresh("k");
         let fkv = t.var(fk);
         let unit = t.add(Term::Unit);
         let on_fail = t.app(fkv, unit);
         let arm_code = self.compile_arm(t, s, &arms[i], on_fail);
+        let opaque: Vec<Aol<Term>> = std::iter::once(arms[i].body).chain(arms[i].guard).collect();
+        let mut sites = Vec::new();
+        failure_sites(t, arm_code, on_fail, &opaque, &mut Vec::new(), &mut sites);
+        match sites.as_slice() {
+            [] => return arm_code,
+            [scope] if !scope.iter().any(|n| t.mentions(fail_rest, *n)) => {
+                return replace_node(t, arm_code, on_fail, fail_rest, &opaque);
+            }
+            _ => {}
+        }
         let thunk = t.lam(StrId::intern("_"), fail_rest);
         t.let_(fk, thunk, arm_code)
+    }
+
+    // Note [Shallow arm groups]
+    //
+    // An arm whose pattern only tests the scrutinee's head (a constructor with
+    // plain binders, or a literal) and has no guard fails at exactly one point,
+    // the head test. A run of such arms with distinct heads is therefore one
+    // multi-way shallow case, and its single failure point, the default, can
+    // hold the code for the remaining arms directly: no fallthrough thunk.
+    // Besides saving a closure per match, this keeps the scrutinee out of any
+    // closure, so an alternative can be its last owner and reuse its cell.
+    // See Note [Constructor reuse].
+
+    /// Arms `i..` as one shallow case, when arm `i` starts a run of shallow
+    /// arms. A catch-all arm right after the run is the default; otherwise the
+    /// arms after it are. See Note [Shallow arm groups].
+    fn shallow_group(&mut self, t: &mut Terms, s: StrId, arms: &[CoreArm], i: usize, fail: Aol<Term>) -> Option<Aol<Term>> {
+        // A shallow alternative binds every field (a wildcard too gets a
+        // name), since each field occupies a binder slot.
+        let mut head = |p: &Pat| -> Option<Pat> {
+            match p {
+                Pat::Int(_) | Pat::Real(_) | Pat::Bool(_) => Some(p.clone()),
+                Pat::Variant { tag, fields } if fields.iter().all(|f| matches!(f, Pat::Var(_) | Pat::Wild)) => {
+                    let fields = fields
+                        .iter()
+                        .map(|f| match f {
+                            Pat::Wild => Pat::Var(self.fresh("v")),
+                            _ => f.clone(),
+                        })
+                        .collect();
+                    Some(Pat::Variant { tag: *tag, fields })
+                }
+                _ => None,
+            }
+        };
+        let same_head = |a: &Pat, b: &Pat| match (a, b) {
+            (Pat::Variant { tag: x, .. }, Pat::Variant { tag: y, .. }) => x == y,
+            (Pat::Int(x), Pat::Int(y)) => x == y,
+            (Pat::Real(x), Pat::Real(y)) => x == y,
+            (Pat::Bool(x), Pat::Bool(y)) => x == y,
+            _ => false,
+        };
+        let mut group: Vec<CoreArm> = Vec::new();
+        let mut j = i;
+        while let Some(arm) = arms.get(j) {
+            let Some(pat) = head(&arm.pat).filter(|_| arm.guard.is_none()) else {
+                break;
+            };
+            if group.iter().any(|g| same_head(&g.pat, &pat)) {
+                break;
+            }
+            group.push(CoreArm {
+                pat,
+                guard: None,
+                body: arm.body,
+            });
+            j += 1;
+        }
+        if group.is_empty() {
+            return None;
+        }
+        let default = match arms.get(j) {
+            Some(arm) if arm.guard.is_none() && matches!(arm.pat, Pat::Wild | Pat::Var(_)) => {
+                self.compile_pat(t, s, &arm.pat, arm.body, fail)
+            }
+            _ => self.compile_arms(t, s, arms, j, fail),
+        };
+        let scrut = t.var(s);
+        Some(t.add(Term::Case {
+            scrut,
+            arms: group,
+            default: Some(default),
+        }))
     }
 
     /// Compile a single arm: match its pattern, then run the guard (if any) and
@@ -397,6 +495,65 @@ impl MatchCompiler {
         let rest = self.compile_binders_from(t, binders, pats, i + 1, on_match, on_fail);
         self.compile_pat(t, binders[i], &pats[i], rest, on_fail)
     }
+}
+
+/// Whether `arm` can fail at one point at most, and binds no variable before
+/// it. See Note [Fallthrough thunks].
+fn fails_at_most_once_unbound(arm: &CoreArm) -> bool {
+    arm.guard.is_none()
+        && match &arm.pat {
+            Pat::Int(_) | Pat::Real(_) | Pat::Bool(_) | Pat::Str(_) | Pat::HookEq { .. } => true,
+            Pat::Range { hi, .. } => hi.is_none(),
+            Pat::Variant { fields, .. } => fields.iter().all(irrefutable),
+            p => irrefutable(p),
+        }
+}
+
+/// Whether `pat` matches every value of its type, so it cannot fail.
+fn irrefutable(pat: &Pat) -> bool {
+    match pat {
+        Pat::Wild | Pat::Var(_) => true,
+        Pat::Tuple(pats) => pats.iter().all(irrefutable),
+        Pat::Struct { fields, .. } => fields.iter().all(|(_, p)| irrefutable(p)),
+        _ => false,
+    }
+}
+
+/// Collect, for each occurrence of node `target` under `t`, the user names bound
+/// around it within `t` (fresh `%` names cannot clash). The `opaque` subterms
+/// are known not to contain `target` and are skipped.
+fn failure_sites(
+    t: &Terms,
+    node: Aol<Term>,
+    target: Aol<Term>,
+    opaque: &[Aol<Term>],
+    scope: &mut Vec<StrId>,
+    sites: &mut Vec<Vec<StrId>>,
+) {
+    if node == target {
+        sites.push(scope.clone());
+        return;
+    }
+    if opaque.contains(&node) {
+        return;
+    }
+    t.for_each_child(node, &mut |child, bound| {
+        let depth = scope.len();
+        scope.extend(bound.iter().filter(|n| !n.as_str().starts_with('%')));
+        failure_sites(t, child, target, opaque, scope, sites);
+        scope.truncate(depth);
+    });
+}
+
+/// `t` with every occurrence of node `target` replaced by `with`.
+fn replace_node(t: &mut Terms, node: Aol<Term>, target: Aol<Term>, with: Aol<Term>, opaque: &[Aol<Term>]) -> Aol<Term> {
+    if node == target {
+        return with;
+    }
+    if opaque.contains(&node) {
+        return node;
+    }
+    t.map_children(node, &mut |t, child, _| replace_node(t, child, target, with, opaque))
 }
 
 /// `view sv`: apply the resolved `sequence_view` hook global to the scrutinee.

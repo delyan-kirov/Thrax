@@ -205,7 +205,7 @@ pub enum Outcome {
 /// result type; a backend whose protocol reports its own result kind (wasm) may
 /// ignore it.
 pub trait ForeignCalls {
-    fn call(&self, symbol: &str, lib: &str, args: &[CArg], ret: RetPlan) -> Result<Outcome>;
+    fn call(&self, symbol: StrId, lib: StrId, args: &[CArg], ret: RetPlan) -> Result<Outcome>;
 }
 
 // -- callbacks: a Thrax closure passed to C as a function pointer -------------
@@ -536,6 +536,41 @@ fn read_bytes(v: &PVal) -> Result<Vec<u8>> {
     }
 }
 
+/// What a call site's types resolve to: its binding's `arg_types`/`ret_type`
+/// and, for a libc symbol, the C prototype's exact widths on the host.
+struct Site {
+    arg_types: Vec<StrId>,
+    ret_type: StrId,
+    exact: Option<(Vec<StrId>, StrId)>,
+}
+
+thread_local! {
+    static SITES: std::cell::RefCell<std::collections::HashMap<(StrId, StrId), Rc<Site>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The [`Site`] of `symbol` in `lib`, computed once per binding. Two bindings
+/// of one symbol with different types share the entry, each replacing the
+/// other's on a mismatch.
+fn site(symbol: StrId, lib: StrId, arg_types: &[StrId], ret_type: StrId) -> Rc<Site> {
+    let hit = SITES.with(|m| {
+        m.borrow()
+            .get(&(symbol, lib))
+            .filter(|s| s.ret_type == ret_type && s.arg_types == arg_types)
+            .cloned()
+    });
+    if let Some(s) = hit {
+        return s;
+    }
+    let s = Rc::new(Site {
+        arg_types: arg_types.to_vec(),
+        ret_type,
+        exact: utilities::libc::exact_types(utilities::Target::host(), lib, symbol, arg_types, ret_type),
+    });
+    SITES.with(|m| m.borrow_mut().insert((symbol, lib), s.clone()));
+    s
+}
+
 /// Classify, dispatch to the host backend, and wrap the result. This is the one
 /// entry point the machine's `run_extern` uses for a symbol outside the native
 /// fast-path table (and for every wasm host call).
@@ -546,12 +581,11 @@ pub fn call_extern<'p>(
     ret_type: StrId,
     args: &[PVal<'p>],
 ) -> Result<Value<'p>> {
-    let exact = utilities::libc::exact_types(utilities::Target::host(), lib, symbol, arg_types, ret_type);
-    let (arg_types, ret_type) = match &exact {
+    let site = site(symbol, lib, arg_types, ret_type);
+    let (arg_types, ret_type) = match &site.exact {
         Some((a, r)) => (a.as_slice(), *r),
         None => (arg_types, ret_type),
     };
-    let (symbol, lib) = (symbol.as_str(), lib.as_str());
     let mut cargs = Vec::with_capacity(arg_types.len());
     for (i, ty) in arg_types.iter().enumerate() {
         cargs.push(classify_arg(ty.as_str(), &args[i])?);
@@ -598,14 +632,13 @@ mod native {
     use super::{kind, CArg, ForeignCalls, Outcome, RetPlan, Wrap};
     use crate::machine::data::fault;
     use std::cell::RefCell;
+    use std::collections::HashMap;
     use std::os::raw::{c_char, c_int, c_void};
-    use utilities::Result;
+    use utilities::{Result, StrId};
 
     extern "C" {
         fn strlen(s: *const c_char) -> usize;
-        fn fflush(f: *mut c_void) -> c_int;
-        fn thx_ffi_call_x(
-            fun: *mut c_void,
+        fn thx_ffi_prep(
             nargs: c_int,
             kinds: *const c_int,
             leaf_off: *const c_int,
@@ -614,9 +647,14 @@ mod native {
             ret_kind: c_int,
             ret_leaves: *const c_int,
             ret_nleaves: c_int,
+        ) -> *mut c_void;
+        fn thx_ffi_call_prep(
+            prep: *mut c_void,
+            fun: *mut c_void,
             avalues: *mut *mut c_void,
             rvalue: *mut c_void,
-        ) -> c_int;
+        );
+        fn thx_ffi_prep_free(prep: *mut c_void);
         fn thx_closure_new(
             nargs: c_int,
             kinds: *const c_int,
@@ -631,9 +669,26 @@ mod native {
     // process. The interpreter is single-threaded (values are `Rc`), so a
     // thread-local map is enough; a handle is never closed, matching how a
     // linked program keeps its libraries mapped for its whole run.
+    //
+    // Resolved addresses and prepared call interfaces are cached the same way,
+    // and never evicted: a cached address stays valid because no library is
+    // ever closed, and a cached `Prep` stays valid because the map only grows
+    // (a callback re-entering an extern call may still be using one).
+    // Addresses are keyed by the binding's `(symbol, lib)`, call interfaces by
+    // their flattened signature, which many symbols share (`double(double)`).
     thread_local! {
-        static HANDLES: RefCell<std::collections::HashMap<String, crate::host::Library>> =
-            RefCell::new(std::collections::HashMap::new());
+        static HANDLES: RefCell<HashMap<String, crate::host::Library>> = RefCell::new(HashMap::new());
+        static ADDRS: RefCell<HashMap<(StrId, StrId), usize>> = RefCell::new(HashMap::new());
+        static PREPS: RefCell<HashMap<Vec<c_int>, Prep>> = RefCell::new(HashMap::new());
+    }
+
+    /// A libffi call interface from `thx_ffi_prep`, owned by [`PREPS`].
+    struct Prep(*mut c_void);
+
+    impl Drop for Prep {
+        fn drop(&mut self) {
+            unsafe { thx_ffi_prep_free(self.0) };
+        }
     }
 
     pub struct NativeFfi;
@@ -700,7 +755,59 @@ mod native {
         write_ret_word(ret, ctx.ret_kind, bits);
     }
 
-    fn resolve(symbol: &str, lib: &str) -> Result<*mut c_void> {
+    fn resolve(symbol: StrId, lib: StrId) -> Result<*mut c_void> {
+        if let Some(a) = ADDRS.with(|m| m.borrow().get(&(symbol, lib)).copied()) {
+            return Ok(a as *mut c_void);
+        }
+        let addr = lookup(symbol.as_str(), lib.as_str())?;
+        ADDRS.with(|m| m.borrow_mut().insert((symbol, lib), addr as usize));
+        Ok(addr)
+    }
+
+    /// The prepared call interface for a signature, built on first use. The
+    /// key is the signature flattened: the return kind and its leaves, then
+    /// per argument its kind and leaf count, then every argument leaf.
+    fn prep(
+        kinds: &[c_int],
+        leaf_len: &[c_int],
+        leaf_off: &[c_int],
+        leaves: &[c_int],
+        ret_kind: c_int,
+        ret_leaves: &[c_int],
+    ) -> Option<*mut c_void> {
+        let mut key = Vec::with_capacity(2 + ret_leaves.len() + 2 * kinds.len() + leaves.len());
+        key.push(ret_kind);
+        key.push(ret_leaves.len() as c_int);
+        key.extend_from_slice(ret_leaves);
+        for (k, n) in kinds.iter().zip(leaf_len) {
+            key.push(*k);
+            key.push(*n);
+        }
+        key.extend_from_slice(leaves);
+        if let Some(p) = PREPS.with(|m| m.borrow().get(&key).map(|p| p.0)) {
+            return Some(p);
+        }
+        let nonnull = |v: &[c_int]| if v.is_empty() { std::ptr::null() } else { v.as_ptr() };
+        let p = unsafe {
+            thx_ffi_prep(
+                kinds.len() as c_int,
+                nonnull(kinds),
+                leaf_off.as_ptr(),
+                leaf_len.as_ptr(),
+                nonnull(leaves),
+                ret_kind,
+                nonnull(ret_leaves),
+                ret_leaves.len() as c_int,
+            )
+        };
+        if p.is_null() {
+            return None;
+        }
+        PREPS.with(|m| m.borrow_mut().insert(key, Prep(p)));
+        Some(p)
+    }
+
+    fn lookup(symbol: &str, lib: &str) -> Result<*mut c_void> {
         use crate::host;
         use utilities::target::Target;
         // libc/libm/no-lib live in the already-loaded set.
@@ -738,7 +845,7 @@ mod native {
     }
 
     impl ForeignCalls for NativeFfi {
-        fn call(&self, symbol: &str, lib: &str, args: &[CArg], ret: RetPlan) -> Result<Outcome> {
+        fn call(&self, symbol: StrId, lib: StrId, args: &[CArg], ret: RetPlan) -> Result<Outcome> {
             let addr = resolve(symbol, lib)?;
 
             let mut kinds: Vec<c_int> = Vec::with_capacity(args.len());
@@ -841,21 +948,17 @@ mod native {
             let ret_leaves: &[c_int] = ret.struct_ret.as_ref().map(|s| s.leaves.as_slice()).unwrap_or(&[]);
             let mut rbuf: Vec<u64> = vec![0; ret_size.max(8).div_ceil(8)];
 
-            let rc = unsafe {
-                thx_ffi_call_x(
-                    addr,
-                    args.len() as c_int,
-                    if kinds.is_empty() { std::ptr::null() } else { kinds.as_ptr() },
-                    leaf_off.as_ptr(),
-                    leaf_len.as_ptr(),
-                    if leaves.is_empty() { std::ptr::null() } else { leaves.as_ptr() },
-                    ret.ffi_kind,
-                    if ret_leaves.is_empty() { std::ptr::null() } else { ret_leaves.as_ptr() },
-                    ret_leaves.len() as c_int,
-                    if avalues.is_empty() { std::ptr::null_mut() } else { avalues.as_mut_ptr() },
-                    rbuf.as_mut_ptr() as *mut c_void,
-                )
-            };
+            let prep = prep(&kinds, &leaf_len, &leaf_off, &leaves, ret.ffi_kind, ret_leaves);
+            if let Some(p) = prep {
+                unsafe {
+                    thx_ffi_call_prep(
+                        p,
+                        addr,
+                        if avalues.is_empty() { std::ptr::null_mut() } else { avalues.as_mut_ptr() },
+                        rbuf.as_mut_ptr() as *mut c_void,
+                    )
+                };
+            }
             drop(keepalive);
             for (handle, ctx) in closures {
                 unsafe {
@@ -863,14 +966,12 @@ mod native {
                     drop(Box::from_raw(ctx));
                 }
             }
-            if rc != 0 {
+            if prep.is_none() {
                 return Err(fault(format!(
                     "FFI: libffi could not prepare the call to `{symbol}` (too many arguments, \
                      or a struct with too many fields?)"
                 )));
             }
-            // Order foreign C stdio against the driver's own output.
-            unsafe { fflush(std::ptr::null_mut()) };
 
             let rvalue = rbuf[0];
             Ok(match ret.wrap {
@@ -920,7 +1021,7 @@ use native::backend;
 mod wasm {
     use super::{CArg, ForeignCalls, Outcome, RetPlan};
     use crate::machine::data::fault;
-    use utilities::Result;
+    use utilities::{Result, StrId};
 
     // A single generic trampoline carries any call across: the arguments are
     // serialised into one kind-tagged buffer (tag 1 int i64le, 2 real f64le, 3
@@ -938,7 +1039,8 @@ mod wasm {
     pub struct WasmHostFfi;
 
     impl ForeignCalls for WasmHostFfi {
-        fn call(&self, symbol: &str, _lib: &str, args: &[CArg], _ret: RetPlan) -> Result<Outcome> {
+        fn call(&self, symbol: StrId, _lib: StrId, args: &[CArg], _ret: RetPlan) -> Result<Outcome> {
+            let symbol = symbol.as_str();
             let mut buf = Vec::new();
             for a in args {
                 match a {

@@ -77,6 +77,18 @@ context is a `CtxVal`: a bare local name, a qualified global, an instance applie
 the context resolved for it, a tuple built here, a projection out of a bundle
 already in scope, or an explicit expression. The backends need no support at all.
 
+The middle end then removes the dispatch wherever the instance is known
+statically (`passes/specialize.rs`, issue #383). A call that passes a `@ctx`
+function a global instance, a bundle of them, or an instance function applied to
+one, calls a clone of the function with that instance substituted, memoized per
+(function, instance). Inside the clone, `d.method` reads the known literal: a
+lambda method is lifted to a global (`impl_IEq_for_Pt#f_eq`) and called directly,
+and `eta_fold` turns a primitive one (`impl_IAdd_for_int#f_add`) into the
+intrinsic. A generic function's calls to other `@ctx` functions with the same
+instance chain into their clones, and a recursive call reaches the clone itself.
+Only a clone whose body is a value is made (it becomes a global, evaluated once),
+and the instance nesting depth and the number of clones are capped.
+
 ## What CORE provides
 
 Arithmetic is one interface per operation, so a type implements exactly what it

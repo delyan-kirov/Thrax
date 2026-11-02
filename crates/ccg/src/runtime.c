@@ -26,6 +26,9 @@ typedef void (*BlockFn)(Frame *fr, Value *in);
 /* Provided by the generated program. */
 extern BlockFn THxRT_code_table[];
 extern const size_t THxRT_code_nlocals[];
+/* Per code, a bit per parameter the body only borrows (frontend
+ * `Code::borrowed`): it never moves or drops one. */
+extern const unsigned char THxRT_code_borrowed[];
 extern const size_t THxRT_code_count;
 
 /* One foreign-call wrapper per distinct `@extern`: it marshals the collected
@@ -46,6 +49,7 @@ typedef enum {
   T_STRUCT,
   T_VARIANT,
   T_VEC,       /* Vec `T (boxed elements) */
+  T_TENSOR,    /* a sized tensor `[n]T`: a strided view over a T_VEC buffer */
   T_CLOS,      /* closure: an IR code index + captured environment */
   T_BUILTIN,   /* a (possibly partially applied) built-in operator */
   T_EXTERN,    /* a (possibly partially applied) foreign C function (@extern) */
@@ -88,10 +92,12 @@ struct Value {
     struct {
       uint8_t *data;
       size_t len;
+      size_t cap; /* bytes `data` holds before its trailing NUL; cap >= len */
     } str;
     struct {
       Value **items;
       size_t len;
+      size_t cap; /* slots allocated in `items`, at least `len` */
     } seq; /* tuple and vec */
     struct {
       const char *name;
@@ -104,6 +110,12 @@ struct Value {
       Value **fields;
       size_t len;
     } variant;
+    struct {
+      Value *buf;   /* the T_VEC of boxed elements, shared by every view */
+      size_t off;
+      size_t rank;
+      size_t *dims; /* shape[rank] then strides[rank], one block */
+    } tensor;
     struct {
       int code;
       Value **env;
@@ -138,12 +150,17 @@ struct Value {
  * survives a suspension captured in the continuation stack. */
 struct Frame {
   unsigned rc;
+  /* A bit per local slot holding a lent value: the slot owns no reference, the
+   * caller that lent it keeps it alive. Only parameters are ever lent. */
+  unsigned lent;
   Value *clos; /* retained; NULL for a nullary CAF */
   Value **locals;
   size_t nlocals;
   Value **env; /* borrowed from `clos` */
   size_t nenv;
 };
+
+static inline int frame_lent(Frame *f, size_t i) { return i < 32 && (f->lent >> i & 1u); }
 
 /* Continuation frames (the reified-K stack) and captured resumptions. */
 typedef enum {
@@ -311,12 +328,49 @@ static THX_TLS long long g_live = 0;
 static long long g_live_folded = 0;
 #endif
 
+/* Built with -DTHRAX_ALLOC_STATS, a program reports on stderr at exit how many
+ * counted blocks it allocated in all, for measuring allocation behaviour. */
+#ifdef THRAX_ALLOC_STATS
+static long long g_allocs_total = 0, g_reuses_total = 0;
+static void alloc_stats_report(void) {
+  fprintf(stderr, "thrax: %lld allocations, %lld cells reused\n",
+          __atomic_load_n(&g_allocs_total, __ATOMIC_RELAXED),
+          __atomic_load_n(&g_reuses_total, __ATOMIC_RELAXED));
+}
+#endif
+
+#ifdef THRAX_RC_STATS
+/* Every count change on a value, reported at exit: build the emitted C with
+ * -DTHRAX_RC_STATS to measure reference-count traffic. Thread-local, so a
+ * threaded program reports the main thread's share. */
+static THX_TLS unsigned long long g_rc_retains = 0, g_rc_releases = 0;
+static void rc_stats_report(void) {
+  fprintf(stderr, "thrax: %llu retains, %llu releases\n", g_rc_retains, g_rc_releases);
+}
+__attribute__((constructor)) static void rc_stats_init(void) { atexit(rc_stats_report); }
+#define THX_RC_COUNT(n) (++(n))
+#else
+#define THX_RC_COUNT(n) ((void)0)
+#endif
+
 /* Allocate `size` zeroed bytes with value lifetime (counted). */
 static void *THxMEM_alloc(size_t size) {
   void *p = calloc(1, size ? size : 1);
   if (!p) thrax_fault("out of memory");
   ++g_live;
+#ifdef THRAX_ALLOC_STATS
+  if (__atomic_fetch_add(&g_allocs_total, 1, __ATOMIC_RELAXED) == 0) atexit(alloc_stats_report);
+#endif
   return p;
+}
+
+/* Resize a THxMEM_alloc'd block (or allocate one for NULL). Bytes past the
+ * old size are not zeroed. */
+static void *THxMEM_realloc(void *p, size_t size) {
+  void *q = realloc(p, size ? size : 1);
+  if (!q) thrax_fault("out of memory");
+  if (!p) ++g_live;
+  return q;
 }
 
 static void THxMEM_free(void *p) {
@@ -326,6 +380,67 @@ static void THxMEM_free(void *p) {
 #endif
   --g_live;
   free(p);
+}
+
+/* Recycled small blocks: value cells, frames and the child arrays of tuples,
+ * records, variants, closures and partial applications. A freed block goes on
+ * its size class's list for this thread instead of back to malloc, and the
+ * next allocation of that size takes it. Every size is a multiple of 8 and a
+ * class holds blocks of exactly its size, so a block from THxMEM_alloc may be
+ * freed here and a block from here by THxMEM_free: both are plain malloc
+ * blocks of at least the size asked for. A block on a list is not live, so the
+ * leak check stays exact. A block may be freed, and so recycled, by a thread
+ * other than the one that allocated it; each list is touched only by its
+ * owning thread. */
+#define THX_CELL_CLASSES 33 /* sizes 8 .. 256 */
+#define THX_CELL_KEEP 8192  /* blocks a class keeps before handing back to malloc */
+typedef struct FreeCell {
+  struct FreeCell *next;
+} FreeCell;
+static THX_TLS FreeCell *g_cells[THX_CELL_CLASSES];
+static THX_TLS unsigned g_ncells[THX_CELL_CLASSES];
+
+/* `size` (a multiple of 8) zeroed bytes with value lifetime (counted). */
+static inline void *THxMEM_cell(size_t size) {
+  size_t k = size >> 3;
+  if (k < THX_CELL_CLASSES && g_cells[k]) {
+    FreeCell *c = g_cells[k];
+    g_cells[k] = c->next;
+    --g_ncells[k];
+    ++g_live;
+    memset(c, 0, size);
+    return c;
+  }
+  return THxMEM_alloc(size);
+}
+
+static inline void THxMEM_cell_free(void *p, size_t size) {
+  size_t k = size >> 3;
+  if (!p) return;
+  if (k == 0 || k >= THX_CELL_CLASSES || g_ncells[k] >= THX_CELL_KEEP) {
+    THxMEM_free(p);
+    return;
+  }
+#ifndef THRAX_THREADS
+  if (g_live == 0) thrax_fault("THxMEM_free: more frees than allocations");
+#endif
+  --g_live;
+  FreeCell *c = p;
+  c->next = g_cells[k];
+  g_cells[k] = c;
+  ++g_ncells[k];
+}
+
+/* Hand this thread's recycled blocks back to malloc (they are not live). */
+static void THxMEM_cells_release(void) {
+  for (size_t k = 0; k < THX_CELL_CLASSES; k++) {
+    while (g_cells[k]) {
+      FreeCell *c = g_cells[k];
+      g_cells[k] = c->next;
+      free(c);
+    }
+    g_ncells[k] = 0;
+  }
 }
 
 /* The temp pool: every fresh value is registered here holding the pool's
@@ -346,7 +461,7 @@ static void pool_adopt(Value *v) {
 }
 
 static Value *alloc_value(Tag t) {
-  Value *v = THxMEM_alloc(sizeof(Value));
+  Value *v = THxMEM_cell(sizeof(Value));
   v->tag = t;
   v->rc = 1; /* the pool's reference */
   pool_adopt(v);
@@ -389,6 +504,7 @@ __attribute__((noinline)) static int release_slow(Value *v) {
 
 static inline void THxMEM_retain(Value *v) {
   if (!v) return;
+  THX_RC_COUNT(g_rc_retains);
 #ifdef THRAX_THREADS
   int rc = rc_load(v);
   if (__builtin_expect(rc > 0, 1))
@@ -414,6 +530,16 @@ static int THxMEM_unique(Value *v) {
 #endif
 }
 
+/* Whether `v` is held once, by this thread alone. A value other threads can
+ * reach is never reused: its children would have to stay marked shared. */
+static inline int unique_local(Value *v) {
+#ifdef THRAX_THREADS
+  return rc_load(v) == 1;
+#else
+  return v->rc == 1;
+#endif
+}
+
 /* Dead-value worklist: destruction never recurses on the C stack. */
 static THX_TLS Value **g_dead = NULL;
 static THX_TLS size_t g_dn = 0, g_dcap = 0;
@@ -430,6 +556,7 @@ static void dead_push(Value *v) {
 
 static void THxMEM_release(Value *v) {
   if (!v) return;
+  THX_RC_COUNT(g_rc_releases);
 #ifdef THRAX_THREADS
   int rc = rc_load(v);
   if (__builtin_expect(rc > 1, 1)) {
@@ -450,7 +577,7 @@ static void THxMEM_release(Value *v) {
   while (g_dn > 0) {
     Value *d = g_dead[--g_dn];
     THxVALUE_destroy(d); /* re-enters THxMEM_release: enqueues only */
-    THxMEM_free(d);
+    THxMEM_cell_free(d, sizeof(Value));
   }
   g_draining = 0;
 }
@@ -465,7 +592,41 @@ static size_t THxMEM_live(void) {
 
 /* -- constructors -------------------------------------------------------- */
 
+/* Shared constants: unit, the booleans and the small integers are one static
+ * cell each, never counted down to zero and never freed. With THRAX_THREADS
+ * they are immortal (`rc == 0`, the counting slow path ignores them, and
+ * `mark_level` stops at them); without, their count starts out of reach of
+ * zero. A cell that is patched in place (a let box, a forced thunk) must never
+ * be one of these, which is what `fresh_box` is for. */
+#ifdef THRAX_THREADS
+#define THX_CONST_RC 0
+#else
+#define THX_CONST_RC (1 << 30)
+#endif
+#define THX_CONST(t, init) {(uint8_t)(t), SH_IMMORTAL, THX_CONST_RC, {init}}
+#define THX_SMALL_MIN (-128)
+#define THX_SMALL_MAX 1023
+#define THX_SI(n) THX_CONST(T_INT, .i = (n))
+#define THX_SI4(n) THX_SI(n), THX_SI((n) + 1), THX_SI((n) + 2), THX_SI((n) + 3)
+#define THX_SI16(n) THX_SI4(n), THX_SI4((n) + 4), THX_SI4((n) + 8), THX_SI4((n) + 12)
+#define THX_SI64(n) THX_SI16(n), THX_SI16((n) + 16), THX_SI16((n) + 32), THX_SI16((n) + 48)
+#define THX_SI256(n) THX_SI64(n), THX_SI64((n) + 64), THX_SI64((n) + 128), THX_SI64((n) + 192)
+static Value g_small_ints[THX_SMALL_MAX - THX_SMALL_MIN + 1] = {
+    THX_SI64(-128), THX_SI64(-64), THX_SI256(0), THX_SI256(256), THX_SI256(512), THX_SI256(768)};
+static Value g_unit = THX_CONST(T_UNIT, .i = 0);
+static Value g_false = THX_CONST(T_BOOL, .b = false);
+static Value g_true = THX_CONST(T_BOOL, .b = true);
+_Static_assert(sizeof(g_small_ints) / sizeof(Value) == THX_SMALL_MAX - THX_SMALL_MIN + 1,
+               "small integer table size");
+_Static_assert(sizeof(Value) % 8 == 0, "a value cell is a recyclable size");
+#undef THX_SI256
+#undef THX_SI64
+#undef THX_SI16
+#undef THX_SI4
+#undef THX_SI
+
 Value *THxRT_int(long long n) {
+  if (n >= THX_SMALL_MIN && n <= THX_SMALL_MAX) return &g_small_ints[n - THX_SMALL_MIN];
   Value *v = alloc_value(T_INT);
   v->u.i = (int64_t)n;
   return v;
@@ -482,12 +643,10 @@ Value *THxRT_real32(float r) {
   v->u.r = (double)r;
   return v;
 }
-Value *THxRT_bool(int b) {
-  Value *v = alloc_value(T_BOOL);
-  v->u.b = b ? true : false;
-  return v;
-}
-Value *THxRT_unit(void) { return alloc_value(T_UNIT); }
+Value *THxRT_bool(int b) { return b ? &g_true : &g_false; }
+Value *THxRT_unit(void) { return &g_unit; }
+/* A placeholder a let's value is later patched into. */
+static Value *fresh_box(void) { return alloc_value(T_UNIT); }
 
 /* Byte vectors carry a trailing NUL that is not counted in `len`, so
  * THxVALUE_str is a valid C string for the FFI seam (matching the C++
@@ -498,6 +657,7 @@ Value *THxRT_str(const char *data, size_t len) {
   memcpy(v->u.str.data, data, len);
   v->u.str.data[len] = 0;
   v->u.str.len = len;
+  v->u.str.cap = len;
   return v;
 }
 /* Take ownership of an already-THxMEM_alloc'd buffer. */
@@ -505,17 +665,19 @@ static Value *mk_str_owned(uint8_t *data, size_t len) {
   Value *v = alloc_value(T_STR);
   v->u.str.data = data;
   v->u.str.len = len;
+  v->u.str.cap = len;
   return v;
 }
 
 Value *THxRT_tuple(Value **items, size_t len) {
   Value *v = alloc_value(T_TUPLE);
-  v->u.seq.items = len ? THxMEM_alloc(len * sizeof(Value *)) : NULL;
+  v->u.seq.items = len ? THxMEM_cell(len * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < len; i++) {
     v->u.seq.items[i] = items[i];
     THxMEM_retain(items[i]);
   }
   v->u.seq.len = len;
+  v->u.seq.cap = len;
   return v;
 }
 static Value *mk_vec(Value **items, size_t len) {
@@ -526,13 +688,14 @@ static Value *mk_vec(Value **items, size_t len) {
     THxMEM_retain(items[i]);
   }
   v->u.seq.len = len;
+  v->u.seq.cap = len;
   return v;
 }
 Value *THxRT_struct(const char *name, size_t len, const char **fnames,
                     Value **vals) {
   Value *v = alloc_value(T_STRUCT);
   v->u.strct.name = name;
-  v->u.strct.fields = len ? THxMEM_alloc(len * sizeof(Field)) : NULL;
+  v->u.strct.fields = len ? THxMEM_cell(len * sizeof(Field)) : NULL;
   for (size_t i = 0; i < len; i++) {
     v->u.strct.fields[i].name = fnames[i];
     v->u.strct.fields[i].val = vals[i];
@@ -546,7 +709,7 @@ Value *THxRT_variant(const char *ty, const char *tag, size_t len,
   Value *v = alloc_value(T_VARIANT);
   v->u.variant.ty = ty;
   v->u.variant.tag = tag;
-  v->u.variant.fields = len ? THxMEM_alloc(len * sizeof(Value *)) : NULL;
+  v->u.variant.fields = len ? THxMEM_cell(len * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < len; i++) {
     v->u.variant.fields[i] = fields[i];
     THxMEM_retain(fields[i]);
@@ -557,7 +720,7 @@ Value *THxRT_variant(const char *ty, const char *tag, size_t len,
 Value *THxRT_closure(int code, Value **captures, size_t n) {
   Value *v = alloc_value(T_CLOS);
   v->u.clos.code = code;
-  v->u.clos.env = n ? THxMEM_alloc(n * sizeof(Value *)) : NULL;
+  v->u.clos.env = n ? THxMEM_cell(n * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < n; i++) {
     v->u.clos.env[i] = captures[i];
     THxMEM_retain(captures[i]);
@@ -662,6 +825,10 @@ Value *THxVALUE_env(Value **env, size_t n, size_t i) {
 Value *THxVALUE_take(Frame *fr, size_t i) {
   Value *v = THxVALUE_local(fr->locals, fr->nlocals, i);
   fr->locals[i] = NULL;
+  if (frame_lent(fr, i)) {
+    fr->lent &= ~(1u << i);
+    THxMEM_retain(v);
+  }
   pool_adopt(v);
   return v;
 }
@@ -698,21 +865,46 @@ Value *THxK_call(Value *f, Value *arg);
 #ifdef THRAX_THREADS
 static Value *force_shared(Value *v);
 #endif
+static Value *THxK_call_owned(Value *f, Value *arg);
+static int steal_payload(Value *box, Value *v);
 Value *THxVALUE_force(Value *v) {
 #ifdef THRAX_THREADS
   if (v && __builtin_expect(rc_load(v) <= 0, 0)) return force_shared(v);
 #endif
   while (v && v->tag == T_THUNK) {
-    /* Hold the closure across the call: patching the cell below destroys the
-     * thunk payload, which is what otherwise owns it. */
     Value *f = v->u.thunk;
-    THxMEM_retain(f);
-    Value *forced = THxK_call(f, THxRT_unit()); /* owned */
-    THxMEM_release(f);
-    if (forced == v) break;
-    THxVALUE_patch_box(v, forced); /* deep-copies, so the result is ours to drop */
-    THxMEM_release(forced);
+    Value *forced;
+#ifndef THRAX_THREADS
+    if (unique_local(f)) {
+      /* The cell is the closure's only owner, and patching it below would
+       * drop the closure anyway, so the call takes it over: the activation
+       * is then its sole owner and can move the captures out (a lazy tail
+       * reaches the next call uniquely held, ready for reuse). Meanwhile the
+       * cell is a black hole, so a value that needs itself faults. */
+      v->tag = T_BLACKHOLE;
+      v->u.thunk = NULL;
+      Value *u = THxRT_unit();
+      THxMEM_retain(u);
+      forced = THxK_call_owned(f, u); /* owned */
+      if (forced == v) thrax_fault("a lazy value depends on itself");
+    } else
+#endif
+    {
+      /* Hold the closure across the call: patching the cell below destroys
+       * the thunk payload, which is what otherwise owns it. */
+      THxMEM_retain(f);
+      forced = THxK_call(f, THxRT_unit()); /* owned */
+      THxMEM_release(f);
+      if (forced == v) break;
+    }
+    if (!steal_payload(v, forced)) {
+      THxVALUE_patch_box(v, forced); /* deep-copies, so the result is ours to drop */
+      THxMEM_release(forced);
+    }
   }
+#ifndef THRAX_THREADS
+  if (v && v->tag == T_BLACKHOLE) thrax_fault("a lazy value depends on itself");
+#endif
   return v;
 }
 
@@ -776,6 +968,8 @@ static Value *as_str(Value *v) {
 
 /* -- structural equality (==) -------------------------------------------- */
 
+static bool tensor_eq(Value *x, Value *y);
+
 static bool value_eq(Value *x, Value *y) {
   bool xnum = x->tag == T_INT || x->tag == T_REAL || x->tag == T_REAL32;
   bool ynum = y->tag == T_INT || y->tag == T_REAL || y->tag == T_REAL32;
@@ -811,6 +1005,7 @@ static bool value_eq(Value *x, Value *y) {
         if (!value_eq(x->u.variant.fields[i], y->u.variant.fields[i]))
           return false;
       return true;
+    case T_TENSOR: return tensor_eq(x, y);
     default:
       return false;
   }
@@ -862,6 +1057,27 @@ static Value *arith_intrinsic(int id, Value *x, Value *y) {
   }
   case THxB_FPOW: return THxRT_real(pow(as_f64(x), as_f64(y)));
   default: thrax_fault("not an arithmetic intrinsic");
+  }
+}
+
+/* A bitwise intrinsic on the 64-bit value representation. A shift count is read
+ * unsigned, and one of 64 or more (a negative count included) shifts every bit
+ * out: `@ishl`/`@ushr` give 0, `@ishr` the sign. The bare C shifts would be
+ * undefined there, and `>>` on a negative signed value is
+ * implementation-defined, so the arithmetic shift goes through the complement. */
+static Value *bit_intrinsic(int id, int64_t x, int64_t y) {
+  uint64_t n = (uint64_t)y;
+  switch (id) {
+  case THxB_IAND: return THxRT_int(x & y);
+  case THxB_IOR: return THxRT_int(x | y);
+  case THxB_IXOR: return THxRT_int(x ^ y);
+  case THxB_ISHL: return THxRT_int(n >= 64 ? 0 : (int64_t)((uint64_t)x << n));
+  case THxB_USHR: return THxRT_int(n >= 64 ? 0 : (int64_t)((uint64_t)x >> n));
+  case THxB_ISHR: {
+    if (n > 63) n = 63;
+    return THxRT_int(x < 0 ? ~(int64_t)((uint64_t)~x >> n) : (int64_t)((uint64_t)x >> n));
+  }
+  default: thrax_fault("not a bitwise intrinsic");
   }
 }
 
@@ -921,129 +1137,154 @@ static Value *concat(Value *x, Value *y) {
 }
 
 /* -- strided tensors (mirrors the interpreter's data.rs) ----------------- */
-/* A `[n]T` is a `@tensor`-named struct { buf, off, shape, strides } over a flat
- * buffer; a view (row / transpose / slice) shares `buf` and only changes
- * off/shape/strides. The rep reuses T_STRUCT, so alloc/retain/destroy are free. */
+/* A `[n]T` is a T_TENSOR: a strided view over a flat T_VEC buffer of boxed
+ * elements. A view (row / transpose / slice) shares `buf` and only changes
+ * off/shape/strides, so it copies no elements. Every index into the buffer is
+ * `off + sum(i_k * strides[k])` with `i_k < shape[k]`. */
 
-static Value *int_vec(size_t *xs, size_t n) {
-  Value **items = xmalloc((n ? n : 1) * sizeof(Value *));
-  for (size_t i = 0; i < n; i++) items[i] = THxRT_int((int64_t)xs[i]);
-  Value *v = mk_vec(items, n);
-  free(items);
+#define T_SHAPE(t) ((t)->u.tensor.dims)
+#define T_STRIDES(t) ((t)->u.tensor.dims + (t)->u.tensor.rank)
+
+static Value *mk_tensor(Value *buf, size_t off, const size_t *shape,
+                        const size_t *strides, size_t rank) {
+  size_t *dims = THxMEM_alloc((rank ? 2 * rank : 1) * sizeof(size_t));
+  if (rank) {
+    memcpy(dims, shape, rank * sizeof(size_t));
+    memcpy(dims + rank, strides, rank * sizeof(size_t));
+  }
+  Value *v = alloc_value(T_TENSOR);
+  v->u.tensor.buf = buf;
+  THxMEM_retain(buf);
+  v->u.tensor.off = off;
+  v->u.tensor.rank = rank;
+  v->u.tensor.dims = dims;
   return v;
 }
 
-static size_t *read_dims(Value *v, size_t *rank_out) {
-  if (v->tag != T_VEC) thrax_fault("tensor dims are not a vector");
-  size_t n = v->u.seq.len;
-  size_t *xs = xmalloc((n ? n : 1) * sizeof(size_t));
-  for (size_t i = 0; i < n; i++)
-    xs[i] = (size_t)THxVALUE_as_int(v->u.seq.items[i]);
-  *rank_out = n;
-  return xs;
+static Value *as_tensor(Value *v) {
+  if (v->tag != T_TENSOR) thrax_fault("expected a tensor");
+  return v;
 }
 
-static size_t *row_major(size_t *shape, size_t rank) {
-  size_t *s = xmalloc((rank ? rank : 1) * sizeof(size_t));
-  if (rank > 0) s[rank - 1] = 1;
-  for (size_t k = rank - 1; k > 0; k--) s[k - 1] = s[k] * shape[k];
-  return s;
-}
-
-static Value *mk_tensor(Value *buf, size_t off, size_t *shape, size_t *strides,
-                        size_t rank) {
-  const char *fnames[4] = {"buf", "off", "shape", "strides"};
-  Value *vals[4] = {buf, THxRT_int((int64_t)off), int_vec(shape, rank),
-                    int_vec(strides, rank)};
-  return THxRT_struct("@tensor", 4, fnames, vals);
-}
-
-/* A tensor is a struct NAMED `@tensor`; the tag alone does not say so, because
- * every user struct shares it. */
-static int is_tensor(Value *v) {
-  return v->tag == T_STRUCT && v->u.strct.name &&
-         strcmp(v->u.strct.name, "@tensor") == 0;
-}
-
-static void tensor_fields(Value *t, Value **buf, size_t *off, size_t **shape,
-                          size_t **strides, size_t *rank) {
-  if (t->tag != T_STRUCT) thrax_fault("expected a tensor");
-  Value *b = struct_field(t, "buf"), *o = struct_field(t, "off"),
-        *sh = struct_field(t, "shape"), *st = struct_field(t, "strides");
-  if (!b || !o || !sh || !st) thrax_fault("malformed tensor");
-  *buf = b;
-  *off = (size_t)THxVALUE_as_int(o);
-  size_t r2;
-  *shape = read_dims(sh, rank);
-  *strides = read_dims(st, &r2);
-}
-
-/* The tensor's scalars in row-major logical order (following a view). */
-static Value *materialize(Value *t) {
-  Value *buf;
-  size_t off, *shape, *strides, rank;
-  tensor_fields(t, &buf, &off, &shape, &strides, &rank);
+static size_t row_major(const size_t *shape, size_t rank, size_t *out) {
   size_t total = 1;
-  for (size_t k = 0; k < rank; k++) total *= shape[k];
-  Value **items = xmalloc((total ? total : 1) * sizeof(Value *));
+  for (size_t k = rank; k-- > 0;) {
+    out[k] = total;
+    total *= shape[k];
+  }
+  return total;
+}
+
+static size_t tensor_total(Value *t) {
+  size_t total = 1;
+  for (size_t k = 0; k < t->u.tensor.rank; k++) total *= T_SHAPE(t)[k];
+  return total;
+}
+
+static Value *tensor_cell(Value *t, size_t flat) {
+  Value *buf = t->u.tensor.buf;
+  if (flat >= buf->u.seq.len) thrax_fault("tensor index out of bounds");
+  return buf->u.seq.items[flat];
+}
+
+/* What remains at buffer position `base` once the leading `k` axes are fixed:
+ * the scalar itself (borrowed) when no axis is left, else a view. */
+static Value *tensor_sub(Value *t, size_t base, size_t k) {
+  size_t rank = t->u.tensor.rank;
+  if (k >= rank) return tensor_cell(t, base);
+  return mk_tensor(t->u.tensor.buf, base, T_SHAPE(t) + k, T_STRIDES(t) + k,
+                   rank - k);
+}
+
+/* `i` wrapped into `[0, n)`: tensor indexing is modular. `n` is nonzero. */
+static size_t wrap_index(int64_t i, size_t n) {
+  if (i >= 0 && (uint64_t)i < n) return (size_t)i;
+  int64_t s = (int64_t)n;
+  return (size_t)(((i % s) + s) % s);
+}
+
+/* The tensor's scalars in row-major logical order (following a view), into
+ * `out[0..tensor_total(t))`, borrowed. */
+static void tensor_gather(Value *t, Value **out) {
+  size_t rank = t->u.tensor.rank, total = tensor_total(t);
+  if (total == 0) return;
+  size_t *shape = T_SHAPE(t), *strides = T_STRIDES(t);
+  if (rank == 1) {
+    for (size_t m = 0; m < total; m++)
+      out[m] = tensor_cell(t, t->u.tensor.off + m * strides[0]);
+    return;
+  }
   size_t *idx = xmalloc((rank ? rank : 1) * sizeof(size_t));
   for (size_t k = 0; k < rank; k++) idx[k] = 0;
   for (size_t m = 0; m < total; m++) {
-    size_t flat = off;
+    size_t flat = t->u.tensor.off;
     for (size_t k = 0; k < rank; k++) flat += idx[k] * strides[k];
-    if (flat >= buf->u.seq.len) thrax_fault("tensor buffer out of range");
-    items[m] = buf->u.seq.items[flat];
+    out[m] = tensor_cell(t, flat);
     for (size_t k = rank; k-- > 0;) {
       if (++idx[k] < shape[k]) break;
       idx[k] = 0;
     }
   }
-  Value *v = mk_vec(items, total);
-  free(items);
   free(idx);
-  free(shape);
+}
+
+/* A fresh contiguous tensor of `shape` over `items` (retained). */
+static Value *tensor_of(Value **items, size_t total, const size_t *shape,
+                        size_t rank) {
+  size_t *strides = xmalloc((rank ? rank : 1) * sizeof(size_t));
+  row_major(shape, rank, strides);
+  Value *t = mk_tensor(mk_vec(items, total), 0, shape, strides, rank);
   free(strides);
-  return v;
+  return t;
 }
 
 /* Stack `elems` on a new leading axis (scalars -> rank 1; tensors flattened). */
 static Value *tensor_stack(Value **elems, size_t n) {
   if (n == 0) {
-    size_t sh[1] = {0}, st[1] = {1};
-    return mk_tensor(mk_vec(NULL, 0), 0, sh, st, 1);
+    size_t sh[1] = {0};
+    return tensor_of(NULL, 0, sh, 1);
   }
-  if (is_tensor(elems[0])) {
-    Value *b0;
-    size_t o0, *sub_shape, *sub_strides, sub_rank;
-    tensor_fields(elems[0], &b0, &o0, &sub_shape, &sub_strides, &sub_rank);
-    free(sub_strides);
-    size_t sub_total = 1;
-    for (size_t k = 0; k < sub_rank; k++) sub_total *= sub_shape[k];
-    size_t total = n * sub_total;
-    Value **items = xmalloc((total ? total : 1) * sizeof(Value *));
-    size_t pos = 0;
-    for (size_t i = 0; i < n; i++) {
-      Value *mat = materialize(elems[i]);
-      if (mat->u.seq.len != sub_total)
-        thrax_fault("stacking tensors of unequal shape");
-      for (size_t j = 0; j < sub_total; j++) items[pos++] = mat->u.seq.items[j];
-    }
-    Value *buf = mk_vec(items, total);
-    free(items);
-    size_t rank = 1 + sub_rank;
-    size_t *shape = xmalloc(rank * sizeof(size_t));
-    shape[0] = n;
-    for (size_t k = 0; k < sub_rank; k++) shape[k + 1] = sub_shape[k];
-    free(sub_shape);
-    size_t *strides = row_major(shape, rank);
-    Value *t = mk_tensor(buf, 0, shape, strides, rank);
-    free(shape);
-    free(strides);
-    return t;
+  if (elems[0]->tag != T_TENSOR) {
+    size_t sh[1] = {n};
+    return tensor_of(elems, n, sh, 1);
   }
-  Value *buf = mk_vec(elems, n);
-  size_t sh[1] = {n}, st[1] = {1};
-  return mk_tensor(buf, 0, sh, st, 1);
+  Value *e0 = elems[0];
+  size_t sub_rank = e0->u.tensor.rank, sub_total = tensor_total(e0);
+  size_t total = n * sub_total, rank = 1 + sub_rank;
+  Value **items = xmalloc((total ? total : 1) * sizeof(Value *));
+  for (size_t i = 0; i < n; i++) {
+    Value *e = elems[i];
+    if (e->tag != T_TENSOR || e->u.tensor.rank != sub_rank ||
+        memcmp(T_SHAPE(e), T_SHAPE(e0), sub_rank * sizeof(size_t)) != 0)
+      thrax_fault("stacking tensors of unequal shape");
+    tensor_gather(e, items + i * sub_total);
+  }
+  size_t *shape = xmalloc(rank * sizeof(size_t));
+  shape[0] = n;
+  memcpy(shape + 1, T_SHAPE(e0), sub_rank * sizeof(size_t));
+  Value *t = tensor_of(items, total, shape, rank);
+  free(shape);
+  free(items);
+  return t;
+}
+
+/* Equal shapes and equal elements in logical order: two views of different
+ * buffers can be equal. */
+static bool tensor_eq(Value *x, Value *y) {
+  size_t rank = x->u.tensor.rank;
+  if (rank != y->u.tensor.rank ||
+      memcmp(T_SHAPE(x), T_SHAPE(y), rank * sizeof(size_t)) != 0)
+    return false;
+  size_t total = tensor_total(x);
+  Value **xs = xmalloc((total ? total : 1) * sizeof(Value *));
+  Value **ys = xmalloc((total ? total : 1) * sizeof(Value *));
+  tensor_gather(x, xs);
+  tensor_gather(y, ys);
+  bool eq = true;
+  for (size_t m = 0; eq && m < total; m++) eq = value_eq(xs[m], ys[m]);
+  free(xs);
+  free(ys);
+  return eq;
 }
 
 #ifdef THRAX_WITH_COMPILER
@@ -1084,6 +1325,23 @@ static const char *intern_name(const char *s) {
   return g_names[g_nn++] = copy;
 }
 
+/* A tensor crosses from the compiler as the struct
+ * `@tensor.{ .buf = vec[row-major elements], .shape = vec[sizes] }`. */
+static Value *tensor_from_struct(Value *v) {
+  if (strcmp(v->u.strct.name, "@tensor") != 0) return v;
+  Value *buf = struct_field(v, "buf"), *sh = struct_field(v, "shape");
+  if (!buf || !sh || buf->tag != T_VEC || sh->tag != T_VEC)
+    thrax_fault("malformed tensor constant");
+  size_t rank = sh->u.seq.len;
+  size_t *dims = xmalloc((rank ? 2 * rank : 1) * sizeof(size_t));
+  for (size_t k = 0; k < rank; k++) dims[k] = as_index(sh->u.seq.items[k]);
+  if (row_major(dims, rank, dims + rank) != buf->u.seq.len)
+    thrax_fault("malformed tensor constant");
+  Value *t = mk_tensor(buf, 0, dims, dims + rank, rank);
+  free(dims);
+  return t;
+}
+
 static Value *from_thrax(const thrax_value *v) {
   switch (v->kind) {
     case THRAX_UNIT: return THxRT_unit();
@@ -1111,6 +1369,7 @@ static Value *from_thrax(const thrax_value *v) {
     for (size_t i = 0; i < v->len; i++) keys[i] = intern_name(v->keys[i]);
     r = THxRT_struct(intern_name(v->name), v->len, keys, items);
     free(keys);
+    r = tensor_from_struct(r);
   }
   free(items);
   return r;
@@ -1219,6 +1478,56 @@ static Value *THxSTM_commit(void);
 static Value *THxSTM_wait(void);
 static Value *THxSTM_save(void);
 static Value *THxSTM_rollback(Value *mark);
+#ifdef THRAX_THREADS
+static void mark_shared(Value *v);
+#endif
+
+/* `@vec_push v x` (a[0], a[1]) or `@vec_set v i x` (a[0], a[1], a[2]). With
+ * `owned`, the caller's reference on a[0] is one it gave up (a moved local, or
+ * the operand row of a partial application nothing else holds), so when that
+ * is a[0]'s only reference nobody can observe the update and it happens in
+ * place, returning a[0] itself. Otherwise the result is a fresh vector. A push
+ * in place grows the block geometrically, so building by pushes is linear. */
+static Value *vec_update(int id, Value **a, int owned) {
+  Value *v = a[0];
+  if (v->tag != T_VEC) thrax_fault("expected a vector");
+  size_t len = v->u.seq.len;
+  int push = id == THxB_VEC_PUSH;
+  size_t at = push ? len : as_index(a[1]);
+  if (at >= len && !push) thrax_fault("vec index out of bounds");
+  Value *x = a[push ? 1 : 2];
+  if (owned && THxMEM_unique(v)) {
+#ifdef THRAX_THREADS
+    if (sh_load(v) != SH_LOCAL) mark_shared(x);
+#endif
+    THxMEM_retain(x);
+    if (push) {
+      if (len == v->u.seq.cap) {
+        size_t cap = len < 4 ? 4 : len * 2;
+        v->u.seq.items = THxMEM_realloc(v->u.seq.items, cap * sizeof(Value *));
+        v->u.seq.cap = cap;
+      }
+      v->u.seq.items[len] = x;
+      v->u.seq.len = len + 1;
+    } else {
+      Value *old = v->u.seq.items[at];
+      v->u.seq.items[at] = x;
+      THxMEM_release(old);
+    }
+    return v;
+  }
+  size_t n = push ? len + 1 : len;
+  Value *r = alloc_value(T_VEC);
+  r->u.seq.items = n ? THxMEM_alloc(n * sizeof(Value *)) : NULL;
+  for (size_t i = 0; i < len; i++) r->u.seq.items[i] = v->u.seq.items[i];
+  r->u.seq.items[at] = x;
+  for (size_t i = 0; i < n; i++) THxMEM_retain(r->u.seq.items[i]);
+  r->u.seq.len = n;
+  r->u.seq.cap = n;
+  return r;
+}
+
+static int is_vec_update(int id) { return id == THxB_VEC_PUSH || id == THxB_VEC_SET; }
 
 static Value *run_builtin(int id, Value **a) {
   switch (id) {
@@ -1232,6 +1541,34 @@ static Value *run_builtin(int id, Value **a) {
   case THxB_IEQ: case THxB_ILT: case THxB_ULT: case THxB_FEQ:
   case THxB_FLT: case THxB_SEQ: case THxB_SLT:
     return compare_intrinsic(id, a[0], a[1]);
+  case THxB_IAND: case THxB_IOR: case THxB_IXOR:
+  case THxB_ISHL: case THxB_ISHR: case THxB_USHR:
+    return bit_intrinsic(id, as_i64(a[0]), as_i64(a[1]));
+  case THxB_INOT: return THxRT_int(~as_i64(a[0]));
+  case THxB_F64_BITS: {
+    double d = as_f64(a[0]);
+    uint64_t u;
+    memcpy(&u, &d, sizeof u);
+    return THxRT_int((int64_t)u);
+  }
+  case THxB_BITS_F64: {
+    uint64_t u = (uint64_t)as_i64(a[0]);
+    double d;
+    memcpy(&d, &u, sizeof d);
+    return THxRT_real(d);
+  }
+  case THxB_F32_BITS: {
+    float f = as_f32(a[0]);
+    uint32_t u;
+    memcpy(&u, &f, sizeof u);
+    return THxRT_int((int64_t)u);
+  }
+  case THxB_BITS_F32: {
+    uint32_t u = (uint32_t)as_i64(a[0]);
+    float f;
+    memcpy(&f, &u, sizeof f);
+    return THxRT_real32(f);
+  }
   case THxB_SWRAP: case THxB_UWRAP: {
     int64_t bits = a[0]->u.i, x = a[1]->u.i;
     if (bits < 1 || bits >= 64) return THxRT_int(x);
@@ -1339,93 +1676,71 @@ static Value *run_builtin(int id, Value **a) {
     return THxRT_int((int64_t)a[0]->u.seq.len);
   }
   case THxB_TENSOR_LENGTH: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    int64_t r = rank > 0 ? (int64_t)shape[0] : 0;
-    free(shape);
-    free(strides);
-    return THxRT_int(r);
+    Value *t = as_tensor(a[0]);
+    return THxRT_int(t->u.tensor.rank > 0 ? (int64_t)T_SHAPE(t)[0] : 0);
   }
   case THxB_TENSOR_STACK: {
     if (a[0]->tag != T_VEC) thrax_fault("@tensor_stack expects a vector");
     return tensor_stack(a[0]->u.seq.items, a[0]->u.seq.len);
   }
   case THxB_TENSOR_TRANSPOSE: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    for (size_t i = 0; i < rank / 2; i++) { /* reverse both in place */
-      size_t j = rank - 1 - i;
-      size_t ts = shape[i]; shape[i] = shape[j]; shape[j] = ts;
-      size_t td = strides[i]; strides[i] = strides[j]; strides[j] = td;
+    Value *t = as_tensor(a[0]);
+    size_t rank = t->u.tensor.rank;
+    size_t *d = xmalloc((rank ? 2 * rank : 1) * sizeof(size_t));
+    for (size_t k = 0; k < rank; k++) { /* every axis reversed */
+      d[k] = T_SHAPE(t)[rank - 1 - k];
+      d[rank + k] = T_STRIDES(t)[rank - 1 - k];
     }
-    Value *t = mk_tensor(buf, off, shape, strides, rank);
-    free(shape);
-    free(strides);
-    return t;
-  }
-  case THxB_TENSOR_SLICE: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    if (rank == 0) thrax_fault("slice of a rank-0 tensor");
-    size_t lo = as_index(a[1]);
-    size_t hi = as_index(a[2]);
-    if (lo > shape[0]) lo = shape[0];
-    if (hi < lo) hi = lo;
-    if (hi > shape[0]) hi = shape[0];
-    size_t base = off + lo * strides[0];
-    shape[0] = hi - lo;
-    Value *t = mk_tensor(buf, base, shape, strides, rank);
-    free(shape);
-    free(strides);
-    return t;
-  }
-  case THxB_TENSOR_INDEX_AXIS: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    size_t axis = as_index(a[1]);
-    if (axis >= rank) { free(shape); free(strides); thrax_fault("index axis out of range"); }
-    if (shape[axis] == 0) { free(shape); free(strides); thrax_fault("index into an empty axis"); }
-    int64_t iw = THxVALUE_as_int(a[2]);
-    int64_t s = (int64_t)shape[axis];
-    size_t i = (size_t)(((iw % s) + s) % s);
-    size_t base = off + i * strides[axis];
-    for (size_t k = axis; k + 1 < rank; k++) { /* drop `axis` */
-      shape[k] = shape[k + 1];
-      strides[k] = strides[k + 1];
-    }
-    rank -= 1;
-    Value *r;
-    if (rank == 0) {
-      if (base >= buf->u.seq.len) thrax_fault("tensor index out of bounds");
-      r = buf->u.seq.items[base]; /* scalar; borrowed */
-    } else {
-      r = mk_tensor(buf, base, shape, strides, rank);
-    }
-    free(shape);
-    free(strides);
+    Value *r = mk_tensor(t->u.tensor.buf, t->u.tensor.off, d, d + rank, rank);
+    free(d);
     return r;
   }
+  case THxB_TENSOR_SLICE:
   case THxB_TENSOR_SLICE_AXIS: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    size_t axis = as_index(a[1]);
-    if (axis >= rank) { free(shape); free(strides); thrax_fault("slice axis out of range"); }
-    size_t lo = as_index(a[2]);
-    size_t hi = as_index(a[3]);
-    if (lo > shape[axis]) lo = shape[axis];
+    Value *t = as_tensor(a[0]);
+    size_t rank = t->u.tensor.rank;
+    size_t axis = 0;
+    Value **range = a + 1;
+    if (id == THxB_TENSOR_SLICE_AXIS) {
+      axis = as_index(a[1]);
+      if (axis >= rank) thrax_fault("slice axis out of range");
+      range = a + 2;
+    } else if (rank == 0) {
+      thrax_fault("slice of a rank-0 tensor");
+    }
+    size_t n = T_SHAPE(t)[axis];
+    size_t lo = as_index(range[0]);
+    size_t hi = as_index(range[1]);
+    if (lo > n) lo = n;
     if (hi < lo) hi = lo;
-    if (hi > shape[axis]) hi = shape[axis];
-    size_t base = off + lo * strides[axis];
+    if (hi > n) hi = n;
+    size_t *shape = xmalloc(rank * sizeof(size_t));
+    memcpy(shape, T_SHAPE(t), rank * sizeof(size_t));
     shape[axis] = hi - lo;
-    Value *t = mk_tensor(buf, base, shape, strides, rank);
+    Value *r = mk_tensor(t->u.tensor.buf, t->u.tensor.off + lo * T_STRIDES(t)[axis],
+                         shape, T_STRIDES(t), rank);
     free(shape);
-    free(strides);
-    return t;
+    return r;
+  }
+  case THxB_TENSOR_INDEX_AXIS: {
+    Value *t = as_tensor(a[0]);
+    size_t rank = t->u.tensor.rank;
+    size_t axis = as_index(a[1]);
+    if (axis >= rank) thrax_fault("index axis out of range");
+    size_t n = T_SHAPE(t)[axis];
+    if (n == 0) thrax_fault("index into an empty axis");
+    size_t base = t->u.tensor.off + wrap_index(THxVALUE_as_int(a[2]), n) * T_STRIDES(t)[axis];
+    if (rank == 1) return tensor_cell(t, base); /* borrowed; do_ret retains it */
+    size_t *d = xmalloc(2 * (rank - 1) * sizeof(size_t));
+    for (size_t k = 0, j = 0; k < rank; k++) { /* drop `axis` */
+      if (k == axis) continue;
+      d[j] = T_SHAPE(t)[k];
+      d[rank - 1 + j] = T_STRIDES(t)[k];
+      j++;
+    }
+    Value *r = mk_tensor(t->u.tensor.buf, base, d, d + rank - 1, rank - 1);
+    free(d);
+    return r;
   }
   case THxB_DELAY: return THxRT_thunk(a[0]);
   case THxB_PAR: return THxPAR_spawn(a[0]);
@@ -1449,16 +1764,7 @@ static Value *run_builtin(int id, Value **a) {
     if (i >= a[0]->u.seq.len) thrax_fault("vec index out of bounds");
     return a[0]->u.seq.items[i]; /* borrowed; the caller (do_ret) retains it */
   }
-  case THxB_VEC_PUSH: {
-    if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
-    size_t len = a[0]->u.seq.len + 1;
-    Value **items = xmalloc(len * sizeof(Value *));
-    memcpy(items, a[0]->u.seq.items, a[0]->u.seq.len * sizeof(Value *));
-    items[a[0]->u.seq.len] = a[1];
-    Value *v = mk_vec(items, len);
-    free(items);
-    return v;
-  }
+  case THxB_VEC_PUSH: return vec_update(id, a, 0);
   case THxB_VEC_SLICE: {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t n = a[0]->u.seq.len;
@@ -1470,69 +1776,33 @@ static Value *run_builtin(int id, Value **a) {
     return mk_vec(a[0]->u.seq.items + lo, hi - lo); /* mk_vec retains each */
   }
   case THxB_TENSOR_CONCAT: {
-    Value *bx, *by;
-    size_t ox, oy, *shx, *stx, rx, *shy, *sty, ry;
-    tensor_fields(a[0], &bx, &ox, &shx, &stx, &rx);
-    tensor_fields(a[1], &by, &oy, &shy, &sty, &ry);
-    if (rx != ry) thrax_fault("concat: rank mismatch");
-    for (size_t k = 1; k < rx; k++)
-      if (shx[k] != shy[k]) thrax_fault("concat: trailing shape mismatch");
-    Value *mx = materialize(a[0]), *my = materialize(a[1]);
-    size_t total = mx->u.seq.len + my->u.seq.len;
-    Value **items = xmalloc((total ? total : 1) * sizeof(Value *));
-    memcpy(items, mx->u.seq.items, mx->u.seq.len * sizeof(Value *));
-    memcpy(items + mx->u.seq.len, my->u.seq.items, my->u.seq.len * sizeof(Value *));
-    Value *buf = mk_vec(items, total);
+    Value *x = as_tensor(a[0]), *y = as_tensor(a[1]);
+    size_t rank = x->u.tensor.rank;
+    if (rank != y->u.tensor.rank) thrax_fault("concat: rank mismatch");
+    if (rank == 0) thrax_fault("concat of rank-0 tensors");
+    for (size_t k = 1; k < rank; k++)
+      if (T_SHAPE(x)[k] != T_SHAPE(y)[k]) thrax_fault("concat: trailing shape mismatch");
+    size_t nx = tensor_total(x), ny = tensor_total(y);
+    Value **items = xmalloc((nx + ny ? nx + ny : 1) * sizeof(Value *));
+    tensor_gather(x, items);
+    tensor_gather(y, items + nx);
+    size_t *shape = xmalloc(rank * sizeof(size_t));
+    memcpy(shape, T_SHAPE(x), rank * sizeof(size_t));
+    shape[0] += T_SHAPE(y)[0];
+    Value *r = tensor_of(items, nx + ny, shape, rank);
+    free(shape);
     free(items);
-    size_t *shape = xmalloc((rx ? rx : 1) * sizeof(size_t));
-    for (size_t k = 0; k < rx; k++) shape[k] = shx[k];
-    if (rx > 0) shape[0] = shx[0] + shy[0];
-    size_t *strides = row_major(shape, rx);
-    Value *t = mk_tensor(buf, 0, shape, strides, rx);
-    free(shx);
-    free(stx);
-    free(shy);
-    free(sty);
-    free(shape);
-    free(strides);
-    return t;
-  }
-  case THxB_TENSOR_INDEX: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    if (rank == 0 || shape[0] == 0) {
-      free(shape);
-      free(strides);
-      thrax_fault("index into an empty tensor");
-    }
-    int64_t iw = THxVALUE_as_int(a[1]);
-    int64_t s0 = (int64_t)shape[0];
-    size_t i = (size_t)(((iw % s0) + s0) % s0);
-    size_t base = off + i * strides[0];
-    Value *r;
-    if (rank == 1) {
-      if (base >= buf->u.seq.len) thrax_fault("tensor index out of bounds");
-      r = buf->u.seq.items[base]; /* borrowed; do_ret retains it */
-    } else {
-      r = mk_tensor(buf, base, shape + 1, strides + 1, rank - 1); /* view */
-    }
-    free(shape);
-    free(strides);
     return r;
   }
-  case THxB_VEC_SET: {
-    if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
-    size_t i = as_index(a[1]);
-    if (i >= a[0]->u.seq.len) thrax_fault("vec index out of bounds");
-    Value **items = xmalloc((a[0]->u.seq.len ? a[0]->u.seq.len : 1) *
-                            sizeof(Value *));
-    memcpy(items, a[0]->u.seq.items, a[0]->u.seq.len * sizeof(Value *));
-    items[i] = a[2];
-    Value *v = mk_vec(items, a[0]->u.seq.len);
-    free(items);
-    return v;
+  case THxB_TENSOR_INDEX: {
+    Value *t = as_tensor(a[0]);
+    if (t->u.tensor.rank == 0 || T_SHAPE(t)[0] == 0)
+      thrax_fault("index into an empty tensor");
+    size_t i = wrap_index(THxVALUE_as_int(a[1]), T_SHAPE(t)[0]);
+    /* a scalar is borrowed (do_ret retains it); a row is a fresh view */
+    return tensor_sub(t, t->u.tensor.off + i * T_STRIDES(t)[0], 1);
   }
+  case THxB_VEC_SET: return vec_update(id, a, 0);
 
   default: break;
   }
@@ -1583,7 +1853,7 @@ static void release_children(Value *v, Value **f, size_t n) {
   if (!f) return;
   for (size_t i = 0; i < n; i++)
     if (f[i] != v) THxMEM_release(f[i]);
-  THxMEM_free(f);
+  THxMEM_cell_free(f, n * sizeof(Value *));
 }
 
 /* Free v's owned payload: release children, free raw blocks. Shared by
@@ -1598,14 +1868,22 @@ static void payload_destroy(Value *v) {
     case T_UNIT:
     case T_OP: return;
     case T_STR: THxMEM_free(v->u.str.data); return;
-    case T_TUPLE:
-    case T_VEC: release_children(v, v->u.seq.items, v->u.seq.len); return;
+    case T_TUPLE: release_children(v, v->u.seq.items, v->u.seq.len); return;
+    case T_VEC:
+      for (size_t i = 0; i < v->u.seq.len; i++)
+        if (v->u.seq.items[i] != v) THxMEM_release(v->u.seq.items[i]);
+      THxMEM_free(v->u.seq.items);
+      return;
+    case T_TENSOR:
+      THxMEM_release(v->u.tensor.buf);
+      THxMEM_free(v->u.tensor.dims);
+      return;
     case T_STRUCT: {
       Field *fs = v->u.strct.fields;
       if (fs) {
         for (size_t i = 0; i < v->u.strct.len; i++)
           if (fs[i].val != v) THxMEM_release(fs[i].val);
-        THxMEM_free(fs);
+        THxMEM_cell_free(fs, v->u.strct.len * sizeof(Field));
       }
       return;
     }
@@ -1629,7 +1907,7 @@ static void THxVALUE_destroy(Value *v) { payload_destroy(v); }
  * (child == self). NULL when n == 0. */
 static Value **copy_children(Value *self, Value **f, size_t n) {
   if (n == 0) return NULL;
-  Value **c = THxMEM_alloc(n * sizeof(Value *));
+  Value **c = THxMEM_cell(n * sizeof(Value *));
   for (size_t i = 0; i < n; i++) {
     c[i] = f[i];
     if (c[i] != self) THxMEM_retain(c[i]);
@@ -1659,19 +1937,29 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
       if (len) memcpy(b, v->u.str.data, len);
       b[len] = 0;
       dst->u.str.data = b;
+      dst->u.str.cap = len;
       break;
     }
     case T_TUPLE:
     case T_VEC:
       dst->u.seq.items = copy_children(self, v->u.seq.items, dst->u.seq.len);
+      dst->u.seq.cap = dst->u.seq.len;
       break;
+    case T_TENSOR: {
+      size_t n = 2 * dst->u.tensor.rank;
+      size_t *d = THxMEM_alloc((n ? n : 1) * sizeof(size_t));
+      if (n) memcpy(d, v->u.tensor.dims, n * sizeof(size_t));
+      dst->u.tensor.dims = d;
+      THxMEM_retain(dst->u.tensor.buf);
+      break;
+    }
     case T_STRUCT: {
       size_t n = dst->u.strct.len;
       if (n == 0) {
         dst->u.strct.fields = NULL;
         break;
       }
-      Field *fs = THxMEM_alloc(n * sizeof(Field));
+      Field *fs = THxMEM_cell(n * sizeof(Field));
       for (size_t i = 0; i < n; i++) {
         fs[i].name = v->u.strct.fields[i].name;
         fs[i].val = v->u.strct.fields[i].val;
@@ -1713,11 +2001,60 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
   }
 }
 
+static int is_constant(Value *v) {
+  return v == &g_unit || v == &g_true || v == &g_false ||
+         (v >= g_small_ints && v < g_small_ints + (THX_SMALL_MAX - THX_SMALL_MIN + 1));
+}
+
+/* Whether `c` is one of `v`'s children. */
+static int has_child(Value *v, Value *c) {
+  Value **f = NULL;
+  size_t n = 0;
+  switch (v->tag) {
+    case T_TUPLE:
+    case T_VEC: f = v->u.seq.items, n = v->u.seq.len; break;
+    case T_VARIANT: f = v->u.variant.fields, n = v->u.variant.len; break;
+    case T_CLOS: f = v->u.clos.env, n = v->u.clos.nenv; break;
+    case T_BUILTIN: f = v->u.builtin.args, n = v->u.builtin.nargs; break;
+    case T_EXTERN: f = v->u.ext.args, n = v->u.ext.nargs; break;
+    case T_STRUCT:
+      for (size_t i = 0; i < v->u.strct.len; i++)
+        if (v->u.strct.fields[i].val == c) return 1;
+      return 0;
+    case T_THUNK:
+    case T_BLACKHOLE: return v->u.thunk == c;
+    case T_TENSOR: return v->u.tensor.buf == c;
+    default: return 0;
+  }
+  for (size_t i = 0; i < n; i++)
+    if (f[i] == c) return 1;
+  return 0;
+}
+
+/* Patch `box` with `v` by moving `v`'s payload in, when the caller's is the
+ * only reference to `v` (which it gives up) and neither cell is a child of
+ * `v`: a self edge would change meaning in the move. Returns 0, changing
+ * nothing, otherwise. Saves the copy `THxVALUE_patch_box` makes. */
+static int steal_payload(Value *box, Value *v) {
+  if (box == v || is_constant(box) || !unique_local(v)) return 0;
+#ifdef THRAX_THREADS
+  if (sh_load(box) != SH_LOCAL) return 0;
+#endif
+  if (v->tag == T_RESUMP || has_child(v, v) || has_child(v, box)) return 0;
+  payload_destroy(box);
+  box->tag = v->tag;
+  box->u = v->u;
+  v->tag = T_UNIT;
+  THxMEM_release(v);
+  return 1;
+}
+
 /* Back-patch a let box: make `box` a copy of `v` (see `copy_payload`),
  * preserving box's own count and shared mark. A box other threads can reach
  * must not take in a thread-local value, so `v` is marked first. */
 static void THxVALUE_patch_box(Value *box, Value *v) {
   if (box == v) return;
+  if (is_constant(box)) thrax_fault("patch_box: patching a shared constant");
   payload_destroy(box); /* a box is normally T_UNIT: a no-op */
 #ifdef THRAX_THREADS
   uint8_t sh = sh_load(box);
@@ -1749,9 +2086,15 @@ static void kont_push(KFrame f) {
 
 /* -- frames (refcounted activations) ------------------------------------- */
 
+/* A frame and its slot array are one block, recycled by size. */
+static inline size_t frame_size(size_t nlocals) {
+  return sizeof(Frame) + nlocals * sizeof(Value *);
+}
+
 static Frame *frame_new(size_t nlocals, Value *clos) {
-  Frame *f = THxMEM_alloc(sizeof(Frame));
+  Frame *f = THxMEM_cell(frame_size(nlocals));
   f->rc = 1;
+  f->lent = 0;
   f->clos = clos;
   if (clos) {
     THxMEM_retain(clos);
@@ -1761,7 +2104,7 @@ static Frame *frame_new(size_t nlocals, Value *clos) {
     f->env = NULL;
     f->nenv = 0;
   }
-  f->locals = nlocals ? THxMEM_alloc(nlocals * sizeof(Value *)) : NULL;
+  f->locals = nlocals ? (Value **)(f + 1) : NULL;
   f->nlocals = nlocals;
   return f;
 }
@@ -1774,10 +2117,10 @@ static void frame_release(Frame *f) {
   if (!f) return;
   if (f->rc == 0) thrax_fault("frame_release: releasing a freed frame");
   if (--f->rc > 0) return;
-  for (size_t i = 0; i < f->nlocals; i++) THxMEM_release(f->locals[i]);
-  THxMEM_free(f->locals);
+  for (size_t i = 0; i < f->nlocals; i++)
+    if (!frame_lent(f, i)) THxMEM_release(f->locals[i]);
   THxMEM_release(f->clos);
-  THxMEM_free(f);
+  THxMEM_cell_free(f, frame_size(f->nlocals));
 }
 
 /* -- kont-frame + segment lifetime --------------------------------------- */
@@ -1833,17 +2176,18 @@ static void THxK_resump_release(Resump *seg) {
 /* A fresh activation holding the same values as `f`. The locals are retained,
  * not copied: a value is immutable, so only the slot array has to be private. */
 static Frame *frame_clone(Frame *f) {
-  Frame *c = THxMEM_alloc(sizeof(Frame));
+  Frame *c = THxMEM_cell(frame_size(f->nlocals));
   c->rc = 1;
   c->clos = f->clos;
   THxMEM_retain(c->clos);
   c->env = f->env;
   c->nenv = f->nenv;
   c->nlocals = f->nlocals;
-  c->locals = f->nlocals ? THxMEM_alloc(f->nlocals * sizeof(Value *)) : NULL;
+  c->lent = f->lent;
+  c->locals = f->nlocals ? (Value **)(c + 1) : NULL;
   for (size_t i = 0; i < f->nlocals; i++) {
     c->locals[i] = f->locals[i];
-    THxMEM_retain(c->locals[i]);
+    if (!frame_lent(f, i)) THxMEM_retain(c->locals[i]);
   }
   return c;
 }
@@ -1899,7 +2243,7 @@ static void segment_copy(Resump *src, KFrame *out) {
          * return, so the copy needs its own; a closure built by the right-hand
          * side still reads the original's (it captured that very value). */
         if (c->locals[kf.u.ret.slot]) {
-          Value *box = THxRT_unit();
+          Value *box = fresh_box();
           THxMEM_retain(box);
           THxMEM_release(c->locals[kf.u.ret.slot]);
           c->locals[kf.u.ret.slot] = box;
@@ -1970,6 +2314,8 @@ static KFrame segment_cleanups(KFrame *seg, size_t n) {
 typedef enum { ACT_NONE, ACT_RET, ACT_APPLY, ACT_JUMP } Act;
 static THX_TLS Act g_act;
 static THX_TLS Value *g_v, *g_fn, *g_arg;
+/* Whether the pending application lends `g_arg` (see `THxK_apply_lent`). */
+static THX_TLS int g_lend;
 static THX_TLS BlockFn g_blk;
 static THX_TLS Value *g_result;
 
@@ -1983,6 +2329,21 @@ void THxK_tailcall(Value *fn, Value *arg) {
   g_act = ACT_APPLY;
   g_fn = fn;
   g_arg = arg;
+  g_lend = 0;
+}
+/* A tail call lending `arg`, which outlives the callee (a global's cached
+ * value). */
+void THxK_tailcall_lent(Value *fn, Value *arg) {
+  THxK_tailcall(fn, arg);
+  g_lend = 1;
+}
+/* A tail call passing on local `slot`: lent again when this activation was lent
+ * it (its lender outlives the callee too), else its reference moves over. */
+void THxK_tailcall_pass(Frame *fr, Value *fn, size_t slot) {
+  if (frame_lent(fr, slot))
+    THxK_tailcall_lent(fn, THxVALUE_local(fr->locals, fr->nlocals, slot));
+  else
+    THxK_tailcall(fn, THxVALUE_take(fr, slot));
 }
 void THxK_apply(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
   KFrame kf;
@@ -1995,6 +2356,15 @@ void THxK_apply(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
   g_act = ACT_APPLY;
   g_fn = fn;
   g_arg = arg;
+  g_lend = 0;
+}
+/* A non-tail call lending `arg`: the waiting activation (or a global's cache)
+ * keeps it alive until the callee returns, so a callee that borrows its
+ * parameter binds it without counting. See the frontend's Note [Borrowed
+ * parameters]. */
+void THxK_apply_lent(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
+  THxK_apply(fr, fn, arg, cont, slot);
+  g_lend = 1;
 }
 void THxK_jump(BlockFn cont) {
   g_act = ACT_JUMP;
@@ -2065,16 +2435,22 @@ void THxK_defer_run(Frame *fr, BlockFn cont, size_t slot, Value *cleanup,
 void THxK_setlocal(Frame *fr, size_t slot, Value *v) {
   if (slot >= fr->nlocals) thrax_fault("setlocal: slot out of range");
   THxMEM_retain(v); /* retain-before-release: v may be the slot's old value */
-  THxMEM_release(fr->locals[slot]);
+  if (frame_lent(fr, slot))
+    fr->lent &= ~(1u << slot);
+  else
+    THxMEM_release(fr->locals[slot]);
   fr->locals[slot] = v;
 }
 void THxK_drop(Frame *fr, size_t slot) {
   if (slot >= fr->nlocals) thrax_fault("drop: slot out of range");
-  THxMEM_release(fr->locals[slot]);
+  if (frame_lent(fr, slot))
+    fr->lent &= ~(1u << slot);
+  else
+    THxMEM_release(fr->locals[slot]);
   fr->locals[slot] = NULL;
 }
 void THxK_setbox(Frame *fr, size_t slot) {
-  THxK_setlocal(fr, slot, THxRT_unit());
+  THxK_setlocal(fr, slot, fresh_box());
 }
 /* A slot with no box is a non-recursive `let`'s: the value moves in. */
 void THxK_backpatch(Frame *fr, size_t slot, Value *v) {
@@ -2087,6 +2463,174 @@ void THxK_backpatch(Frame *fr, size_t slot, Value *v) {
   THxVALUE_patch_box(box, v);
 }
 
+/* `let slot = from` at `from`'s last use: the reference moves between the
+ * slots. Into a recursive let's box it is patched as any value is. */
+void THxK_move(Frame *fr, size_t slot, size_t from) {
+  if (slot >= fr->nlocals) thrax_fault("move: slot out of range");
+  Value *v = THxVALUE_local(fr->locals, fr->nlocals, from);
+  if (fr->locals[slot]) {
+    THxVALUE_patch_box(fr->locals[slot], v);
+    THxK_drop(fr, from);
+    return;
+  }
+  fr->locals[slot] = v;
+  fr->locals[from] = NULL;
+}
+
+/* -- constructor reuse ---------------------------------------------------
+ * See Note [Constructor reuse]. */
+
+/* Release the reuse token in local `token` (if any) and store `v` there. */
+static void set_token(Frame *fr, long token, Value *v) {
+  if (token < 0) {
+    THxMEM_release(v);
+    return;
+  }
+  if ((size_t)token >= fr->nlocals) thrax_fault("reuse token out of range");
+  THxMEM_release(fr->locals[token]);
+  fr->locals[token] = v;
+}
+
+/* Enter a case alternative where the scrutinee `v`, held by local `slot`,
+ * dies. Held once, its fields move into the bound binders (`bind[i]`) without
+ * a count changing, the rest are released, and the emptied cell is freed or
+ * parked in local `token` (-1: none). Otherwise the binders share the fields,
+ * the slot's reference is released, and the token is left empty. */
+void THxK_unpack(Frame *fr, Value *v, size_t slot, long token, size_t base,
+                 const unsigned char *bind, size_t n) {
+  if (slot >= fr->nlocals || base + n > fr->nlocals) thrax_fault("unpack: slot out of range");
+  if (v->tag != T_VARIANT || v->u.variant.len != n) thrax_fault("unpack: shape mismatch");
+  Value **f = v->u.variant.fields;
+  int own = fr->locals[slot] == v && unique_local(v);
+  for (size_t i = 0; own && i < n; i++)
+    if (f[i] == v) own = 0; /* a weak self edge is no reference to hand on */
+  if (own) {
+    fr->locals[slot] = NULL;
+    for (size_t i = 0; i < n; i++) {
+      if (bind[i]) {
+        THxMEM_release(fr->locals[base + i]);
+        fr->locals[base + i] = f[i];
+      } else {
+        THxMEM_release(f[i]);
+      }
+      f[i] = NULL;
+    }
+    set_token(fr, token, v);
+    return;
+  }
+  for (size_t i = 0; i < n; i++)
+    if (bind[i]) THxK_setlocal(fr, base + i, f[i]);
+  THxK_drop(fr, slot);
+  set_token(fr, token, NULL);
+}
+
+/* A variant built into the cell reuse token `token` holds, when it holds one
+ * nobody else does (a copied activation of a resumption shares it); a fresh
+ * one otherwise. Either way the token is used up, and the pool holds the
+ * result's reference as for any fresh value. */
+Value *THxRT_variant_at(Frame *fr, size_t token, const char *ty, const char *tag,
+                        size_t len, Value **fields) {
+  if (token >= fr->nlocals) thrax_fault("reuse token out of range");
+  Value *v = fr->locals[token];
+  fr->locals[token] = NULL;
+  if (!v || v->tag != T_VARIANT || v->u.variant.len != len || !unique_local(v)) {
+    THxMEM_release(v);
+    return THxRT_variant(ty, tag, len, fields);
+  }
+#ifdef THRAX_ALLOC_STATS
+  __atomic_fetch_add(&g_reuses_total, 1, __ATOMIC_RELAXED);
+#endif
+  v->u.variant.ty = ty;
+  v->u.variant.tag = tag;
+  for (size_t i = 0; i < len; i++) {
+    if (v->u.variant.fields[i]) thrax_fault("reuse of a cell with live fields");
+    v->u.variant.fields[i] = fields[i];
+    THxMEM_retain(fields[i]);
+  }
+  pool_adopt(v);
+  return v;
+}
+
+/* -- direct functions ---------------------------------------------------- */
+
+/* A value a direct function returns is owned; the pool takes that reference,
+ * so to its caller it is a temporary like any fresh value. */
+static inline Value *THxK_own(Value *v) {
+  pool_adopt(v);
+  return v;
+}
+
+/* The integer intrinsics on C scalars, for generated code that keeps integers
+ * unboxed; the boxed versions are in `arith_intrinsic`. */
+static inline int64_t THxI(Value *v) { return v->u.i; }
+static inline int64_t THxI_div(int64_t a, int64_t b) {
+  if (b == 0) thrax_fault("division by zero");
+  return a / b;
+}
+static inline int64_t THxI_mod(int64_t a, int64_t b) {
+  if (b == 0) thrax_fault("division by zero");
+  return a % b;
+}
+static inline int64_t THxI_udiv(int64_t a, int64_t b) {
+  if (b == 0) thrax_fault("division by zero");
+  return (int64_t)((uint64_t)a / (uint64_t)b);
+}
+static inline int64_t THxI_umod(int64_t a, int64_t b) {
+  if (b == 0) thrax_fault("division by zero");
+  return (int64_t)((uint64_t)a % (uint64_t)b);
+}
+
+/* Whether a direct call may still use the C stack: within THX_DIRECT_STACK
+ * bytes of where this thread first asked. Past it, calls go through the
+ * machine, whose continuation lives on the heap. */
+static THX_TLS uintptr_t g_dbase = 0;
+static inline int THxD_room(void) {
+  uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
+  if (!g_dbase) g_dbase = sp;
+  return sp >= g_dbase || g_dbase - sp < THX_DIRECT_STACK;
+}
+
+/* A direct function's activation: a Frame on the C stack over the slot array
+ * `locals` and the environment `env`, both C arrays of the function. */
+static inline void THxD_frame(Frame *fr, Value **locals, size_t nlocals, Value **env, size_t nenv) {
+  fr->rc = 1;
+  fr->lent = 0;
+  fr->clos = NULL;
+  fr->locals = locals;
+  fr->nlocals = nlocals;
+  fr->env = env;
+  fr->nenv = nenv;
+  memset(locals, 0, (nlocals ? nlocals : 1) * sizeof(Value *));
+}
+
+/* Release a direct activation: its slots, its arguments `params`, and the
+ * temporaries it made since `mark`. */
+static void THxD_reset(Frame *fr, Value **params, size_t nparams, size_t mark) {
+  for (size_t i = 0; i < fr->nlocals; i++) THxMEM_release(fr->locals[i]);
+  for (size_t i = 0; i < nparams; i++) THxMEM_release(params[i]);
+  THxMEM_pool_drain(mark);
+}
+
+/* Return `v` from a direct activation, as an owned reference. */
+static Value *THxD_leave(Frame *fr, Value **params, size_t nparams, size_t mark, Value *v) {
+  THxMEM_retain(v);
+  THxD_reset(fr, params, nparams, mark);
+  return v;
+}
+
+/* Return the integer `r` from a direct activation with an unboxed result. */
+static int64_t THxD_leave_i(Frame *fr, Value **params, size_t nparams, size_t mark, int64_t r) {
+  THxD_reset(fr, params, nparams, mark);
+  return r;
+}
+
+/* The integer an owned boxed result holds, releasing the box. */
+static inline int64_t THxI_own(Value *v) {
+  int64_t r = v->u.i;
+  THxMEM_release(v);
+  return r;
+}
+
 /* -- the machine --------------------------------------------------------- */
 
 /* Enter a closure `clo`, placing `args[0..nargs)` in the leading local slots
@@ -2094,12 +2638,19 @@ void THxK_backpatch(Frame *fr, size_t slot, Value *v) {
  * retain the args; the outgoing activation is released. nargs: 0 (defer
  * cleanup), 1 (value clause / a call), 2 (handler clause). */
 static void enter_clo(BlockFn *cur, Frame **fr, Value **in, Value *clo,
-                      Value **args, size_t nargs) {
+                      Value **args, size_t nargs, int lent) {
   if (clo->tag != T_CLOS) thrax_fault("entering a non-closure");
   size_t code = (size_t)clo->u.clos.code;
   if (code >= THxRT_code_count) thrax_fault("code index out of range");
   Frame *nf = frame_new(THxRT_code_nlocals[code], clo);
-  for (size_t i = 0; i < nargs; i++) THxK_setlocal(nf, i, args[i]);
+  for (size_t i = 0; i < nargs; i++) {
+    if (lent && i == 0) {
+      nf->locals[0] = args[0];
+      nf->lent = 1;
+    } else {
+      THxK_setlocal(nf, i, args[i]);
+    }
+  }
   frame_release(*fr);
   *cur = THxRT_code_table[code];
   *fr = nf;
@@ -2142,7 +2693,7 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
       }
       case K_PROMPT: {
         /* body finished normally -> run the value clause on the result */
-        enter_clo(cur, fr, in, kf.u.prompt.els, &v, 1);
+        enter_clo(cur, fr, in, kf.u.prompt.els, &v, 1, 0);
         kframe_release(&kf); /* els survives via the new frame's clos ref */
         THxMEM_release(v);   /* delivered: retained in the clause's slot 0 */
         return 1;
@@ -2154,7 +2705,7 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
         tr.u.thunkret.saved = v; /* park the in-flight reference in the kont */
         kont_push(tr);
         Value *u = unit();
-        enter_clo(cur, fr, in, kf.u.defer.cleanup, &u, 0);
+        enter_clo(cur, fr, in, kf.u.defer.cleanup, &u, 0, 0);
         kframe_release(&kf); /* cleanup survives via the new frame's clos ref */
         return 1;
       }
@@ -2222,7 +2773,7 @@ static Value *builtin_push(Value *f, Value *arg) {
   nb->u.builtin.id = f->u.builtin.id;
   nb->u.builtin.arity = f->u.builtin.arity;
   nb->u.builtin.nargs = n + 1;
-  Value **args = THxMEM_alloc((n + 1) * sizeof(Value *));
+  Value **args = THxMEM_cell((n + 1) * sizeof(Value *));
   for (size_t i = 0; i < n; i++) args[i] = f->u.builtin.args[i];
   args[n] = arg;
   for (size_t i = 0; i <= n; i++)
@@ -2238,7 +2789,7 @@ static Value *extern_push(Value *f, Value *arg) {
   ne->u.ext.idx = f->u.ext.idx;
   ne->u.ext.arity = f->u.ext.arity;
   ne->u.ext.nargs = n + 1;
-  Value **args = THxMEM_alloc((n + 1) * sizeof(Value *));
+  Value **args = THxMEM_cell((n + 1) * sizeof(Value *));
   for (size_t i = 0; i < n; i++) args[i] = f->u.ext.args[i];
   args[n] = arg;
   for (size_t i = 0; i <= n; i++) THxMEM_retain(args[i]);
@@ -2257,12 +2808,8 @@ Value *THxK_call(Value *f, Value *arg); /* synchronous closure application */
  * f(i). Higher-order, so it lives here (not in leaf `run_builtin`) and applies the
  * closure via THxK_call. Mirrors the interpreter's generate. */
 static Value *rt_generate(Value *tmpl, Value *f) {
-  Value *buf;
-  size_t off, *shape, *strides, rank;
-  tensor_fields(tmpl, &buf, &off, &shape, &strides, &rank);
-  size_t len = rank > 0 ? shape[0] : 0;
-  free(shape);
-  free(strides);
+  Value *t = as_tensor(tmpl);
+  size_t len = t->u.tensor.rank > 0 ? T_SHAPE(t)[0] : 0;
   Value **items = xmalloc((len ? len : 1) * sizeof(Value *));
   for (size_t i = 0; i < len; i++) {
     Value *iv = THxRT_int((int64_t)i);
@@ -2274,15 +2821,238 @@ static Value *rt_generate(Value *tmpl, Value *f) {
   return v;
 }
 
+/* `@array_push` on a byte vector the caller moved in (`s` came from a local's
+ * last use, so the temp pool holds the reference the slot gave up). When that is
+ * the only reference the push grows `s` in place, doubling its capacity, and
+ * returns `s` itself, which the consumer retains like any prim result. A buffer
+ * built by pushing is then linear instead of quadratic. */
+Value *THxK_array_push_owned(Value *s, Value *b) {
+  if (s->tag != T_STR || !THxMEM_unique(s)) return run_builtin(THxB_ARRAY_PUSH, (Value *[]){s, b});
+  uint8_t byte = as_byte(b);
+  size_t len = s->u.str.len;
+  if (len == s->u.str.cap) {
+    size_t cap = len < 8 ? 16 : 2 * len;
+    uint8_t *data = realloc(s->u.str.data, cap + 1);
+    if (!data) thrax_fault("out of memory");
+    s->u.str.data = data;
+    s->u.str.cap = cap;
+  }
+  s->u.str.data[len] = byte;
+  s->u.str.data[len + 1] = 0;
+  s->u.str.len = len + 1;
+  return s;
+}
+
+/* -- tensor kernels ---------------------------------------------------- */
+/* `@tensor_dot add mul zero x y` and `@tensor_matmul add mul zero a b`. Each
+ * computes exactly what the element-wise Thrax definition would: a dot is
+ * `add (... (add zero (mul x0 y0)) ...) (mul xn yn)` over the length of `x`,
+ * with `y` indexed modulo its own length. When `add`/`mul` are the bare
+ * intrinsics (CORE's numeric instances eta-reduce to them) and the elements are
+ * the matching scalars, the loop runs on unboxed C numbers; otherwise it applies
+ * the operations as closures. */
+
+enum { DOT_GENERIC, DOT_INT, DOT_F64, DOT_F32 };
+
+static int dot_kind(Value *add, Value *mul, Value *zero) {
+  if (add->tag != T_BUILTIN || mul->tag != T_BUILTIN || add->u.builtin.nargs ||
+      mul->u.builtin.nargs)
+    return DOT_GENERIC;
+  int ia = add->u.builtin.id, im = mul->u.builtin.id;
+  if (ia == THxB_IADD && im == THxB_IMUL && zero->tag == T_INT) return DOT_INT;
+  if (ia == THxB_FADD && im == THxB_FMUL && zero->tag == T_REAL) return DOT_F64;
+  if (ia == THxB_F32ADD && im == THxB_F32MUL && zero->tag == T_REAL32) return DOT_F32;
+  return DOT_GENERIC;
+}
+
+/* One operand of a dot: element i is what remains of `t` at buffer position
+ * `base + (i mod len) * step` once `k` leading axes are fixed. */
+typedef struct {
+  Value *t;
+  size_t base, step, len, k;
+} Lane;
+
+static Value *lane_at(const Lane *l, size_t i) {
+  return tensor_sub(l->t, l->base + (i < l->len ? i : i % l->len) * l->step, l->k);
+}
+
+static Value *apply2(Value *f, Value *x, Value *y) {
+  Value *g = THxK_call(f, x); /* owned */
+  Value *r = THxK_call(g, y);
+  THxMEM_release(g);
+  return r;
+}
+
+/* The scalar kernels must round exactly like the boxed `@fadd`/`@fmul`: one
+ * rounding per operation, never a fused multiply-add. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
+#endif
+
+/* The dot of `n` elements on unboxed scalars into `*out` (fresh), or 0 when an
+ * element is not the scalar `kind` expects. */
+static int dot_scalar(int kind, Value *zero, const Lane *x, const Lane *y,
+                      Value **out) {
+#ifdef __clang__
+#pragma STDC FP_CONTRACT OFF
+#endif
+  if (x->k < x->t->u.tensor.rank || y->k < y->t->u.tensor.rank) return 0;
+  size_t n = x->len;
+  Value **xs = x->t->u.tensor.buf->u.seq.items, **ys = y->t->u.tensor.buf->u.seq.items;
+  if (n > 0) {
+    size_t ylast = y->len < n ? y->len - 1 : n - 1;
+    if (x->base + (n - 1) * x->step >= x->t->u.tensor.buf->u.seq.len ||
+        y->base + ylast * y->step >= y->t->u.tensor.buf->u.seq.len)
+      thrax_fault("tensor index out of bounds");
+  }
+  int wrap = y->len < n;
+  switch (kind) {
+  case DOT_INT: {
+    uint64_t acc = (uint64_t)zero->u.i;
+    for (size_t i = 0; i < n; i++) {
+      Value *p = xs[x->base + i * x->step];
+      Value *q = ys[y->base + (wrap ? i % y->len : i) * y->step];
+      if (p->tag != T_INT || q->tag != T_INT) return 0;
+      acc += (uint64_t)p->u.i * (uint64_t)q->u.i;
+    }
+    *out = THxRT_int((int64_t)acc);
+    return 1;
+  }
+  case DOT_F64: {
+    double acc = zero->u.r;
+    for (size_t i = 0; i < n; i++) {
+      Value *p = xs[x->base + i * x->step];
+      Value *q = ys[y->base + (wrap ? i % y->len : i) * y->step];
+      if ((p->tag != T_REAL && p->tag != T_INT) || (q->tag != T_REAL && q->tag != T_INT))
+        return 0;
+      double prod = as_f64(p) * as_f64(q);
+      acc = acc + prod;
+    }
+    *out = THxRT_real(acc);
+    return 1;
+  }
+  case DOT_F32: {
+    float acc = (float)zero->u.r;
+    for (size_t i = 0; i < n; i++) {
+      Value *p = xs[x->base + i * x->step];
+      Value *q = ys[y->base + (wrap ? i % y->len : i) * y->step];
+      if ((p->tag != T_REAL32 && p->tag != T_REAL && p->tag != T_INT) ||
+          (q->tag != T_REAL32 && q->tag != T_REAL && q->tag != T_INT))
+        return 0;
+      float prod = as_f32(p) * as_f32(q);
+      acc = acc + prod;
+    }
+    *out = THxRT_real32(acc);
+    return 1;
+  }
+  }
+  return 0;
+}
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
+
+/* One dot product, owned. */
+static Value *dot_lanes(int kind, Value *add, Value *mul, Value *zero,
+                        const Lane *x, const Lane *y) {
+  if (x->len > 0 && y->len == 0) thrax_fault("index into an empty tensor");
+  Value *r;
+  if (kind != DOT_GENERIC && dot_scalar(kind, zero, x, y, &r)) {
+    THxMEM_retain(r);
+    return r;
+  }
+  Value *acc = zero;
+  THxMEM_retain(acc);
+  for (size_t i = 0; i < x->len; i++) {
+    Value *m = apply2(mul, lane_at(x, i), lane_at(y, i));
+    Value *s = apply2(add, acc, m);
+    THxMEM_release(m);
+    THxMEM_release(acc);
+    acc = s;
+  }
+  return acc;
+}
+
+static Lane leading_lane(Value *t) {
+  t = as_tensor(t);
+  Lane l = {t, t->u.tensor.off, 0, 0, 1};
+  if (t->u.tensor.rank > 0) {
+    l.step = T_STRIDES(t)[0];
+    l.len = T_SHAPE(t)[0];
+  }
+  return l;
+}
+
+static Value *rt_dot(Value **a) {
+  Lane x = leading_lane(a[3]), y = leading_lane(a[4]);
+  Value *r = dot_lanes(dot_kind(a[0], a[1], a[2]), a[0], a[1], a[2], &x, &y);
+  pool_adopt(r); /* hand our reference over: the result is fresh */
+  return r;
+}
+
+/* `c[i][j] = dot a[i] (column j of b)` over `a : [m][k]` and `b : [k][n]`. */
+static Value *rt_matmul(Value **a) {
+  Value *x = as_tensor(a[3]), *y = as_tensor(a[4]);
+  if (x->u.tensor.rank < 2 || y->u.tensor.rank < 2) thrax_fault("matmul of a non-matrix");
+  size_t m = T_SHAPE(x)[0], n = T_SHAPE(y)[1];
+  if (m == 0) return tensor_stack(NULL, 0);
+  int kind = dot_kind(a[0], a[1], a[2]);
+  size_t mark = THxMEM_pool_mark();
+  Value **cells = xmalloc((m * n ? m * n : 1) * sizeof(Value *));
+  Lane row = {x, 0, T_STRIDES(x)[1], T_SHAPE(x)[1], 2};
+  Lane col = {y, 0, T_STRIDES(y)[0], T_SHAPE(y)[0], 2};
+  int scalar = 1;
+  for (size_t i = 0; i < m; i++) {
+    row.base = x->u.tensor.off + i * T_STRIDES(x)[0];
+    for (size_t j = 0; j < n; j++) {
+      col.base = y->u.tensor.off + j * T_STRIDES(y)[1];
+      Value *c = dot_lanes(kind, a[0], a[1], a[2], &row, &col);
+      cells[i * n + j] = c;
+      if (c->tag == T_TENSOR) scalar = 0;
+    }
+    THxMEM_pool_drain(mark); /* every cell is held by its own reference */
+  }
+  Value *r;
+  if (scalar) {
+    size_t shape[2] = {m, n};
+    r = tensor_of(cells, m * n, shape, 2);
+  } else {
+    Value **rows = xmalloc(m * sizeof(Value *));
+    for (size_t i = 0; i < m; i++) {
+      rows[i] = tensor_stack(cells + i * n, n);
+      THxMEM_retain(rows[i]);
+    }
+    r = tensor_stack(rows, m);
+    for (size_t i = 0; i < m; i++) THxMEM_release(rows[i]);
+    free(rows);
+  }
+  for (size_t i = 0; i < m * n; i++) THxMEM_release(cells[i]);
+  free(cells);
+  return r;
+}
+
 /* A built-in applied to all `n` of its operands at once, which are borrowed.
  * The result is fresh or one of the operands' children, as through do_apply. */
 Value *THxK_prim(int id, Value **a) {
-  if (id == THxB_TENSOR_CREATE) return rt_generate(a[0], a[1]);
-  return run_builtin(id, a);
+  switch (id) {
+  case THxB_TENSOR_CREATE: return rt_generate(a[0], a[1]);
+  case THxB_TENSOR_DOT: return rt_dot(a);
+  case THxB_TENSOR_MATMUL: return rt_matmul(a);
+  default: return run_builtin(id, a);
+  }
+}
+/* THxK_prim for `@vec_push` / `@vec_set`. `owned` says the caller moved its
+ * first operand out of a slot or captured field (the temp pool now holds that
+ * reference), rather than borrowing one that may still be read. */
+Value *THxK_vec_update(int id, Value **a, int owned) {
+  if (!is_vec_update(id)) thrax_fault("vec_update: not a vector update");
+  return vec_update(id, a, owned);
 }
 
 static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
-                    size_t base, int owned) {
+                    size_t base, int owned, int lent) {
   if (!fn) thrax_fault("apply: null callee");
   if (!owned) {
     THxMEM_retain(fn);
@@ -2291,7 +3061,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
   int r = 0;
   switch (fn->tag) {
     case T_CLOS:
-      enter_clo(cur, fr, in, fn, &arg, 1);
+      enter_clo(cur, fr, in, fn, &arg, 1, lent);
       r = 1;
       break;
     case T_BUILTIN: {
@@ -2299,12 +3069,17 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       if (nn + 1 == fn->u.builtin.arity) {
         /* borrow the operand row: fn (retained) keeps args[0..nn) alive, and
          * arg is retained; run_builtin only reads them and returns fresh (or a
-         * child do_ret then retains). */
-        Value **args = THxMEM_alloc((nn + 1) * sizeof(Value *));
+         * child do_ret then retains). A partial application this call solely
+         * owns gives up its row, so its vector may be updated in place; one
+         * still held elsewhere (`let f = @vec_push v in (f 1, f 2)`) may not. */
+        Value **args = THxMEM_cell((nn + 1) * sizeof(Value *));
         for (size_t i = 0; i < nn; i++) args[i] = fn->u.builtin.args[i];
         args[nn] = arg;
-        Value *res = THxK_prim(fn->u.builtin.id, args);
-        THxMEM_free(args);
+        int id = fn->u.builtin.id;
+        Value *res = nn > 0 && owned && is_vec_update(id) && THxMEM_unique(fn)
+                         ? vec_update(id, args, 1)
+                         : THxK_prim(id, args);
+        THxMEM_cell_free(args, (nn + 1) * sizeof(Value *));
         r = do_ret(cur, fr, in, res, base);
       } else {
         r = do_ret(cur, fr, in, builtin_push(fn, arg), base);
@@ -2316,11 +3091,11 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       if (nn + 1 == fn->u.ext.arity) {
         if ((size_t)fn->u.ext.idx >= THxRT_extern_count)
           thrax_fault("extern index out of range");
-        Value **args = THxMEM_alloc((nn + 1) * sizeof(Value *));
+        Value **args = THxMEM_cell((nn + 1) * sizeof(Value *));
         for (size_t i = 0; i < nn; i++) args[i] = fn->u.ext.args[i];
         args[nn] = arg;
         Value *res = THxRT_extern_table[fn->u.ext.idx](args);
-        THxMEM_free(args);
+        THxMEM_cell_free(args, (nn + 1) * sizeof(Value *));
         r = do_ret(cur, fr, in, res, base);
       } else {
         r = do_ret(cur, fr, in, extern_push(fn, arg), base);
@@ -2394,7 +3169,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       Value *args[2];
       args[0] = arg;
       args[1] = kval;
-      enter_clo(cur, fr, in, clause, args, 2);
+      enter_clo(cur, fr, in, clause, args, 2, 0);
       if (uses == RESUME_NEVER) THxMEM_release(clause); /* the frame holds it now */
       r = 1;
       break;
@@ -2427,7 +3202,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       thrax_fault("apply: callee is not a function");
   }
   THxMEM_release(fn);
-  THxMEM_release(arg);
+  if (!lent) THxMEM_release(arg);
   return r;
 }
 
@@ -2448,12 +3223,19 @@ static Value *run_loop(BlockFn cur, Frame *fr, Value *in, size_t base) {
         cont = do_ret(&cur, &fr, &in, g_v, base);
         THxMEM_release(g_v);
         break;
-      case ACT_APPLY:
+      case ACT_APPLY: {
+        /* A lent argument outlives the callee, so it needs no in-flight
+         * reference across the switch; one the callee does not borrow is
+         * counted as usual. */
+        int lent = g_lend && g_fn && g_fn->tag == T_CLOS &&
+                   (size_t)g_fn->u.clos.code < THxRT_code_count &&
+                   (THxRT_code_borrowed[g_fn->u.clos.code] & 1);
         THxMEM_retain(g_fn);
-        THxMEM_retain(g_arg);
+        if (!lent) THxMEM_retain(g_arg);
         THxMEM_pool_drain(pm);
-        cont = do_apply(&cur, &fr, &in, g_fn, g_arg, base, 1);
+        cont = do_apply(&cur, &fr, &in, g_fn, g_arg, base, 1, lent);
         break;
+      }
       case ACT_NONE: thrax_fault("block set no terminator");
     }
     /* Everything this bounce constructed and did not store dies here; what was
@@ -2475,7 +3257,18 @@ Value *THxK_call(Value *f, Value *arg) {
   BlockFn cur = NULL;
   Frame *fr = NULL;
   Value *in = NULL;
-  if (!do_apply(&cur, &fr, &in, f, arg, base, 0)) return g_result;
+  if (!do_apply(&cur, &fr, &in, f, arg, base, 0, 0)) return g_result;
+  return run_loop(cur, fr, in, base);
+}
+
+/* As THxK_call, but consuming the caller's references to `f` and `arg`, so a
+ * callee nobody else holds is entered uniquely owned. */
+static Value *THxK_call_owned(Value *f, Value *arg) {
+  size_t base = g_kn;
+  BlockFn cur = NULL;
+  Frame *fr = NULL;
+  Value *in = NULL;
+  if (!do_apply(&cur, &fr, &in, f, arg, base, 1, 0)) return g_result;
   return run_loop(cur, fr, in, base);
 }
 
@@ -2492,6 +3285,7 @@ void THxRT_shutdown(void) {
   free(g_dead);
   g_dead = NULL;
   g_dcap = g_dn = 0;
+  THxMEM_cells_release();
   stm_free_log();
 }
 
@@ -2550,6 +3344,7 @@ static void mark_level(Value *root, uint8_t level) {
       case T_VEC:
         for (size_t i = 0; i < v->u.seq.len; i++) THX_MARK_PUSH(v->u.seq.items[i]);
         break;
+      case T_TENSOR: THX_MARK_PUSH(v->u.tensor.buf); break;
       case T_STRUCT:
         for (size_t i = 0; i < v->u.strct.len; i++)
           THX_MARK_PUSH(v->u.strct.fields[i].val);
@@ -3407,6 +4202,22 @@ static void show_bytes_debug(Str *s, const uint8_t *data, size_t len) {
   str_puts(s, "\"");
 }
 
+static void show_into(Str *s, Value *v);
+
+/* A tensor as nested brackets, one level per axis. */
+static void show_tensor(Str *s, Value *t, size_t k, size_t base) {
+  if (k == t->u.tensor.rank) {
+    show_into(s, tensor_cell(t, base));
+    return;
+  }
+  str_puts(s, "[");
+  for (size_t i = 0; i < T_SHAPE(t)[k]; i++) {
+    if (i) str_puts(s, ", ");
+    show_tensor(s, t, k + 1, base + i * T_STRIDES(t)[k]);
+  }
+  str_puts(s, "]");
+}
+
 static void show_into(Str *s, Value *v) {
   char num[32];
   switch (v->tag) {
@@ -3459,6 +4270,7 @@ static void show_into(Str *s, Value *v) {
       }
       str_puts(s, "]");
       break;
+    case T_TENSOR: show_tensor(s, v, 0, v->u.tensor.off); break;
     case T_CLOS:
     case T_BUILTIN:
     case T_EXTERN:

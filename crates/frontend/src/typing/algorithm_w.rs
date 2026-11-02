@@ -1452,7 +1452,11 @@ impl<'a> Checker<'a> {
             return match self.qualified_candidates(m, name) {
                 Some(cands) if cands.len() == 1 => Ok(self.unifier.instantiate(cands[0])),
                 Some(_) => Ok(self.unifier.fresh()),
-                None if self.lenient || m == self.module_name => Ok(self.unifier.fresh()),
+                None if m == self.module_name => Ok(self.unifier.fresh()),
+                None if self.lenient => {
+                    self.deferred = true;
+                    Ok(self.unifier.fresh())
+                }
                 None => {
                     let span = self.ast.expr_span(site).unwrap_or_else(|| Span::at(0));
                     Err(self.unknown_qualified(m, name).fill_span(span))
@@ -1509,6 +1513,7 @@ impl<'a> Checker<'a> {
             // A metaprogram-expansion round: the name may be injected by a
             // generator that has not run yet. Defer it as a fresh variable; the
             // final strict round rejects it if it is still unbound.
+            self.deferred = true;
             Ok(self.unifier.fresh())
         } else {
             Err(self.unbound_name(name))
@@ -1946,7 +1951,10 @@ impl<'a> Checker<'a> {
             // In a lenient expansion round the matching overload may be injected
             // by a generator that has not run yet (a derived `to_string` for a new
             // type); leave the result an unresolved variable rather than erroring.
-            Match::None if self.lenient => Ok(result),
+            Match::None if self.lenient => {
+                self.deferred = true;
+                Ok(result)
+            }
             Match::None => Err(self.no_overload(name, args, site)),
             Match::Ambiguous => {
                 self.pending.push(Pending {
@@ -2009,7 +2017,7 @@ impl<'a> Checker<'a> {
                     }
                     // Lenient round: a still-unmatched overload may be satisfied by
                     // an about-to-be-injected definition; drop it rather than error.
-                    Match::None if self.lenient => {}
+                    Match::None if self.lenient => self.deferred = true,
                     Match::None => return Err(self.no_overload(p.name, &p.args, p.site)),
                     Match::Ambiguous => still.push(p),
                 }

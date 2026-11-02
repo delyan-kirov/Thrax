@@ -57,6 +57,20 @@ static inline int thx_nprocs(void) {
 #define THX_TLS
 #endif
 
+/* How much C stack the direct calls of compiled functions may use, per
+ * thread, before calls fall back to the machine and its heap continuation.
+ * A wasm stack is small, and macOS and Windows give a secondary thread less
+ * than Linux does. */
+#ifndef THX_DIRECT_STACK
+#if defined(__wasm__)
+#define THX_DIRECT_STACK (24u * 1024u)
+#elif defined(_WIN32) || defined(__APPLE__)
+#define THX_DIRECT_STACK (256u * 1024u)
+#else
+#define THX_DIRECT_STACK (1024u * 1024u)
+#endif
+#endif
+
 /* The Windows C runtime turns every "\n" written to a text-mode stream into
  * "\r\n", so a compiled program's output would not match the interpreter's. */
 static inline void thx_stdio_binary(void) {

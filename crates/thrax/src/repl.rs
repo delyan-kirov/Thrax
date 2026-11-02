@@ -852,7 +852,7 @@ impl Repl {
                 return;
             }
         };
-        let ir = frontend::ir::lower_modules(&session.lowered);
+        let ir = session.ir();
         let ty = session
             .decls
             .iter()

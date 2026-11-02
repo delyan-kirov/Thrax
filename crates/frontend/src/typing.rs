@@ -347,6 +347,9 @@ pub struct Checker<'a> {
     /// so a module that forward-references an about-to-be-injected definition still
     /// checks well enough to run its generators. The final round checks strictly.
     lenient: bool,
+    /// Whether a lenient check took any of its lenient branches. One that did not
+    /// is exactly the strict check of the same module.
+    deferred: bool,
     /// Set for the interactive shell: a top-level body is checked under an open
     /// ambient effect row rather than the pure closed row, so an entered expression
     /// may perform effects (`println`, file IO) the way a `main` body can. A
@@ -510,6 +513,7 @@ impl<'a> Checker<'a> {
             ambient,
             unknown_type: None,
             lenient: false,
+            deferred: false,
             open_effects: false,
             inferred: None,
         };
@@ -523,6 +527,20 @@ impl<'a> Checker<'a> {
     /// enough to run its `$ @e` generators. The final round leaves this off.
     pub fn set_lenient(&mut self, lenient: bool) {
         self.lenient = lenient;
+    }
+
+    /// Whether a lenient check deferred anything (an unbound name, a missing
+    /// instance or overload). When it did not, the check is the strict one.
+    pub fn deferred(&self) -> bool {
+        self.deferred
+    }
+
+    /// Point the checker at `ast`, a copy of its tree with nodes only appended
+    /// since it checked. Every handle it holds resolves the same in the copy, so
+    /// the copy can stand in for the original, which may then be dropped.
+    pub fn rebind_ast(&mut self, ast: &'a Ast) {
+        assert!(ast.exprs.len() >= self.ast.exprs.len(), "a rebound tree must extend the original");
+        self.ast = ast;
     }
 
     /// Check top-level bodies under an open ambient effect row (see `open_effects`).
@@ -1068,6 +1086,14 @@ impl<'a> Checker<'a> {
             .insert(name, ty);
     }
 
+    /// `(a -> a -> a) -> (a -> a -> a) -> a -> x -> rest`: a tensor kernel's
+    /// `add`, `mul`, `zero`, then its first tensor operand.
+    fn kernel_type(&self, a: Type, x: Type, rest: Type) -> Type {
+        let types = &self.unifier.types;
+        let op = types.arrow(a, types.arrow(a, a));
+        types.arrow(op, types.arrow(op, types.arrow(a, types.arrow(x, rest))))
+    }
+
     fn lookup(&self, name: StrId) -> Option<Type> {
         self.scopes.iter().rev().find_map(|s| s.get(&name).cloned())
     }
@@ -1189,6 +1215,35 @@ impl<'a> Checker<'a> {
             self.bind(StrId::intern("@tensor_slice"),
                 self.unifier.types.arrow(src, self.unifier.types.arrow(int, self.unifier.types.arrow(int, out))),
             );
+        }
+        // The coarse kernels `LA.dot`/`LA.matmul` call, with the element arithmetic
+        // passed as plain functions (the `@ctx` methods):
+        // `@tensor_dot : (a -> a -> a) -> (a -> a -> a) -> a -> [n]a -> [n]a -> a` and
+        // `@tensor_matmul : (a -> a -> a) -> (a -> a -> a) -> a -> [m][k]a -> [k][n]a -> [m][n]a`.
+        {
+            let a = self.unifier.fresh_generic();
+            let n = self.unifier.fresh_generic_nat();
+            let vx = self.unifier.fresh_generic();
+            let vy = self.unifier.fresh_generic();
+            let x = tensor_type(&self.unifier.types, vx, n, a);
+            let y = tensor_type(&self.unifier.types, vy, n, a);
+            let t = self.kernel_type(a, x, self.unifier.types.arrow(y, a));
+            self.bind(StrId::intern("@tensor_dot"), t);
+        }
+        {
+            let a = self.unifier.fresh_generic();
+            let (m, k, n) = (
+                self.unifier.fresh_generic_nat(),
+                self.unifier.fresh_generic_nat(),
+                self.unifier.fresh_generic_nat(),
+            );
+            let v: Vec<Type> = (0..6).map(|_| self.unifier.fresh_generic()).collect();
+            let types = &self.unifier.types;
+            let x = tensor_type(types, v[0], m, tensor_type(types, v[1], k, a));
+            let y = tensor_type(types, v[2], k, tensor_type(types, v[3], n, a));
+            let out = tensor_type(types, v[4], m, tensor_type(types, v[5], n, a));
+            let t = self.kernel_type(a, x, self.unifier.types.arrow(y, out));
+            self.bind(StrId::intern("@tensor_matmul"), t);
         }
     }
 }

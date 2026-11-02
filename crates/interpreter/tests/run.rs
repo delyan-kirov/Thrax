@@ -278,6 +278,31 @@ fn ffi_struct_by_value_argument() {
 }
 
 #[test]
+fn ffi_repeated_calls_reuse_cached_resolution() {
+    // The address of `(symbol, lib)` and the libffi call interface of each
+    // signature are cached after the first call. One symbol bound twice, under
+    // two struct types, alternates between the bindings across many calls.
+    let so = compile_helper_so(
+        "thx_ffi_cache_helper",
+        "typedef struct { long long x, y; } P;\n\
+         long long sum_p(P p) { return p.x * 1000 + p.y; }\n",
+    );
+    let src = format!(
+        "$ @mod M\n\
+         $ P : @struct @extern \"C\" = x: @Int, y: @Int,\n\
+         $ Q : @struct @extern \"C\" = a: @Int, b: @Int,\n\
+         $ sp : P -> @Int = @extern \"C\" \"sum_p\" \"{lib}\"\n\
+         $ sq : Q -> @Int = @extern \"C\" \"sum_p\" \"{lib}\"\n\
+         $ go : @Int -> @Int -> @Int = \\n acc = if n == 0 => acc else \
+             go (n - 1) (acc + sp (P.{{ .x = n, .y = 1 }}) + sq (Q.{{ .a = 1, .b = n }}))\n\
+         $ test : @Int = go 50 0",
+        lib = thx_path(&so)
+    );
+    // The sum over n = 1..50 of (1000n + 1) + (1000 + n).
+    assert_eq!(run(&src, "test"), "1326325");
+}
+
+#[test]
 fn ffi_struct_array() {
     // A `@Vec T` of C-repr structs passed to C as a contiguous `T*` buffer (with a
     // separate count), the raylib vertex/point/color-buffer shape.
@@ -1562,6 +1587,13 @@ fn operator_table_every_entry() {
             "%" => ("$ a : @Int = 13 % 5", "3"),
             "^" => ("$ a : @Int = 2 ^ 3", "8"),
             "!" => ("$ a : @Int = if !@false => 1 else 0", "1"),
+            // Bitwise.
+            "&&&" => ("$ a : @Int = 12 &&& 10", "8"),
+            "|||" => ("$ a : @Int = 12 ||| 10", "14"),
+            "^^^" => ("$ a : @Int = 12 ^^^ 10", "6"),
+            "<<<" => ("$ a : @Int = 1 <<< 40", "1099511627776"),
+            ">>>" => ("$ a : @Int = (0 - 16) >>> 2", "-4"),
+            "~~~" => ("$ a : @Int = ~~~0", "-1"),
             // Comparison.
             "==" => ("$ a : @Int = if 3 == 3 => 1 else 0", "1"),
             "!=" => ("$ a : @Int = if 3 != 4 => 1 else 0", "1"),

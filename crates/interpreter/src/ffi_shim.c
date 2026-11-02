@@ -4,6 +4,7 @@
  * interface and perform it. Keep the kind codes in sync with `src/ffi.rs`. */
 #include <ffi.h>
 #include <stddef.h>
+#include <stdlib.h>
 
 enum {
     K_VOID = 0,
@@ -33,71 +34,104 @@ static ffi_type *ty(int k) {
 #define MAX_ARGS   32
 #define MAX_LEAVES 32
 
-/* Fill `agg` (and its `elems` array, room for MAX_LEAVES+1) as an aggregate
- * ffi_type over `n` leaf kinds. libffi computes size/alignment/offsets during
- * `ffi_prep_cif`, matching the standard C layout of a struct of these leaves. */
-static int build_struct(ffi_type *agg, ffi_type **elems, const int *leaves, int n) {
-    if (n > MAX_LEAVES) return -1;
+/* Fill `agg` as an aggregate ffi_type over `n` leaf kinds, with `elems` (room
+ * for n+1) as its NULL-terminated element list. libffi computes size, alignment
+ * and offsets during `ffi_prep_cif`, matching the standard C layout of a struct
+ * of these leaves. */
+static void build_struct(ffi_type *agg, ffi_type **elems, const int *leaves, int n) {
     for (int i = 0; i < n; i++) elems[i] = ty(leaves[i]);
     elems[n] = NULL;
     agg->size = 0;
     agg->alignment = 0;
     agg->type = FFI_TYPE_STRUCT;
     agg->elements = elems;
-    return 0;
 }
 
-/* Prepare and perform one call, supporting by-value struct arguments and a
- * by-value struct return. For argument i:
- *   kinds[i] != K_STRUCT : a scalar of that kind; avalues[i] -> its value cell.
+/* A prepared call interface. The cif points into `atypes`, `aggs` and `elems`,
+ * so the four live and die together. */
+typedef struct {
+    ffi_cif cif;
+    ffi_type **atypes;
+    ffi_type *aggs;
+    ffi_type **elems;
+} thx_prep_t;
+
+void thx_ffi_prep_free(void *handle) {
+    thx_prep_t *p = handle;
+    if (p) {
+        free(p->atypes);
+        free(p->aggs);
+        free(p->elems);
+        free(p);
+    }
+}
+
+/* Prepare the call interface of a signature, supporting by-value struct
+ * arguments and a by-value struct return. For argument i:
+ *   kinds[i] != K_STRUCT : a scalar of that kind.
  *   kinds[i] == K_STRUCT : a struct whose leaf kinds are
- *       leaves[leaf_off[i] .. leaf_off[i] + leaf_len[i]];
- *       avalues[i] -> the struct's bytes.
+ *       leaves[leaf_off[i] .. leaf_off[i] + leaf_len[i]].
  * The return is a scalar `ret_kind`, or (ret_kind == K_STRUCT) a struct built
- * from `ret_leaves[0..ret_nleaves]`. `rvalue` must have room for the result
- * (>= struct size, or `sizeof(ffi_arg)`), 8-byte aligned. Returns 0 on success. */
-int thx_ffi_call_x(void *fn, unsigned nargs,
+ * from `ret_leaves[0..ret_nleaves]`. Returns a handle for `thx_ffi_call_prep`
+ * (free it with `thx_ffi_prep_free`), or NULL when libffi rejects the
+ * signature. */
+void *thx_ffi_prep(unsigned nargs,
                    const int *kinds,
                    const int *leaf_off, const int *leaf_len, const int *leaves,
-                   int ret_kind, const int *ret_leaves, int ret_nleaves,
-                   void **avalues, void *rvalue) {
-    ffi_cif cif;
-    ffi_type *atypes[MAX_ARGS];
-    ffi_type struct_store[MAX_ARGS];
-    ffi_type *elem_store[MAX_ARGS][MAX_LEAVES + 1];
-    if (nargs > MAX_ARGS) return 2;
+                   int ret_kind, const int *ret_leaves, int ret_nleaves) {
+    if (nargs > MAX_ARGS) return NULL;
+    size_t naggs = ret_kind == K_STRUCT, nelems = ret_kind == K_STRUCT ? ret_nleaves + 1 : 0;
+    for (unsigned i = 0; i < nargs; i++)
+        if (kinds[i] == K_STRUCT) {
+            if (leaf_len[i] > MAX_LEAVES) return NULL;
+            naggs++;
+            nelems += leaf_len[i] + 1;
+        }
+    if (ret_kind == K_STRUCT && ret_nleaves > MAX_LEAVES) return NULL;
+    thx_prep_t *p = calloc(1, sizeof *p);
+    if (!p) return NULL;
+    p->atypes = calloc(nargs ? nargs : 1, sizeof *p->atypes);
+    p->aggs = calloc(naggs ? naggs : 1, sizeof *p->aggs);
+    p->elems = calloc(nelems ? nelems : 1, sizeof *p->elems);
+    if (!p->atypes || !p->aggs || !p->elems) {
+        thx_ffi_prep_free(p);
+        return NULL;
+    }
+    ffi_type *agg = p->aggs;
+    ffi_type **elems = p->elems;
     for (unsigned i = 0; i < nargs; i++) {
         if (kinds[i] == K_STRUCT) {
-            if (build_struct(&struct_store[i], elem_store[i],
-                             &leaves[leaf_off[i]], leaf_len[i]) != 0)
-                return 3;
-            atypes[i] = &struct_store[i];
+            build_struct(agg, elems, &leaves[leaf_off[i]], leaf_len[i]);
+            p->atypes[i] = agg++;
+            elems += leaf_len[i] + 1;
         } else {
-            atypes[i] = ty(kinds[i]);
+            p->atypes[i] = ty(kinds[i]);
         }
     }
-
-    ffi_type ret_struct;
-    ffi_type *ret_elems[MAX_LEAVES + 1];
-    ffi_type *rtype;
+    ffi_type *rtype = ty(ret_kind);
     if (ret_kind == K_STRUCT) {
-        if (build_struct(&ret_struct, ret_elems, ret_leaves, ret_nleaves) != 0)
-            return 3;
-        rtype = &ret_struct;
-    } else {
-        rtype = ty(ret_kind);
+        build_struct(agg, elems, ret_leaves, ret_nleaves);
+        rtype = agg;
     }
+    if (ffi_prep_cif(&p->cif, FFI_DEFAULT_ABI, nargs, rtype,
+                     nargs ? p->atypes : NULL) != FFI_OK) {
+        thx_ffi_prep_free(p);
+        return NULL;
+    }
+    return p;
+}
 
-    if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, nargs, rtype,
-                     nargs ? atypes : NULL) != FFI_OK)
-        return 1;
-    ffi_call(&cif, FFI_FN(fn), rvalue, nargs ? avalues : NULL);
-    return 0;
+/* Perform one call through a prepared interface. `avalues[i]` points at
+ * argument i's value cell (a struct's bytes for a struct argument); `rvalue`
+ * must have room for the result (>= struct size, or `sizeof(ffi_arg)`), 8-byte
+ * aligned. A prepared cif is only read here, so a nested call (from a callback)
+ * may reuse it. */
+void thx_ffi_call_prep(void *handle, void *fn, void **avalues, void *rvalue) {
+    thx_prep_t *p = handle;
+    ffi_call(&p->cif, FFI_FN(fn), rvalue, p->cif.nargs ? avalues : NULL);
 }
 
 /* -- closures: a Thrax function passed to C as a function pointer -- */
-
-#include <stdlib.h>
 
 /* The Rust dispatcher, invoked whenever foreign C calls the closure. It reads
  * the arguments (per the kinds captured at creation), applies the Thrax closure,

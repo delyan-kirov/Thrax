@@ -4,7 +4,8 @@ $ @mod LA
 # \info Linear algebra over sized tensors `[n]T`. The compiler provides only the
 #       `@`-sigil PRIMITIVES over the tensor buffer -- `@tensor_index` (modular read),
 #       `@tensor_length` (size), `@tensor_create` (build one the size of a template from an
-#       index function), `@tensor_concat` (size-changing join). Everything else here is
+#       index function), `@tensor_concat` (size-changing join), and the
+#       `@tensor_dot`/`@tensor_matmul` kernels. Everything else here is
 #       ordinary Thrax, so this module is readable, forkable, and extensible: a
 #       custom container joins the `.[..]` surface by adding its own
 #       `@IIndex` instance, and the element arithmetic arrives
@@ -34,15 +35,16 @@ $ col : [m] [n] a -> @Int -> [m] a = \t j = (transpose t).[j]
 # that shares the buffer and only swaps the shape/strides, copying nothing.
 $ transpose : [m] [n] a -> [n] [m] a = \t = @tensor_transpose t
 
-# Dot product: a reduction, so a plain recursive loop over `length`/`index`, with
-# the element arithmetic arriving as the context: the three operations it needs,
+# Dot product: `add (... (add zero (mul x0 y0)) ...) (mul xn yn)`, with the
+# element arithmetic arriving as the context: the three operations it needs,
 # bundled. Any element type with them works, CORE's numbers and `Cpx` included.
+# The loop is the `@tensor_dot` kernel, which runs on unboxed numbers when the
+# operations are CORE's numeric ones and applies them as functions otherwise.
 $ dot : @ctx { IAdd a, IMul a, IZero a } -> [n] a -> [n] a -> a = \e x y =
-    let go = \i acc = if i == length x => acc else go (i + 1) (e.0.add acc (e.1.mul x.[i] y.[i])) in
-    go 0 e.2.zero
+    @tensor_dot e.0.add e.1.mul e.2.zero x y
 
-# Matrix multiply: transpose `b` so its columns are rows, then each result cell is
-# the dot of a row of `a` with a column of `b`. The shared inner dimension `k`
+# Matrix multiply: each result cell is the dot of a row of `a` with a column of
+# `b`, computed by the `@tensor_matmul` kernel. The shared inner dimension `k`
 # unifies at the type level, so a shape mismatch is a compile error.
 #
 # The axes carry VARIANCE. A matrix is `[@contra m, @co n]`: an upper (contra) row
@@ -51,8 +53,9 @@ $ dot : @ctx { IAdd a, IMul a, IZero a } -> [n] a -> [n] a -> a = \e x y =
 # one). So swapping a factor's variance is a type error, not just a shape mismatch.
 # A plain unmarked `[m][n]` matrix still works: a neutral axis is compatible with
 # either variance.
-$ matmul : @ctx { IAdd t, IMul t, IZero t } -> [@contra m, @co k] t -> [@contra k, @co n] t -> [@contra m, @co n] t = \e a b =
-    let bt = transpose b in create a (\i = create (b.[0]) (\j = dot (@ctx e) a.[i] bt.[j]))
+$ matmul : @ctx { IAdd t, IMul t, IZero t } -> [@contra m, @co k] t -> [@contra k, @co n] t
+    -> [@contra m, @co n] t = \e a b =
+    @tensor_matmul e.0.add e.1.mul e.2.zero a b
 
 # ---- maps ----
 
@@ -72,14 +75,19 @@ $ par_map_chunks : @Int -> (a -> b) -> [n] a -> [n] b = \chunks f t =
 
 $ par_map : (a -> b) -> [n] a -> [n] b = \f t = par_map_chunks 64 f t
 
-$ spawn_parts : (a -> b) -> [n] a -> @Int -> @Int -> @Vec (@Future ([k] b)) -> @Vec (@Future ([k] b)) = \f t size lo acc =
+$ spawn_parts : (a -> b) -> [n] a -> @Int -> @Int -> @Vec (@Future ([k] b))
+    -> @Vec (@Future ([k] b)) = \f t size lo acc =
     let n = length t in
-    if lo >= n => acc
+    if lo >= n =>
+        acc
     else
         let hi = if lo + size > n => n else lo + size in
         let part = slice t lo hi in
-        let fut = @par (\u = map f part) in spawn_parts f t size hi (@vec_push acc fut)
+        let fut = @par (\u = map f part) in
+        spawn_parts f t size hi (@vec_push acc fut)
 
 $ await_parts : @Vec (@Future ([k] b)) -> @Int -> @Vec ([k] b) -> @Vec ([k] b) = \futs i acc =
-    if i >= @vec_len futs => acc
-    else await_parts futs (i + 1) (@vec_push acc (@await (@vec_get futs i)))
+    if i >= @vec_len futs =>
+        acc
+    else
+        await_parts futs (i + 1) (@vec_push acc (@await (@vec_get futs i)))

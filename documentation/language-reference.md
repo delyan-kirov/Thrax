@@ -382,6 +382,19 @@ $ c : @Int  = -42
 $ d : @Bool = !@true             # @false
 ```
 
+The bitwise operators work on every integer type: `&&&` (and), `|||` (or),
+`^^^` (xor), `<<<` and `>>>` (shifts by an `@Int` count) and unary `~~~`
+(complement). `&&&` and the shifts bind like `*`, `|||` and `^^^` like `+`, so
+all bind tighter than a comparison. `>>>` is arithmetic on the signed types and
+logical on the nats. A count of 64 or more, or a negative one, shifts every bit
+out. A narrow type wraps what leaves its range.
+
+```thrax
+$ e : @Int  = 12 &&& 10 ||| 1    # 9
+$ f : @Int  = (0 - 16) >>> 2     # -4
+$ g : @Nat8 = ~~~200             # 55
+```
+
 ## 4.4 Comparisons
 `==` `!=` `<` `>` `<=` `>=`, all `a -> a -> @Bool`.
 

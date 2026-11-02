@@ -29,25 +29,49 @@ use crate::core::{CoreArm, CoreClause, CoreHandler, Pat, CoreProgram, Term};
 /// Closure-convert a Core program (already match-compiled, A-normal, and De
 /// Bruijn indexed) into the IR.
 pub fn convert_closures(core: &CoreProgram) -> data::IrProgram {
-    let mut conv = ClosureConverter { core, codes: Vec::new() };
+    convert_closures_after(core, 0, &HashSet::new())
+}
+
+/// [`convert_closures`] for a program that will follow `first` codes already
+/// lowered, whose globals are `before`: code ids start at `first`, and a name in
+/// `before` is a global, not a built-in.
+pub fn convert_closures_after(core: &CoreProgram, first: usize, before: &HashSet<StrId>) -> data::IrProgram {
+    let mut conv = ClosureConverter { core, codes: Vec::new(), first };
     let mut globals = Vec::new();
     for &(name, term) in &core.globals {
         let mut ctx = FunctionScope::new();
         let body = conv.expr(term, &mut ctx, true);
-        let id = conv.codes.len();
+        let id = first + conv.codes.len();
         conv.codes.push(Code {
             nparams: 0,
             nlocals: ctx.nlocals,
             body,
             name,
+            borrowed: Vec::new(),
         });
         globals.push((name, id));
     }
     let mut codes = conv.codes;
-    let names: HashSet<StrId> = globals.iter().map(|(n, _)| *n).collect();
+    let mut names: HashSet<StrId> = globals.iter().map(|(n, _)| *n).collect();
+    names.extend(before.iter().copied());
+    let mut arities: HashMap<StrId, usize> = HashMap::new();
+    for &(name, id) in &globals {
+        let mut arity = 0;
+        let mut code = id;
+        while let Some(IrExpr::Ret(Atom::Clos { code: next, .. })) = codes.get(code - first).map(|c| &c.body) {
+            arity += 1;
+            code = *next;
+        }
+        arities.entry(name).or_insert(arity);
+    }
+    let arity = |name: &StrId| match arities.get(name) {
+        Some(&n) => Some(n),
+        None if names.contains(name) => None,
+        None => builtin_arity(name.as_str()),
+    };
     for code in &mut codes {
         let body = std::mem::replace(&mut code.body, IrExpr::Fault(String::new()));
-        code.body = sink_partials(body, &names);
+        code.body = propagate_copies(sink_partials(body, &arity, &HashMap::new()));
     }
     data::IrProgram {
         codes,
@@ -105,6 +129,8 @@ impl FunctionScope {
 struct ClosureConverter<'c> {
     core: &'c CoreProgram,
     codes: Vec<Code>,
+    /// The id of `codes[0]`.
+    first: usize,
 }
 
 impl<'c> ClosureConverter<'c> {
@@ -191,12 +217,13 @@ impl<'c> ClosureConverter<'c> {
 
         let (captures, mut inner) = Self::enter(&free, m, nparams, outer);
         let cbody = self.expr(body, &mut inner, true);
-        let id = self.codes.len();
+        let id = self.first + self.codes.len();
         self.codes.push(Code {
             nparams,
             nlocals: inner.nlocals,
             body: cbody,
             name: params.last().copied().unwrap_or_else(|| StrId::intern("%thunk")),
+            borrowed: vec![false; nparams],
         });
         data::Atom::Clos { code: id, captures }
     }
@@ -248,6 +275,7 @@ impl<'c> ClosureConverter<'c> {
                 fun: self.atom(*f, ctx),
                 arg: self.atom(*x, ctx),
                 tail,
+                lend: false,
             },
 
             Term::Let { rec, val, body, .. } => {
@@ -375,6 +403,7 @@ impl<'c> ClosureConverter<'c> {
             binder_base,
             binders: binder_names,
             body,
+            unpack: data::Unpack::Borrow,
         }
     }
 
@@ -398,6 +427,7 @@ impl<'c> ClosureConverter<'c> {
             ty,
             tag,
             fields: atoms,
+            reuse: None,
         };
         for (slot, rhs) in lets.iter().rev() {
             res = IrExpr::Let {
@@ -439,12 +469,13 @@ impl<'c> ClosureConverter<'c> {
     /// parameter, and it captures nothing.
     fn identity(&mut self, ctx: &mut FunctionScope) -> data::Atom {
         let (captures, inner) = Self::enter(&BTreeSet::new(), ctx.scope.len(), 1, ctx);
-        let id = self.codes.len();
+        let id = self.first + self.codes.len();
         self.codes.push(Code {
             nparams: 1,
             nlocals: inner.nlocals,
             body: IrExpr::Ret(data::Atom::Local(0)),
             name: StrId::intern("%x"),
+            borrowed: vec![false],
         });
         data::Atom::Clos { code: id, captures }
     }
@@ -454,7 +485,7 @@ impl<'c> ClosureConverter<'c> {
     fn clause(&mut self, c: &CoreClause, continuation: StrId, ctx: &mut FunctionScope) -> HandleClause {
         let fun = self.lift(c.body, 2, &[c.arg, continuation], ctx);
         let resume = match &fun {
-            Atom::Clos { code, .. } => resume_use(&self.codes[*code].body),
+            Atom::Clos { code, .. } => resume_use(&self.codes[*code - self.first].body),
             _ => ResumeUse::Captured,
         };
         HandleClause {
@@ -466,23 +497,36 @@ impl<'c> ClosureConverter<'c> {
     }
 }
 
-/// Move each partial application of a built-in down to the application that
-/// saturates it. A-normal form evaluates `@iadd x (f y)` as `let p = @iadd x in
-/// let a = f y in p a`; this gives `let a = f y in let p = @iadd x in p a`, which
-/// a backend can run as one direct call. Applying a built-in to fewer operands
-/// than its arity does nothing but collect them, so the move changes no
-/// behaviour, and `x`'s slots stay bound across the body it moves through.
-fn sink_partials(e: IrExpr, globals: &HashSet<StrId>) -> IrExpr {
+/// Move each partial application of a built-in or a curried global function
+/// down to the application that saturates it. A-normal form evaluates `@iadd x
+/// (f y)` as `let p = @iadd x in let a = f y in p a`; this gives `let a = f y in
+/// let p = @iadd x in p a`, which a backend can run as one direct call.
+/// Applying a built-in to fewer operands than its arity does nothing but
+/// collect them, as does applying a global whose lambdas each just return the
+/// next one (`arity` counts them), so the move changes no behaviour, and `x`'s
+/// slots stay bound across the body it moves through. `partials` holds the
+/// slots in scope bound to such a partial application, with how many more
+/// operands each takes.
+fn sink_partials(e: IrExpr, arity: &impl Fn(&StrId) -> Option<usize>, partials: &HashMap<usize, usize>) -> IrExpr {
     match e {
         IrExpr::Let { slot, rhs, body } => {
-            let rhs = sink_partials(*rhs, globals);
-            let body = sink_partials(*body, globals);
-            let partial = match &rhs {
-                IrExpr::App {
-                    fun: Atom::Glob { name },
-                    ..
-                } => !globals.contains(name) && builtin_arity(name.as_str()).is_some_and(|n| n >= 2),
-                _ => false,
+            let rhs = sink_partials(*rhs, arity, partials);
+            let left = match &rhs {
+                IrExpr::App { fun: Atom::Glob { name }, .. } => arity(name).map(|n| n.saturating_sub(1)),
+                IrExpr::App { fun: Atom::Local(s), .. } => partials.get(s).map(|n| n - 1),
+                _ => None,
+            };
+            let partial = left.is_some_and(|n| n >= 1);
+            let body = if partial {
+                let mut inner = partials.clone();
+                inner.insert(slot, left.unwrap_or(0));
+                sink_partials(*body, arity, &inner)
+            } else if partials.contains_key(&slot) {
+                let mut inner = partials.clone();
+                inner.remove(&slot);
+                sink_partials(*body, arity, &inner)
+            } else {
+                sink_partials(*body, arity, partials)
             };
             if partial {
                 match place_partial(slot, &rhs, body) {
@@ -510,20 +554,20 @@ fn sink_partials(e: IrExpr, globals: &HashSet<StrId>) -> IrExpr {
             alts: alts
                 .into_iter()
                 .map(|a| Alt {
-                    body: sink_partials(a.body, globals),
+                    body: sink_partials(a.body, arity, partials),
                     ..a
                 })
                 .collect(),
-            default: Box::new(sink_partials(*default, globals)),
+            default: Box::new(sink_partials(*default, arity, partials)),
         },
         IrExpr::Handle { body, clauses, els } => IrExpr::Handle {
-            body: Box::new(sink_partials(*body, globals)),
+            body: Box::new(sink_partials(*body, arity, partials)),
             clauses,
             els,
         },
         IrExpr::Defer { cleanup, body } => IrExpr::Defer {
             cleanup,
-            body: Box::new(sink_partials(*body, globals)),
+            body: Box::new(sink_partials(*body, arity, partials)),
         },
         e => e,
     }
@@ -580,6 +624,95 @@ fn place_partial(slot: usize, rhs: &IrExpr, body: IrExpr) -> Result<IrExpr, IrEx
             }
         }
         e => Err(e),
+    }
+}
+
+/// Replace each `let s = x in body`, where `x` is a local or a captured field,
+/// by `body` reading `x` where it read `s`. Match compilation binds every
+/// scrutinee and pattern variable this way; left in, each copy would be one
+/// more owner to count, and a parameter copied into a slot would look stored
+/// to borrow inference. See Note [Borrowed parameters].
+fn propagate_copies(e: IrExpr) -> IrExpr {
+    match e {
+        IrExpr::Let { slot, rhs, body } => match *rhs {
+            IrExpr::Ret(x @ (Atom::Local(_) | Atom::Env(_))) if !x.mentions(slot) => {
+                let mut body = propagate_copies(*body);
+                substitute(&mut body, slot, &x);
+                body
+            }
+            rhs => IrExpr::Let {
+                slot,
+                rhs: Box::new(propagate_copies(rhs)),
+                body: Box::new(propagate_copies(*body)),
+            },
+        },
+        IrExpr::Case { scrut, alts, default } => IrExpr::Case {
+            scrut,
+            alts: alts
+                .into_iter()
+                .map(|a| Alt {
+                    body: propagate_copies(a.body),
+                    ..a
+                })
+                .collect(),
+            default: Box::new(propagate_copies(*default)),
+        },
+        IrExpr::Handle { body, clauses, els } => IrExpr::Handle {
+            body: Box::new(propagate_copies(*body)),
+            clauses,
+            els,
+        },
+        IrExpr::Defer { cleanup, body } => IrExpr::Defer {
+            cleanup,
+            body: Box::new(propagate_copies(*body)),
+        },
+        e => e,
+    }
+}
+
+/// Read `x` wherever `e` reads local `slot`, including in the captures of the
+/// closures it builds. `slot` stays bound throughout `e`, so no binder inside
+/// reuses it.
+fn substitute(e: &mut IrExpr, slot: usize, x: &Atom) {
+    fn atom(a: &mut Atom, slot: usize, x: &Atom) {
+        match a {
+            Atom::Local(s) if *s == slot => *a = x.clone(),
+            Atom::Clos { captures, .. } => captures.iter_mut().for_each(|c| atom(c, slot, x)),
+            _ => {}
+        }
+    }
+    match e {
+        IrExpr::Ret(a) | IrExpr::Field { rec: a, .. } => atom(a, slot, x),
+        IrExpr::App { fun, arg, .. } => {
+            atom(fun, slot, x);
+            atom(arg, slot, x);
+        }
+        IrExpr::MkStruct { base, fields, .. } => {
+            base.iter_mut().chain(fields.iter_mut().map(|(_, a)| a)).for_each(|a| atom(a, slot, x))
+        }
+        IrExpr::MkVariant { fields: items, .. } | IrExpr::MkTuple(items) => {
+            items.iter_mut().for_each(|a| atom(a, slot, x))
+        }
+        IrExpr::Let { rhs, body, .. } => {
+            substitute(rhs, slot, x);
+            substitute(body, slot, x);
+        }
+        IrExpr::Case { scrut, alts, default } => {
+            atom(scrut, slot, x);
+            alts.iter_mut().for_each(|a| substitute(&mut a.body, slot, x));
+            substitute(default, slot, x);
+        }
+        IrExpr::Handle { body, clauses, els } => {
+            clauses.iter_mut().for_each(|c| atom(&mut c.fun, slot, x));
+            atom(els, slot, x);
+            substitute(body, slot, x);
+        }
+        IrExpr::Defer { cleanup, body } => {
+            atom(cleanup, slot, x);
+            substitute(body, slot, x);
+        }
+        IrExpr::Drop { .. } => unreachable!("copies are propagated before the ownership pass"),
+        IrExpr::Fault(_) => {}
     }
 }
 

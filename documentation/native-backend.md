@@ -89,12 +89,13 @@ straight-line C and ends by calling exactly one **terminator**; the driver
 - **`Ret`/`MkStruct`/`Field`/`MkVariant`/`Unk`/`Extern`** compute one value
   expression and `deliver` it to the block's sink (a `THxK_ret`, or a slot
   back-patch + `THxK_jump`).
-- **`Let`** places a placeholder box in the slot (`THxK_setbox`) so recursive
-  closures can capture it, then: if the rhs **suspends** (a non-tail `App` or a
+- **`Let`** empties its slot (`THxK_drop`); a recursive `let` (its rhs mentions
+  the slot) instead places a placeholder box there (`THxK_setbox`) so recursive
+  closures can capture it. Then: if the rhs **suspends** (a non-tail `App` or a
   `Handle`), the body becomes a fresh continuation block and the rhs delivers
-  into the slot (the driver back-patches the box on return, exactly as `IT.cpp`
-  `KRet`); otherwise the pure rhs is computed into the slot and the body is
-  emitted **inline** in the same block (the pure path stays flat).
+  into the slot on return (an empty slot adopts the value, a box is
+  back-patched); otherwise the pure rhs is computed into the slot and the body
+  is emitted **inline** in the same block (the pure path stays flat).
 - **`App`** tail -> `THxK_tailcall`; non-tail (always a let rhs, by ANF) ->
   `THxK_apply` with the let body as its continuation block.
 - **`Case`** evaluates the scrutinee once, then an if/else chain on
@@ -108,7 +109,13 @@ straight-line C and ends by calling exactly one **terminator**; the driver
 - **Built-ins** are numbered by `frontend::ir::data::BUILTINS`: the generator
   emits that table as the `THxB_*` enum ahead of the runtime, and a saturated
   call is `THxK_prim(THxB_<NAME>, args)`, which the runtime dispatches with a
-  `switch`.
+  `switch`. `@vec_push` and `@vec_set` go through `THxK_vec_update`, which also
+  says whether the vector operand was moved (a last use): a moved vector whose
+  count is 1 is updated in place, its item block growing geometrically, and any
+  other is copied once. A partial application of either updates in place only
+  when the applying call owns it alone (`let f = @vec_push v in (f 1, f 2)`
+  copies). `THxMEM_unique` reads a shared value's atomic count, so a vector
+  another thread can reach is never mutated under it.
 - **Entry**: the generated C `main` forces every global reachable from the entry,
   then applies `@main` (`THxK_call`) to the argument vector as a `@Vec @Str` and
   returns its `@Int` as the exit code. A harness mode (`ccg::Entry::Show`) instead
@@ -123,6 +130,33 @@ KRet, so tail calls including mutual recursion run in **constant stack**; a
 non-tail `THxK_apply` pushes one `KRet` on the heap continuation stack, so **deep
 non-tail recursion grows the heap, not the C stack** (this lifts the old v1
 stack-overflow limit).
+
+### Direct functions and unboxed integers
+
+Most calls cannot perform an effect, and those need none of the machine. A
+known global function (a closure literal, seen through its currying) whose body
+provably never suspends (no handler, no `defer`, every call a built-in, a
+partial application, or another such function) also gets a plain C function
+`d_<code>`: its activation is a `Frame` on the C stack, a saturated call of it
+from a block or another direct function is a C call, and a self tail call is a
+`goto`. The analysis is a greatest fixpoint over the IR (`direct_safe` in
+`gen.rs`), so mutual recursion qualifies.
+
+The C stack is finite, so a direct call is made only while `THxD_room()` says
+the thread is within `THX_DIRECT_STACK` bytes (portable.h) of where it started;
+past that a direct function runs its callee on a nested machine and blocks take
+the ordinary heap path, so deep recursion still works.
+
+Integer intrinsics (`@iadd`, `@ilt`, ...) compile to C arithmetic on
+`int64_t`; a result used only as another intrinsic's operand or a literal
+case's scrutinee stays a C scalar. A direct function's arguments and result
+cross as `int64_t` when its body shows them to be integers. See
+Note [Direct functions] and Note [Unboxed integers] in `crates/ccg/src/gen.rs`.
+
+Two middle-end changes feed this: match compilation inlines a fallthrough
+thunk that has a single call site (an `if` no longer allocates a closure), and
+`sink_partials` also moves partial applications of curried global functions
+down to the application that saturates them.
 
 ## The "exploreable" / domino-failure discipline
 
@@ -291,6 +325,15 @@ so those functions carry the ownership rules:
   operand rows), every kont frame's payload (KRet's frame, KPrompt's
   clauses + `els`, KDefer's cleanup, KThunkRet's saved value, KAfterClause's
   kval), and the global CAF cache each hold `+1`; reads borrow.
+- **Lent parameters** (issue #385): a parameter the frontend infers as
+  borrowed (`Code::borrowed`, emitted as `THxRT_code_borrowed`) is bound
+  without a count when the call lends it (`THxK_apply_lent`,
+  `THxK_tailcall_lent`, `THxK_tailcall_pass`). The frame's `lent` mask marks
+  the slot, so neither a drop nor the frame's death releases it, and a slice
+  copy does not retain it. A borrowed parameter entered by a call that did not
+  lend takes a counted reference that dies with the frame. See Note [Borrowed
+  parameters] in `crates/frontend/src/ir/borrow.rs`. Build the emitted C with
+  `-DTHRAX_RC_STATS` to print the retain and release counts at exit.
 - **Frames are refcounted** (driver's current activation + every KRet, live or
   captured) and retain the closure whose `env` they borrow.
 - **The temp pool**: every fresh value is registered with the pool owning its
@@ -299,8 +342,8 @@ so those functions carry the ownership rules:
   garbage of a long-running loop dies immediately. (Measured on
   `examples/RC_LOOP.thx`, 200k iterations of struct allocation: **1.3 MB peak
   RSS under RC vs 277 MB under bump**.)
-- **Box back-patch** (`THxVALUE_patch_box`): the KRet delivery content-copies
-  into the let box, deep-copying payload arrays (a shared array would be freed
+- **Box back-patch** (`THxVALUE_patch_box`): only a recursive `let` has a box.
+  The KRet delivery content-copies into it, deep-copying payload arrays (a shared array would be freed
   twice) and retaining children *except a child pointing back at the box
   itself*, the **weak self edge** of a recursive-`let` closure that captured
   its own box. That is the one genuine RC cycle (the interpreter's `VRec`
@@ -312,6 +355,20 @@ so those functions carry the ownership rules:
   count of their own since `patch_box` can alias a resumption value.
 - **Release is iterative** (a dead-value worklist in `THxMEMRC.c`), so dropping
   a long list does not recurse on the C stack.
+- **Small blocks are recycled** (`THxMEM_cell` / `THxMEM_cell_free` in
+  `crates/ccg/src/runtime.c`): value cells, frames (one block with their slot
+  array) and the child arrays of tuples, records, variants, closures and
+  partial applications go on a per-thread free list per 8-byte size class (up
+  to 256 bytes, a bounded number of blocks per class) instead of back to
+  malloc. Every size is a multiple of 8 and a class holds blocks of exactly its
+  size, so a block may come from malloc and go to a list, or the other way
+  round. A block on a list is not live, so the leak check stays exact; a worker
+  hands its lists back to malloc when it exits.
+- **Shared constants**: `{}`, `@true`, `@false` and the integers -128 to 1023
+  are static cells (`THxRT_unit` / `THxRT_bool` / `THxRT_int`), immortal under
+  threads (`rc == 0`) and out of reach of zero without. A let box is always a
+  fresh cell (`fresh_box`), since it is patched in place; patching a constant
+  is a runtime fault.
 
 **The built-in leak check:** in the value-printing harness mode the generated
 `main` releases the CAF cache and the temp pool on exit and then asserts
@@ -322,20 +379,16 @@ example is thereby also a leak regression test. Under `-DTHX_MEM_BUMP`,
 
 ## Missing features and where they plug in
 
-### Unboxing *(optimization)*
+### Unboxing beyond integers *(optimization)*
 
-Values are pointer-boxed. A later representation pass could keep `@Int`/`Real`
-unboxed in registers for true low-level performance.
+Integers are unboxed inside and between direct functions (below). Reals,
+booleans across calls, and the values flowing through block code are still
+pointer-boxed.
 
 ## Known limitations
 
 - A stored continuation dropped without ever resuming never runs its `defer`
   (inherited from the interpreter) though its memory *is* reclaimed.
-- A `let` box takes a deep copy of an aggregate's payload
-  (`THxVALUE_patch_box`), so binding a vector costs O(n). The ownership pass
-  makes such values uniquely owned often enough for in-place reuse (the
-  interpreter's `@vec_push` uses it), but here the copy at the next binding
-  would undo it.
 - FFI marshals the base scalar/pointer types; aggregates (struct/variant) are
   not passed across the boundary, and only libc-resolvable libraries are
   exercised (others just need the right `-l`/path).
@@ -345,8 +398,9 @@ unboxed in registers for true low-level performance.
   x)`) would leak the same class the interpreter's weak-`VRec` assumption
   covers; such bindings do not occur in practice (recursive lets bind
   functions).
-- Values are pointer-boxed, not register-unboxed; RC is runtime-seam-based, not
-  a Perceus-style compile-time dup/drop pass (no in-place reuse optimization).
+- Outside direct functions values are pointer-boxed. RC is runtime-seam-based,
+  not a full Perceus-style compile-time dup/drop pass: a dead cell is reused in
+  place only by `@vec_push`/`@vec_set` and by constructor reuse of variants.
 
 ## Verification
 

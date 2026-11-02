@@ -95,7 +95,7 @@ pub enum OpRole {
     /// Both infix and unary prefix (only `-`); the two forms stay distinct so
     /// prefix `-` never aliases binary `-`.
     InfixPrefix(u8, u8),
-    /// Unary prefix only (`!`).
+    /// Unary prefix only (`!`, `~~~`).
     Prefix,
     /// A [`Kind::Op`] lexeme that is a grammatical delimiter (`<`, `>`, `|`,
     /// `<>`): it never folds as an operator, legitimately ends an expression,
@@ -178,6 +178,32 @@ pub const OPERATORS: &[OpDef] = &[
     },
     OpDef {
         lexeme: "!",
+        role: OpRole::Prefix,
+    },
+    // Bitwise: `&&&` and the shifts bind like `*`, `|||` and `^^^` like `+`. The
+    // single-character spellings are taken (`|` is a delimiter, `^` is power).
+    OpDef {
+        lexeme: "&&&",
+        role: OpRole::Infix(30, 31),
+    },
+    OpDef {
+        lexeme: "<<<",
+        role: OpRole::Infix(30, 31),
+    },
+    OpDef {
+        lexeme: ">>>",
+        role: OpRole::Infix(30, 31),
+    },
+    OpDef {
+        lexeme: "|||",
+        role: OpRole::Infix(20, 21),
+    },
+    OpDef {
+        lexeme: "^^^",
+        role: OpRole::Infix(20, 21),
+    },
+    OpDef {
+        lexeme: "~~~",
         role: OpRole::Prefix,
     },
     // Comparison (all one precedence, left-associative). `<` and `>` are also the

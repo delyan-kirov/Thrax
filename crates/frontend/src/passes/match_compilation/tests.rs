@@ -49,3 +49,44 @@ fn a_nested_variant_compiles_to_shallow_cases() {
     assert!(!rendered.contains("Wild"), "{rendered}");
     assert!(rendered.contains(r#"Variant { tag: "Cons", fields: [Var("%mv2"), Var("%mv3")] }"#), "{rendered}");
 }
+
+/// An `if` fails at one point only, so its else branch is spliced into the
+/// case's default instead of being wrapped in a fallthrough thunk.
+#[test]
+fn a_sole_failure_point_needs_no_thunk() {
+    let mut t = Terms::new();
+    // if c => 1 else 2
+    let scrut = t.var("c");
+    let (one, two) = (t.add(Term::Int(1)), t.add(Term::Int(2)));
+    let case = t.add(Term::Case {
+        scrut,
+        arms: vec![CoreArm { pat: Pat::Bool(true), guard: None, body: one }],
+        default: Some(two),
+    });
+    let out = MatchCompiler::new().go(&mut t, case);
+    let rendered = t.render(out);
+    assert!(!rendered.contains("Lam"), "{rendered}");
+    assert!(rendered.contains("(Int 2)"), "{rendered}");
+}
+
+/// A guard fails inside its pattern's binders, so splicing the rest there would
+/// let the binder `x` capture the rest's own `x`: the thunk stays.
+#[test]
+fn a_failure_under_a_capturing_binder_keeps_its_thunk() {
+    let mut t = Terms::new();
+    let id = StrId::intern;
+    // is v | x if g => x | _ => x
+    let scrut = t.var("v");
+    let (g, x_body, x_rest) = (t.var("g"), t.var("x"), t.var("x"));
+    let case = t.add(Term::Case {
+        scrut,
+        arms: vec![
+            CoreArm { pat: Pat::Var(id("x")), guard: Some(g), body: x_body },
+            CoreArm { pat: Pat::Wild, guard: None, body: x_rest },
+        ],
+        default: None,
+    });
+    let out = MatchCompiler::new().go(&mut t, case);
+    let rendered = t.render(out);
+    assert!(rendered.contains("Lam"), "{rendered}");
+}

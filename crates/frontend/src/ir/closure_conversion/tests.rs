@@ -1,4 +1,4 @@
-use super::super::data::{Alt, AltKind, Atom, IrExpr, ResumeUse};
+use super::super::data::{Alt, AltKind, Atom, IrExpr, ResumeUse, Unpack};
 use super::resume_use;
 use crate::ir::lower;
 use crate::core::{CoreProgram, Term, Terms};
@@ -80,6 +80,7 @@ fn app_k() -> IrExpr {
         fun: Atom::Local(1),
         arg: Atom::Unit,
         tail: false,
+        lend: false,
     }
 }
 
@@ -104,6 +105,7 @@ fn any_mention_of_the_continuation_captures_the_slice() {
             binder_base: 2,
             binders: Vec::new(),
             body: app_k(),
+            unpack: Unpack::Borrow,
         }],
         default: Box::new(IrExpr::Ret(Atom::LitI(0))),
     };
@@ -112,6 +114,7 @@ fn any_mention_of_the_continuation_captures_the_slice() {
         ty: "Task".into(),
         tag: "Susp".into(),
         fields: vec![Atom::Local(1)],
+        reuse: None,
     };
     let captured = IrExpr::Ret(Atom::Clos {
         code: 0,
@@ -121,6 +124,7 @@ fn any_mention_of_the_continuation_captures_the_slice() {
         fun: Atom::Glob { name: "M.go".into() },
         arg: Atom::Local(1),
         tail: false,
+        lend: false,
     };
     for e in [&app_k(), &twice, &in_one_branch, &stored, &captured, &passed] {
         assert_eq!(resume_use(e), ResumeUse::Captured);

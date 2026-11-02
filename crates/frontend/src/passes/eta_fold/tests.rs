@@ -72,7 +72,7 @@ fn a_saturated_projection_of_an_eta_primitive_folds() {
 }
 
 /// An UNDER-applied projection keeps the field read: there is nothing to
-/// eta-reduce, and the primitive is not a first-class value.
+/// eta-reduce at the use.
 #[test]
 fn an_under_applied_projection_is_left_alone() {
     let mut p = prog(vec![
@@ -94,4 +94,89 @@ fn a_method_that_reorders_its_arguments_is_left_alone() {
     ]);
     fold_primitive_methods(&mut p);
     assert!(rendered(&p, 1).contains("Field"));
+}
+
+/// `STR.at` applied to `args` integers.
+fn global_call(t: &mut Terms, args: i64) -> Aol<Term> {
+    let mut out = t.add(Term::Var {
+        module: Some(StrId::intern("STR")),
+        name: StrId::intern("at"),
+    });
+    for n in 1..=args {
+        let n = t.add(Term::Int(n));
+        out = t.app(out, n);
+    }
+    out
+}
+
+#[test]
+fn a_saturated_call_of_an_eta_primitive_global_folds() {
+    let mut p = prog(vec![
+        ("STR.at", |t| eta(t, "@array_get", "a", "b")),
+        ("M.byte", |t| global_call(t, 2)),
+    ]);
+    fold_primitive_methods(&mut p);
+    assert_eq!(rendered(&p, 1), "(App (App (Var @array_get) (Int 1)) (Int 2))");
+}
+
+/// Extra arguments apply to the primitive's result, as they did to the global's.
+#[test]
+fn an_over_applied_eta_primitive_global_folds() {
+    let mut p = prog(vec![
+        ("STR.at", |t| eta(t, "@array_get", "a", "b")),
+        ("M.byte", |t| global_call(t, 3)),
+    ]);
+    fold_primitive_methods(&mut p);
+    assert_eq!(rendered(&p, 1), "(App (App (App (Var @array_get) (Int 1)) (Int 2)) (Int 3))");
+}
+
+#[test]
+fn an_under_applied_or_reordering_global_is_left_alone() {
+    let mut p = prog(vec![
+        ("STR.at", |t| eta(t, "@array_get", "a", "b")),
+        ("M.partial", |t| global_call(t, 1)),
+    ]);
+    fold_primitive_methods(&mut p);
+    assert!(rendered(&p, 1).contains("Var STR.at"));
+
+    let mut p = prog(vec![
+        ("STR.at", |t| eta(t, "@array_get", "b", "a")),
+        ("M.byte", |t| global_call(t, 2)),
+    ]);
+    fold_primitive_methods(&mut p);
+    assert!(rendered(&p, 1).contains("Var STR.at"));
+}
+
+/// A saturated call of a GLOBAL that is an eta-expanded primitive folds too,
+/// which is what a method lifted out of a known instance looks like.
+#[test]
+fn a_call_of_a_lifted_method_global_folds() {
+    let mut p = prog(vec![
+        ("M.add", |t| eta(t, "@iadd", "a", "b")),
+        ("M.sum", |t| {
+            let add = t.add(Term::Var { module: Some(StrId::intern("M")), name: StrId::intern("add") });
+            let (one, two) = (t.add(Term::Int(1)), t.add(Term::Int(2)));
+            let partial = t.app(add, one);
+            t.app(partial, two)
+        }),
+    ]);
+    fold_primitive_methods(&mut p);
+    assert_eq!(rendered(&p, 1), "(App (App (Var @iadd) (Int 1)) (Int 2))");
+}
+
+/// The instance's method itself becomes the bare primitive, so a kernel handed
+/// it as a value (`@tensor_dot e.0.add ...`) sees the builtin.
+#[test]
+fn an_eta_primitive_method_reduces_to_the_primitive() {
+    let mut p = prog(vec![("CORE.impl_IAdd_for_int", eta_add)]);
+    fold_primitive_methods(&mut p);
+    assert_eq!(rendered(&p, 0), "(Struct IAdd [add] (Var @iadd))");
+}
+
+/// A method that is not an eta-expanded primitive stays a lambda.
+#[test]
+fn a_reordering_method_is_not_reduced() {
+    let mut p = prog(vec![("CORE.impl_IAdd_for_int", flipped)]);
+    fold_primitive_methods(&mut p);
+    assert!(rendered(&p, 0).contains("Lam"));
 }
