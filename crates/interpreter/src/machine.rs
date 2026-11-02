@@ -26,7 +26,7 @@ use std::rc::Rc;
 use frontend::ir::data::{builtin, Alt, Atom, AltKind, Builtin, IrExpr, IrProgram, Prim, ResumeUse, Strictness, Unpack};
 use utilities::{Result, StrId};
 
-use data::{fault, mk, run_builtin, run_extern, PVal, Resumption, Task, TVar, Value};
+use data::{fault, mk, run_builtin, run_extern, DotKind, Lane, PVal, Resumption, Task, TVar, Value};
 
 /// One activation: the local slot array (params + let/case binders) and the
 /// current closure's captured record.
@@ -670,6 +670,7 @@ impl<'p> Machine<'p> {
                 Value::Tuple(items) | Value::Variant { fields: items, .. } => items.clone(),
                 Value::Struct { fields, .. } => fields.iter().map(|(_, p)| p.clone()).collect(),
                 Value::Vector(items) => items.as_ref().clone(),
+                Value::Tensor(t) => t.buf.as_ref().clone(),
                 _ => Vec::new(),
             };
             work.extend(kids);
@@ -720,6 +721,66 @@ impl<'p> Machine<'p> {
             _ => return Err(fault("machine: applying a non-function value")),
         };
         self.run(code, vec![arg], env)
+    }
+
+    /// Apply any function value: a closure, or a built-in, which accumulates its
+    /// operands and runs once saturated.
+    fn apply_any(&self, callee: PVal<'p>, arg: PVal<'p>) -> Result<PVal<'p>> {
+        let callee = deref(callee);
+        let builtin = match &*callee.borrow() {
+            Value::Builtin { op, args } => Some((*op, args.clone())),
+            _ => None,
+        };
+        let Some((op, mut args)) = builtin else {
+            return self.apply(callee, arg);
+        };
+        let higher_order = matches!(op.prim, Prim::TensorCreate | Prim::TensorDot | Prim::TensorMatmul);
+        if op.strictness != Strictness::Shallow || higher_order {
+            return Err(fault(format!("machine: `{}` passed as a tensor kernel's function", op.name)));
+        }
+        args.push(deref(arg));
+        if args.len() < op.arity {
+            return Ok(mk(Value::Builtin { op, args }));
+        }
+        Ok(mk(run_builtin(op.prim, &args)?))
+    }
+
+    /// One `@tensor_dot` over two lanes; `ops` holds `add`, `mul`, `zero` first.
+    fn dot_lanes(&self, kind: DotKind, ops: &[PVal<'p>], x: &Lane<'p>, y: &Lane<'p>) -> Result<PVal<'p>> {
+        let (add, mul, zero) = (&ops[0], &ops[1], &ops[2]);
+        if x.len > 0 && y.len == 0 {
+            return Err(fault("index into an empty tensor"));
+        }
+        if let Some(v) = data::dot_scalar(kind, zero, x, y)? {
+            return Ok(mk(v));
+        }
+        let mut acc = zero.clone();
+        for i in 0..x.len {
+            let m = self.apply_any(self.apply_any(mul.clone(), mk(x.at(i)?))?, mk(y.at(i)?))?;
+            acc = self.apply_any(self.apply_any(add.clone(), acc)?, m)?;
+        }
+        Ok(acc)
+    }
+
+    /// `@tensor_matmul add mul zero a b`: `c[i][j] = dot a[i] (column j of b)`.
+    fn matmul(&self, ops: &[PVal<'p>]) -> Result<Value<'p>> {
+        let (a, b) = (data::as_tensor(&ops[3])?, data::as_tensor(&ops[4])?);
+        if a.shape.len() < 2 || b.shape.len() < 2 {
+            return Err(fault("matmul of a non-matrix"));
+        }
+        let (m, n) = (a.shape[0], b.shape[1]);
+        let kind = data::dot_kind(&ops[0], &ops[1], &ops[2]);
+        let mut row = Lane { t: a.clone(), base: 0, step: a.strides[1], len: a.shape[1], k: 2 };
+        let mut col = Lane { t: b.clone(), base: 0, step: b.strides[0], len: b.shape[0], k: 2 };
+        let mut cells = Vec::with_capacity(m * n);
+        for i in 0..m {
+            row.base = a.off + i * a.strides[0];
+            for j in 0..n {
+                col.base = b.off + j * b.strides[1];
+                cells.push(deref(self.dot_lanes(kind, ops, &row, &col)?));
+            }
+        }
+        data::matmul_result(cells, m, n)
     }
 
     /// Apply a Thrax closure to C callback arguments and return the result's bits.
@@ -1044,14 +1105,22 @@ impl<'p> Machine<'p> {
         if op.prim == Prim::TensorCreate {
             // Higher-order: apply `f` at each index of the template's leading
             // axis, which needs the machine, then stack the results into a tensor.
-            let (_, _, shape, _) = data::tensor_fields(&args[0])?;
-            let len = shape.first().copied().unwrap_or(0);
+            let len = data::as_tensor(&args[0])?.len();
             let f = args[1].clone();
             let mut out = Vec::with_capacity(len);
             for i in 0..len {
-                out.push(self.apply(f.clone(), mk(Value::Int(i as i64)))?);
+                out.push(self.apply_any(f.clone(), mk(Value::Int(i as i64)))?);
             }
             return Ok(mk(data::tensor_stack(&out)?));
+        }
+        if op.prim == Prim::TensorDot {
+            let x = Lane::leading(data::as_tensor(&args[3])?);
+            let y = Lane::leading(data::as_tensor(&args[4])?);
+            let kind = data::dot_kind(&args[0], &args[1], &args[2]);
+            return self.dot_lanes(kind, args, &x, &y);
+        }
+        if op.prim == Prim::TensorMatmul {
+            return Ok(mk(self.matmul(args)?));
         }
         Ok(mk(run_builtin(op.prim, args)?))
     }
@@ -1661,6 +1730,17 @@ pub fn reify(v: &PVal) -> std::result::Result<OwnedValue, String> {
         Value::Vector(items) => {
             OwnedValue::Vector(items.iter().map(reify).collect::<std::result::Result<_, _>>()?)
         }
+        // The struct `data::tensor_from_struct` (and the native runtime) read back.
+        Value::Tensor(t) => {
+            let elems = data::gather(t).map_err(|_| "a tensor view out of its buffer".to_string())?;
+            OwnedValue::Struct {
+                name: StrId::intern("@tensor"),
+                fields: vec![
+                    (StrId::intern("buf"), OwnedValue::Vector(elems.iter().map(reify).collect::<std::result::Result<_, _>>()?)),
+                    (StrId::intern("shape"), OwnedValue::Vector(t.shape.iter().map(|&n| OwnedValue::Int(n as i64)).collect())),
+                ],
+            }
+        }
         _ => {
             return Err(
                 "@eval produced a function or opaque value, which is not a \
@@ -1683,10 +1763,13 @@ pub fn embed<'p>(o: &OwnedValue) -> Value<'p> {
         OwnedValue::Bool(b) => Value::Bool(*b),
         OwnedValue::Unit => Value::Unit,
         OwnedValue::Tuple(items) => Value::Tuple(items.iter().map(|o| mk(embed(o))).collect()),
-        OwnedValue::Struct { name, fields } => Value::Struct {
-            name: *name,
-            fields: fields.iter().map(|(k, o)| (*k, mk(embed(o)))).collect(),
-        },
+        OwnedValue::Struct { name, fields } => {
+            let fields: Vec<(StrId, PVal<'p>)> = fields.iter().map(|(k, o)| (*k, mk(embed(o)))).collect();
+            match data::tensor_from_struct(*name, &fields) {
+                Some(t) => t,
+                None => Value::Struct { name: *name, fields },
+            }
+        }
         OwnedValue::Variant { ty, tag, fields } => Value::Variant {
             ty: *ty,
             tag: *tag,

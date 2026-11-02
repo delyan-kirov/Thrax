@@ -46,11 +46,20 @@ future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
   in `library/LA.thx` as ordinary Thrax. Element arithmetic arrives as ONE `@ctx`
   context parameter bundling the interfaces it needs
   (`@ctx {IAdd a, IMul a, IZero a}`), not a Num class, so `matmul`/`dot` are
-  element-generic over @Int and Real by supplying the dictionary; the runtime does no
-  arithmetic on its own.
-- **Strided data plane shipped** (increment 2a): `[n]T` is a `@tensor`-named struct
-  `{ buf, off, shape, strides }` over a flat, refcounted buffer. Both engines
-  byte-identical and leak-clean.
+  element-generic over @Int and Real by supplying the dictionary.
+- **Kernels shipped** (#367): `dot`/`matmul` call the `@tensor_dot`/`@tensor_matmul`
+  primitives with the dictionary's methods as plain functions
+  (`@tensor_dot add mul zero x y`). CORE's numeric methods are eta-reduced to the
+  bare intrinsics (`passes::eta_fold`), so the runtime recognizes `@iadd`/`@imul`,
+  `@fadd`/`@fmul` and `@f32add`/`@f32mul` and runs an unboxed loop, rounding once
+  per operation exactly like the boxed path. Any other element type (`Cpx`,
+  `@Int8`, tensor elements) gets the same left fold with the operations applied as
+  closures.
+- **Strided data plane shipped** (increment 2a): `[n]T` is its own runtime value
+  (`T_TENSOR` natively, `Value::Tensor` in the interpreter): a flat refcounted
+  buffer plus `off` and an unboxed `shape`/`strides` header, so indexing allocates
+  nothing but a row view. Both engines byte-identical and leak-clean. A tensor
+  crosses `@eval` as the struct `@tensor.{ .buf, .shape }` (row-major).
 - **O(1) views shipped** (increment 2b): `transpose` is a stride swap; `row`/`col`/
   `slice` share the buffer and copy nothing. Views alias the same buffer (no COW
   yet; see below).

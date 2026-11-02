@@ -72,7 +72,7 @@ fn a_saturated_projection_of_an_eta_primitive_folds() {
 }
 
 /// An UNDER-applied projection keeps the field read: there is nothing to
-/// eta-reduce, and the primitive is not a first-class value.
+/// eta-reduce at the use.
 #[test]
 fn an_under_applied_projection_is_left_alone() {
     let mut p = prog(vec![
@@ -162,4 +162,21 @@ fn a_call_of_a_lifted_method_global_folds() {
     ]);
     fold_primitive_methods(&mut p);
     assert_eq!(rendered(&p, 1), "(App (App (Var @iadd) (Int 1)) (Int 2))");
+}
+
+/// The instance's method itself becomes the bare primitive, so a kernel handed
+/// it as a value (`@tensor_dot e.0.add ...`) sees the builtin.
+#[test]
+fn an_eta_primitive_method_reduces_to_the_primitive() {
+    let mut p = prog(vec![("CORE.impl_IAdd_for_int", eta_add)]);
+    fold_primitive_methods(&mut p);
+    assert_eq!(rendered(&p, 0), "(Struct IAdd [add] (Var @iadd))");
+}
+
+/// A method that is not an eta-expanded primitive stays a lambda.
+#[test]
+fn a_reordering_method_is_not_reduced() {
+    let mut p = prog(vec![("CORE.impl_IAdd_for_int", flipped)]);
+    fold_primitive_methods(&mut p);
+    assert!(rendered(&p, 0).contains("Lam"));
 }

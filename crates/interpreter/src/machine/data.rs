@@ -52,6 +52,8 @@ pub enum Value<'p> {
         fields: Vec<PVal<'p>>,
     },
     Vector(Rc<Vec<PVal<'p>>>),
+    /// A sized tensor `[n]T`: a strided view over a flat element buffer.
+    Tensor(Rc<Tensor<'p>>),
     /// A partially applied built-in; it runs once `args` reaches its arity.
     Builtin {
         op: &'static Builtin,
@@ -102,6 +104,16 @@ pub enum Value<'p> {
     TVar(Rc<RefCell<TVar<'p>>>),
 }
 
+/// A sized tensor: element `[i0, .., ik]` is `buf[off + sum(i_j * strides[j])]`
+/// with each `i_j < shape[j]`. A view (a row, a transpose, a slice) shares `buf`
+/// and only changes `off`/`shape`/`strides`, so it copies no elements.
+pub struct Tensor<'p> {
+    pub buf: Rc<Vec<PVal<'p>>>,
+    pub off: usize,
+    pub shape: Box<[usize]>,
+    pub strides: Box<[usize]>,
+}
+
 /// A `@spawn` task. The reference semantics run it lazily, on one thread: when
 /// it is awaited, when another task would block (a receive on an empty
 /// channel, a transaction that retries), or before the program exits.
@@ -133,6 +145,11 @@ fn take_children<'p>(v: &mut Value<'p>, out: &mut Vec<PVal<'p>>) {
         // whoever still holds it.
         Value::Vector(items) => {
             if let Some(items) = Rc::get_mut(items) {
+                out.append(items);
+            }
+        }
+        Value::Tensor(t) => {
+            if let Some(items) = Rc::get_mut(t).and_then(|t| Rc::get_mut(&mut t.buf)) {
                 out.append(items);
             }
         }
@@ -227,65 +244,21 @@ fn as_index(v: &PVal) -> Result<usize> {
 }
 
 // -- strided tensors -----------------------------------------------------
-//
-// A sized tensor `[n]T` is a `@tensor`-named struct over a FLAT buffer plus a
-// shape/strides descriptor: `{ buf: Vec, off: Int, shape: Vec Int, strides: Vec
-// Int }`. Reusing `Value::Struct` means the whole rep gets construction,
-// refcounting, and destruction for free; only the tensor OPERATIONS are bespoke.
-// A view (a row, a transpose, a slice) shares `buf` (an `Rc`) and only changes
-// `off`/`shape`/`strides`, so those are O(1) and copy nothing.
-
-const TENSOR: &str = "@tensor";
-
-fn int_vec_val<'p>(xs: &[usize]) -> Value<'p> {
-    Value::Vector(Rc::new(xs.iter().map(|&x| mk(Value::Int(x as i64))).collect()))
-}
 
 pub(crate) fn mk_tensor<'p>(
     buf: Rc<Vec<PVal<'p>>>,
     off: usize,
-    shape: Vec<usize>,
-    strides: Vec<usize>,
+    shape: impl Into<Box<[usize]>>,
+    strides: impl Into<Box<[usize]>>,
 ) -> Value<'p> {
-    Value::Struct {
-        name: TENSOR.into(),
-        fields: vec![
-            ("buf".into(), mk(Value::Vector(buf))),
-            ("off".into(), mk(Value::Int(off as i64))),
-            ("shape".into(), mk(int_vec_val(&shape))),
-            ("strides".into(), mk(int_vec_val(&strides))),
-        ],
+    Value::Tensor(Rc::new(Tensor { buf, off, shape: shape.into(), strides: strides.into() }))
+}
+
+pub(crate) fn as_tensor<'p>(v: &PVal<'p>) -> Result<Rc<Tensor<'p>>> {
+    match &*v.borrow() {
+        Value::Tensor(t) => Ok(t.clone()),
+        _ => Err(fault("expected a tensor")),
     }
-}
-
-fn usize_vec(v: &PVal) -> Result<Vec<usize>> {
-    as_vec(v)?.iter().map(as_index).collect()
-}
-
-pub(crate) fn is_tensor(v: &PVal) -> bool {
-    matches!(&*v.borrow(), Value::Struct { name, .. } if name == TENSOR)
-}
-
-pub(crate) fn tensor_fields<'p>(
-    v: &PVal<'p>,
-) -> Result<(Rc<Vec<PVal<'p>>>, usize, Vec<usize>, Vec<usize>)> {
-    let (buf, off, shape, strides) = {
-        let b = v.borrow();
-        match &*b {
-            Value::Struct { name, fields } if name == TENSOR => {
-                let g = |n: &str| fields.iter().find(|(f, _)| f == n).map(|(_, x)| x.clone());
-                (g("buf"), g("off"), g("shape"), g("strides"))
-            }
-            _ => return Err(fault("expected a tensor")),
-        }
-    };
-    let want = |o: Option<PVal<'p>>| o.ok_or_else(|| fault("malformed tensor"));
-    Ok((
-        as_vec(&want(buf)?)?,
-        as_index(&want(off)?)?,
-        usize_vec(&want(shape)?)?,
-        usize_vec(&want(strides)?)?,
-    ))
 }
 
 /// Row-major (C-order) strides for a shape.
@@ -297,24 +270,43 @@ fn row_major_strides(shape: &[usize]) -> Vec<usize> {
     s
 }
 
+/// `i` wrapped into `[0, n)`: tensor indexing is modular. `n` is nonzero.
+fn wrap_index(i: i64, n: usize) -> usize {
+    if (0..n as i64).contains(&i) { i as usize } else { i.rem_euclid(n as i64) as usize }
+}
+
+impl<'p> Tensor<'p> {
+    pub(crate) fn len(&self) -> usize {
+        self.shape.first().copied().unwrap_or(0)
+    }
+
+    fn cell(&self, flat: usize) -> Result<PVal<'p>> {
+        self.buf.get(flat).cloned().ok_or_else(|| fault("tensor index out of bounds"))
+    }
+
+    /// What remains at buffer position `base` once the leading `k` axes are
+    /// fixed: the scalar (a fresh shallow copy) when no axis is left, else a view.
+    fn sub(&self, base: usize, k: usize) -> Result<Value<'p>> {
+        if k >= self.shape.len() {
+            return Ok(self.cell(base)?.borrow().clone_shallow());
+        }
+        Ok(mk_tensor(self.buf.clone(), base, &self.shape[k..], &self.strides[k..]))
+    }
+}
+
 /// The tensor's scalar elements in row-major logical order (following a view's
-/// offset/strides). A contiguous tensor yields its buffer; a view is gathered.
-pub(crate) fn materialize<'p>(v: &PVal<'p>) -> Result<Vec<PVal<'p>>> {
-    let (buf, off, shape, strides) = tensor_fields(v)?;
-    let total: usize = shape.iter().product();
-    let rank = shape.len();
+/// offset/strides).
+pub(crate) fn gather<'p>(t: &Tensor<'p>) -> Result<Vec<PVal<'p>>> {
+    let total: usize = t.shape.iter().product();
+    let rank = t.shape.len();
     let mut out = Vec::with_capacity(total);
     let mut idx = vec![0usize; rank];
     for _ in 0..total {
-        let flat = off + (0..rank).map(|k| idx[k] * strides[k]).sum::<usize>();
-        out.push(
-            buf.get(flat)
-                .cloned()
-                .ok_or_else(|| fault("tensor buffer out of range"))?,
-        );
+        let flat = t.off + (0..rank).map(|k| idx[k] * t.strides[k]).sum::<usize>();
+        out.push(t.cell(flat)?);
         for k in (0..rank).rev() {
             idx[k] += 1;
-            if idx[k] < shape[k] {
+            if idx[k] < t.shape[k] {
                 break;
             }
             idx[k] = 0;
@@ -323,31 +315,185 @@ pub(crate) fn materialize<'p>(v: &PVal<'p>) -> Result<Vec<PVal<'p>>> {
     Ok(out)
 }
 
+fn show_tensor(t: &Tensor, k: usize, base: usize, out: &mut String) {
+    if k == t.shape.len() {
+        match t.buf.get(base) {
+            Some(v) => out.push_str(&v.borrow().show()),
+            None => out.push_str("<out of bounds>"),
+        }
+        return;
+    }
+    out.push('[');
+    for i in 0..t.shape[k] {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        show_tensor(t, k + 1, base + i * t.strides[k], out);
+    }
+    out.push(']');
+}
+
+/// A fresh contiguous tensor of `shape` over `buf`.
+fn tensor_of<'p>(buf: Vec<PVal<'p>>, shape: Vec<usize>) -> Value<'p> {
+    let strides = row_major_strides(&shape);
+    mk_tensor(Rc::new(buf), 0, shape, strides)
+}
+
 /// Build a tensor by stacking `elems` along a new leading axis: scalar elements
 /// give a rank-1 tensor; tensor elements are flattened (equal shapes required)
 /// and get the outer dimension prepended. This is the construction/`create` core.
 pub(crate) fn tensor_stack<'p>(elems: &[PVal<'p>]) -> Result<Value<'p>> {
     let n = elems.len();
-    if n == 0 {
-        return Ok(mk_tensor(Rc::new(Vec::new()), 0, vec![0], vec![1]));
-    }
-    if is_tensor(&elems[0]) {
-        let (_, _, sub_shape, _) = tensor_fields(&elems[0])?;
-        let mut buf = Vec::new();
-        for e in elems {
-            let (_, _, es, _) = tensor_fields(e)?;
-            if es != sub_shape {
-                return Err(fault("stacking tensors of unequal shape"));
-            }
-            buf.extend(materialize(e)?);
+    let Some(first) = elems.first() else {
+        return Ok(tensor_of(Vec::new(), vec![0]));
+    };
+    let Value::Tensor(t0) = &*first.borrow() else {
+        return Ok(tensor_of(elems.to_vec(), vec![n]));
+    };
+    let mut buf = Vec::with_capacity(n * t0.shape.iter().product::<usize>());
+    for e in elems {
+        match &*e.borrow() {
+            Value::Tensor(t) if t.shape == t0.shape => buf.extend(gather(t)?),
+            _ => return Err(fault("stacking tensors of unequal shape")),
         }
-        let mut shape = vec![n];
-        shape.extend(sub_shape);
-        let strides = row_major_strides(&shape);
-        Ok(mk_tensor(Rc::new(buf), 0, shape, strides))
-    } else {
-        Ok(mk_tensor(Rc::new(elems.to_vec()), 0, vec![n], vec![1]))
     }
+    let mut shape = vec![n];
+    shape.extend_from_slice(&t0.shape);
+    Ok(tensor_of(buf, shape))
+}
+
+/// The tensor of a compile-time constant: the struct
+/// `@tensor.{ .buf = vec[row-major elements], .shape = vec[sizes] }`, which is
+/// how a tensor crosses out of the machine (see `machine::reify`).
+pub(crate) fn tensor_from_struct<'p>(name: StrId, fields: &[(StrId, PVal<'p>)]) -> Option<Value<'p>> {
+    if name != "@tensor" {
+        return None;
+    }
+    let field = |n: &str| fields.iter().find(|(f, _)| f == n).map(|(_, v)| v.clone());
+    let buf = as_vec(&field("buf")?).ok()?.as_ref().clone();
+    let shape: Vec<usize> = as_vec(&field("shape")?).ok()?.iter().map(as_index).collect::<Result<_>>().ok()?;
+    (shape.iter().product::<usize>() == buf.len()).then(|| tensor_of(buf, shape))
+}
+
+// -- tensor kernels ----------------------------------------------------------
+//
+// `@tensor_dot add mul zero x y` and `@tensor_matmul add mul zero a b` compute
+// exactly what the element-wise Thrax definition would: a dot is
+// `add (... (add zero (mul x0 y0)) ...) (mul xn yn)` over the length of `x`, with
+// `y` indexed modulo its own length. When `add`/`mul` are the bare intrinsics
+// (CORE's numeric instances eta-reduce to them) and the elements are the
+// matching scalars, the loop runs on unboxed numbers; otherwise the machine
+// applies the operations (see `Machine::dot_lanes`).
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DotKind {
+    Generic,
+    Int,
+    F64,
+    F32,
+}
+
+pub(crate) fn dot_kind(add: &PVal, mul: &PVal, zero: &PVal) -> DotKind {
+    let prim = |v: &PVal| match &*v.borrow() {
+        Value::Builtin { op, args } if args.is_empty() => Some(op.prim),
+        _ => None,
+    };
+    match (prim(add), prim(mul), &*zero.borrow()) {
+        (Some(Prim::Iadd), Some(Prim::Imul), Value::Int(_)) => DotKind::Int,
+        (Some(Prim::Fadd), Some(Prim::Fmul), Value::Real(_)) => DotKind::F64,
+        (Some(Prim::F32add), Some(Prim::F32mul), Value::Real32(_)) => DotKind::F32,
+        _ => DotKind::Generic,
+    }
+}
+
+/// One operand of a dot: element `i` is what remains of `t` at buffer position
+/// `base + (i mod len) * step` once `k` leading axes are fixed.
+pub(crate) struct Lane<'p> {
+    pub t: Rc<Tensor<'p>>,
+    pub base: usize,
+    pub step: usize,
+    pub len: usize,
+    pub k: usize,
+}
+
+impl<'p> Lane<'p> {
+    pub(crate) fn leading(t: Rc<Tensor<'p>>) -> Lane<'p> {
+        let (step, len) = (t.strides.first().copied().unwrap_or(0), t.len());
+        Lane { base: t.off, step, len, k: 1, t }
+    }
+
+    pub(crate) fn at(&self, i: usize) -> Result<Value<'p>> {
+        let i = if i < self.len { i } else { i % self.len };
+        self.t.sub(self.base + i * self.step, self.k)
+    }
+}
+
+/// The dot on unboxed scalars, or `None` when an element is not the scalar
+/// `kind` expects (the caller then applies the operations).
+pub(crate) fn dot_scalar<'p>(kind: DotKind, zero: &PVal<'p>, x: &Lane<'p>, y: &Lane<'p>) -> Result<Option<Value<'p>>> {
+    if x.k < x.t.shape.len() || y.k < y.t.shape.len() {
+        return Ok(None);
+    }
+    let at = |l: &Lane<'p>, i: usize| l.t.cell(l.base + (if i < l.len { i } else { i % l.len }) * l.step);
+    let n = x.len;
+    match kind {
+        DotKind::Generic => Ok(None),
+        DotKind::Int => {
+            let Value::Int(mut acc) = *zero.borrow() else { return Ok(None) };
+            for i in 0..n {
+                match (&*at(x, i)?.borrow(), &*at(y, i)?.borrow()) {
+                    (Value::Int(p), Value::Int(q)) => acc = acc.wrapping_add(p.wrapping_mul(*q)),
+                    _ => return Ok(None),
+                }
+            }
+            Ok(Some(Value::Int(acc)))
+        }
+        DotKind::F64 => {
+            let Value::Real(mut acc) = *zero.borrow() else { return Ok(None) };
+            let num = |v: &Value| match v {
+                Value::Real(r) => Some(*r),
+                Value::Int(n) => Some(*n as f64),
+                _ => None,
+            };
+            for i in 0..n {
+                match (num(&at(x, i)?.borrow()), num(&at(y, i)?.borrow())) {
+                    (Some(p), Some(q)) => acc += p * q,
+                    _ => return Ok(None),
+                }
+            }
+            Ok(Some(Value::Real(acc)))
+        }
+        DotKind::F32 => {
+            let Value::Real32(mut acc) = *zero.borrow() else { return Ok(None) };
+            let num = |v: &Value| match v {
+                Value::Real32(r) => Some(*r),
+                Value::Real(r) => Some(*r as f32),
+                Value::Int(n) => Some(*n as f64 as f32),
+                _ => None,
+            };
+            for i in 0..n {
+                match (num(&at(x, i)?.borrow()), num(&at(y, i)?.borrow())) {
+                    (Some(p), Some(q)) => acc += p * q,
+                    _ => return Ok(None),
+                }
+            }
+            Ok(Some(Value::Real32(acc)))
+        }
+    }
+}
+
+/// The result of `@tensor_matmul` from its `m * n` cells, row-major: an
+/// `[m, n]` matrix of scalars, or with tensor cells each row stacked and then
+/// the rows, as nested `create`s would.
+pub(crate) fn matmul_result<'p>(cells: Vec<PVal<'p>>, m: usize, n: usize) -> Result<Value<'p>> {
+    if m == 0 {
+        return tensor_stack(&[]);
+    }
+    if !cells.iter().any(|c| matches!(&*c.borrow(), Value::Tensor(_))) {
+        return Ok(tensor_of(cells, vec![m, n]));
+    }
+    let rows = cells.chunks(n).map(|r| tensor_stack(r).map(mk)).collect::<Result<Vec<_>>>()?;
+    tensor_stack(&rows)
 }
 
 fn as_len(v: &PVal) -> Result<usize> {
@@ -491,10 +637,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Ok(Value::Vector(Rc::new(vec![a[1].clone(); n])))
         }
         Prim::VecLen => Ok(Value::Int(as_vec(&a[0])?.len() as i64)),
-        Prim::TensorLength => {
-            let (_, _, shape, _) = tensor_fields(&a[0])?;
-            Ok(Value::Int(*shape.first().unwrap_or(&0) as i64))
-        }
+        Prim::TensorLength => Ok(Value::Int(as_tensor(&a[0])?.len() as i64)),
         Prim::TensorStack => {
             let v = as_vec(&a[0])?;
             tensor_stack(&v)
@@ -502,59 +645,52 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // O(1) transpose: a VIEW sharing the buffer with every axis reversed (for a
         // rank-2 tensor, the matrix transpose). No elements are copied.
         Prim::TensorTranspose => {
-            let (buf, off, mut shape, mut strides) = tensor_fields(&a[0])?;
-            shape.reverse();
-            strides.reverse();
-            Ok(mk_tensor(buf, off, shape, strides))
+            let t = as_tensor(&a[0])?;
+            let shape: Vec<usize> = t.shape.iter().rev().copied().collect();
+            let strides: Vec<usize> = t.strides.iter().rev().copied().collect();
+            Ok(mk_tensor(t.buf.clone(), t.off, shape, strides))
         }
-        // O(1) slice along axis 0: a VIEW over `[lo, hi)`.
-        Prim::TensorSlice => {
-            let (buf, off, mut shape, strides) = tensor_fields(&a[0])?;
-            if shape.is_empty() {
-                return Err(fault("slice of a rank-0 tensor"));
-            }
-            let lo = as_index(&a[1])?.min(shape[0]);
-            let hi = as_index(&a[2])?.clamp(lo, shape[0]);
-            let base = off + lo * strides[0];
-            shape[0] = hi - lo;
-            Ok(mk_tensor(buf, base, shape, strides))
+        // O(1) slice of axis 0 (`@tensor_slice`) or of a GIVEN axis: a VIEW over
+        // `[lo, hi)` of it.
+        Prim::TensorSlice | Prim::TensorSliceAxis => {
+            let t = as_tensor(&a[0])?;
+            let (axis, range) = if name == Prim::TensorSliceAxis {
+                let axis = as_index(&a[1])?;
+                if axis >= t.shape.len() {
+                    return Err(fault("slice axis out of range"));
+                }
+                (axis, &a[2..4])
+            } else {
+                if t.shape.is_empty() {
+                    return Err(fault("slice of a rank-0 tensor"));
+                }
+                (0, &a[1..3])
+            };
+            let lo = as_index(&range[0])?.min(t.shape[axis]);
+            let hi = as_index(&range[1])?.clamp(lo, t.shape[axis]);
+            let mut shape = t.shape.clone();
+            shape[axis] = hi - lo;
+            Ok(mk_tensor(t.buf.clone(), t.off + lo * t.strides[axis], shape, t.strides.clone()))
         }
         // O(1) index of a GIVEN axis (modular): drop that axis, a VIEW. Reducing the
         // last remaining axis yields the scalar element.
         Prim::TensorIndexAxis => {
-            let (buf, off, mut shape, mut strides) = tensor_fields(&a[0])?;
+            let t = as_tensor(&a[0])?;
             let axis = as_index(&a[1])?;
-            if axis >= shape.len() {
+            if axis >= t.shape.len() {
                 return Err(fault("index axis out of range"));
             }
-            if shape[axis] == 0 {
+            if t.shape[axis] == 0 {
                 return Err(fault("index into an empty axis"));
             }
-            let i = as_int(&a[2])?.rem_euclid(shape[axis] as i64) as usize;
-            let base = off + i * strides[axis];
-            shape.remove(axis);
-            strides.remove(axis);
-            if shape.is_empty() {
-                return buf
-                    .get(base)
-                    .cloned()
-                    .map(|p| p.borrow().clone_shallow())
-                    .ok_or_else(|| fault("tensor index out of bounds"));
+            let base = t.off + wrap_index(as_int(&a[2])?, t.shape[axis]) * t.strides[axis];
+            if t.shape.len() == 1 {
+                return t.sub(base, 1);
             }
-            Ok(mk_tensor(buf, base, shape, strides))
-        }
-        // O(1) slice of a GIVEN axis: a VIEW over `[lo, hi)` of that axis.
-        Prim::TensorSliceAxis => {
-            let (buf, off, mut shape, strides) = tensor_fields(&a[0])?;
-            let axis = as_index(&a[1])?;
-            if axis >= shape.len() {
-                return Err(fault("slice axis out of range"));
-            }
-            let lo = as_index(&a[2])?.min(shape[axis]);
-            let hi = as_index(&a[3])?.clamp(lo, shape[axis]);
-            let base = off + lo * strides[axis];
-            shape[axis] = hi - lo;
-            Ok(mk_tensor(buf, base, shape, strides))
+            let keep = |xs: &[usize]| -> Vec<usize> {
+                xs.iter().enumerate().filter(|(k, _)| *k != axis).map(|(_, x)| *x).collect()
+            };
+            Ok(mk_tensor(t.buf.clone(), base, keep(&t.shape), keep(&t.strides)))
         }
         Prim::VecGet => {
             let v = as_vec(&a[0])?;
@@ -591,40 +727,23 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Ok(Value::Vector(Rc::new(v[lo..hi].to_vec())))
         }
         Prim::TensorConcat => {
-            let (_, _, xs, _) = tensor_fields(&a[0])?;
-            let (_, _, ys, _) = tensor_fields(&a[1])?;
-            if xs.get(1..) != ys.get(1..) {
+            let (x, y) = (as_tensor(&a[0])?, as_tensor(&a[1])?);
+            if x.shape.is_empty() || x.shape.get(1..) != y.shape.get(1..) {
                 return Err(fault("concat: tensors differ below the first axis"));
             }
-            let mut buf = materialize(&a[0])?;
-            buf.extend(materialize(&a[1])?);
-            let mut shape = xs.clone();
-            shape[0] = xs[0] + ys[0];
-            let strides = row_major_strides(&shape);
-            Ok(mk_tensor(Rc::new(buf), 0, shape, strides))
+            let mut buf = gather(&x)?;
+            buf.extend(gather(&y)?);
+            let mut shape = x.shape.to_vec();
+            shape[0] += y.shape[0];
+            Ok(tensor_of(buf, shape))
         }
         Prim::TensorIndex => {
-            let (buf, off, shape, strides) = tensor_fields(&a[0])?;
-            if shape.is_empty() || shape[0] == 0 {
+            let t = as_tensor(&a[0])?;
+            if t.len() == 0 {
                 return Err(fault("index into an empty tensor"));
             }
-            let i = as_int(&a[1])?.rem_euclid(shape[0] as i64) as usize;
-            let base = off + i * strides[0];
-            if shape.len() == 1 {
-                // rank 1: the element is a scalar in the buffer.
-                buf.get(base)
-                    .cloned()
-                    .map(|p| p.borrow().clone_shallow())
-                    .ok_or_else(|| fault("tensor index out of bounds"))
-            } else {
-                // rank > 1: a VIEW that shares the buffer, dropping the first axis.
-                Ok(mk_tensor(
-                    buf,
-                    base,
-                    shape[1..].to_vec(),
-                    strides[1..].to_vec(),
-                ))
-            }
+            let i = wrap_index(as_int(&a[1])?, t.len());
+            t.sub(t.off + i * t.strides[0], 1)
         }
         // In place under the same condition as `VecPush`.
         Prim::VecSet => {
@@ -1081,6 +1200,13 @@ pub(crate) fn value_eq(x: &PVal, y: &PVal) -> bool {
         (Value::Vector(a), Value::Vector(b)) => {
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(p, q)| value_eq(p, q))
         }
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            a.shape == b.shape
+                && match (gather(a), gather(b)) {
+                    (Ok(xs), Ok(ys)) => xs.iter().zip(&ys).all(|(p, q)| value_eq(p, q)),
+                    _ => false,
+                }
+        }
         (Value::Struct { fields: a, .. }, Value::Struct { fields: b, .. }) => {
             a.len() == b.len()
                 && a.iter().all(|(n, v)| {
@@ -1207,6 +1333,7 @@ impl<'p> Value<'p> {
                 fields: fields.clone(),
             },
             Value::Vector(items) => Value::Vector(items.clone()),
+            Value::Tensor(t) => Value::Tensor(t.clone()),
             Value::Builtin { op, args } => Value::Builtin {
                 op,
                 args: args.clone(),
@@ -1276,6 +1403,11 @@ impl<'p> Value<'p> {
             Value::Vector(items) => {
                 let inner: Vec<String> = items.iter().map(|v| v.borrow().show()).collect();
                 format!("vec[{}]", inner.join(", "))
+            }
+            Value::Tensor(t) => {
+                let mut out = String::new();
+                show_tensor(t, 0, t.off, &mut out);
+                out
             }
             Value::Builtin { .. }
             | Value::Extern { .. }

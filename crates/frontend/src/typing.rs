@@ -1086,6 +1086,14 @@ impl<'a> Checker<'a> {
             .insert(name, ty);
     }
 
+    /// `(a -> a -> a) -> (a -> a -> a) -> a -> x -> rest`: a tensor kernel's
+    /// `add`, `mul`, `zero`, then its first tensor operand.
+    fn kernel_type(&self, a: Type, x: Type, rest: Type) -> Type {
+        let types = &self.unifier.types;
+        let op = types.arrow(a, types.arrow(a, a));
+        types.arrow(op, types.arrow(op, types.arrow(a, types.arrow(x, rest))))
+    }
+
     fn lookup(&self, name: StrId) -> Option<Type> {
         self.scopes.iter().rev().find_map(|s| s.get(&name).cloned())
     }
@@ -1207,6 +1215,35 @@ impl<'a> Checker<'a> {
             self.bind(StrId::intern("@tensor_slice"),
                 self.unifier.types.arrow(src, self.unifier.types.arrow(int, self.unifier.types.arrow(int, out))),
             );
+        }
+        // The coarse kernels `LA.dot`/`LA.matmul` call, with the element arithmetic
+        // passed as plain functions (the `@ctx` methods):
+        // `@tensor_dot : (a -> a -> a) -> (a -> a -> a) -> a -> [n]a -> [n]a -> a` and
+        // `@tensor_matmul : (a -> a -> a) -> (a -> a -> a) -> a -> [m][k]a -> [k][n]a -> [m][n]a`.
+        {
+            let a = self.unifier.fresh_generic();
+            let n = self.unifier.fresh_generic_nat();
+            let vx = self.unifier.fresh_generic();
+            let vy = self.unifier.fresh_generic();
+            let x = tensor_type(&self.unifier.types, vx, n, a);
+            let y = tensor_type(&self.unifier.types, vy, n, a);
+            let t = self.kernel_type(a, x, self.unifier.types.arrow(y, a));
+            self.bind(StrId::intern("@tensor_dot"), t);
+        }
+        {
+            let a = self.unifier.fresh_generic();
+            let (m, k, n) = (
+                self.unifier.fresh_generic_nat(),
+                self.unifier.fresh_generic_nat(),
+                self.unifier.fresh_generic_nat(),
+            );
+            let v: Vec<Type> = (0..6).map(|_| self.unifier.fresh_generic()).collect();
+            let types = &self.unifier.types;
+            let x = tensor_type(types, v[0], m, tensor_type(types, v[1], k, a));
+            let y = tensor_type(types, v[2], k, tensor_type(types, v[3], n, a));
+            let out = tensor_type(types, v[4], m, tensor_type(types, v[5], n, a));
+            let t = self.kernel_type(a, x, self.unifier.types.arrow(y, out));
+            self.bind(StrId::intern("@tensor_matmul"), t);
         }
     }
 }

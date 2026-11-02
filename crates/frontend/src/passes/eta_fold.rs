@@ -17,7 +17,8 @@
 //! saturated. Nothing is duplicated and no evaluation order changes.
 //!
 //! Input: the merged Core program. Output: the same program, with each such
-//! use calling the primitive directly.
+//! use calling the primitive directly, and each such method reduced to the
+//! bare primitive.
 //!
 //! Entry point: [`fold_primitive_methods`].
 
@@ -64,6 +65,31 @@ pub fn fold_primitive_methods_with(program: &mut CoreProgram, prims: &Prims) {
         return;
     }
     program.rewrite_globals(|terms, term| rewrite(terms, term, prims));
+    reduce_methods(program, prims);
+}
+
+/// Replace each eta-expanded primitive method by the primitive itself, so the
+/// instance's field IS the builtin at runtime. A kernel handed the method as a
+/// value (`@tensor_dot e.0.add ...`) can then recognize the arithmetic.
+fn reduce_methods(program: &mut CoreProgram, prims: &Prims) {
+    for i in 0..program.globals.len() {
+        let (name, term) = program.globals[i];
+        let Term::Struct { name: ty, base: None, fields } = program.terms.get(term) else {
+            continue;
+        };
+        if !fields.iter().any(|(f, _)| prims.methods.contains_key(&(name, *f))) {
+            continue;
+        }
+        let (ty, fields) = (*ty, fields.clone());
+        let fields = fields
+            .into_iter()
+            .map(|(f, body)| match prims.methods.get(&(name, f)) {
+                Some(&(prim, _)) => (f, program.terms.var(prim)),
+                None => (f, body),
+            })
+            .collect();
+        program.globals[i].1 = program.terms.add(Term::Struct { name: ty, base: None, fields });
+    }
 }
 
 /// The eta-expanded primitives of `program`'s globals and of their struct

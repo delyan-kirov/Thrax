@@ -206,7 +206,7 @@ fn reads_operand(prim: Prim, i: usize) -> bool {
         | F32Bits | BitsF32 => true,
         ArrayPush | ArraySet => i > 0,
         VecFill => i == 0,
-        VecPush | VecSet | TensorCreate | Delay | Par | Spawn | Await | ChanNew | ChanSend | ChanRecv
+        VecPush | VecSet | TensorCreate | TensorDot | TensorMatmul | Delay | Par | Spawn | Await | ChanNew | ChanSend | ChanRecv
         | TvarNew | TvarRead | StmBegin | StmRead | StmWrite | StmCommit | StmWait | StmSave | StmRollback
         | Eval | Abort | Emit | Fresh | Link | LinkPath | ImportPath | SetOption => false,
     }

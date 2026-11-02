@@ -49,6 +49,7 @@ typedef enum {
   T_STRUCT,
   T_VARIANT,
   T_VEC,       /* Vec `T (boxed elements) */
+  T_TENSOR,    /* a sized tensor `[n]T`: a strided view over a T_VEC buffer */
   T_CLOS,      /* closure: an IR code index + captured environment */
   T_BUILTIN,   /* a (possibly partially applied) built-in operator */
   T_EXTERN,    /* a (possibly partially applied) foreign C function (@extern) */
@@ -109,6 +110,12 @@ struct Value {
       Value **fields;
       size_t len;
     } variant;
+    struct {
+      Value *buf;   /* the T_VEC of boxed elements, shared by every view */
+      size_t off;
+      size_t rank;
+      size_t *dims; /* shape[rank] then strides[rank], one block */
+    } tensor;
     struct {
       int code;
       Value **env;
@@ -961,6 +968,8 @@ static Value *as_str(Value *v) {
 
 /* -- structural equality (==) -------------------------------------------- */
 
+static bool tensor_eq(Value *x, Value *y);
+
 static bool value_eq(Value *x, Value *y) {
   bool xnum = x->tag == T_INT || x->tag == T_REAL || x->tag == T_REAL32;
   bool ynum = y->tag == T_INT || y->tag == T_REAL || y->tag == T_REAL32;
@@ -996,6 +1005,7 @@ static bool value_eq(Value *x, Value *y) {
         if (!value_eq(x->u.variant.fields[i], y->u.variant.fields[i]))
           return false;
       return true;
+    case T_TENSOR: return tensor_eq(x, y);
     default:
       return false;
   }
@@ -1127,129 +1137,154 @@ static Value *concat(Value *x, Value *y) {
 }
 
 /* -- strided tensors (mirrors the interpreter's data.rs) ----------------- */
-/* A `[n]T` is a `@tensor`-named struct { buf, off, shape, strides } over a flat
- * buffer; a view (row / transpose / slice) shares `buf` and only changes
- * off/shape/strides. The rep reuses T_STRUCT, so alloc/retain/destroy are free. */
+/* A `[n]T` is a T_TENSOR: a strided view over a flat T_VEC buffer of boxed
+ * elements. A view (row / transpose / slice) shares `buf` and only changes
+ * off/shape/strides, so it copies no elements. Every index into the buffer is
+ * `off + sum(i_k * strides[k])` with `i_k < shape[k]`. */
 
-static Value *int_vec(size_t *xs, size_t n) {
-  Value **items = xmalloc((n ? n : 1) * sizeof(Value *));
-  for (size_t i = 0; i < n; i++) items[i] = THxRT_int((int64_t)xs[i]);
-  Value *v = mk_vec(items, n);
-  free(items);
+#define T_SHAPE(t) ((t)->u.tensor.dims)
+#define T_STRIDES(t) ((t)->u.tensor.dims + (t)->u.tensor.rank)
+
+static Value *mk_tensor(Value *buf, size_t off, const size_t *shape,
+                        const size_t *strides, size_t rank) {
+  size_t *dims = THxMEM_alloc((rank ? 2 * rank : 1) * sizeof(size_t));
+  if (rank) {
+    memcpy(dims, shape, rank * sizeof(size_t));
+    memcpy(dims + rank, strides, rank * sizeof(size_t));
+  }
+  Value *v = alloc_value(T_TENSOR);
+  v->u.tensor.buf = buf;
+  THxMEM_retain(buf);
+  v->u.tensor.off = off;
+  v->u.tensor.rank = rank;
+  v->u.tensor.dims = dims;
   return v;
 }
 
-static size_t *read_dims(Value *v, size_t *rank_out) {
-  if (v->tag != T_VEC) thrax_fault("tensor dims are not a vector");
-  size_t n = v->u.seq.len;
-  size_t *xs = xmalloc((n ? n : 1) * sizeof(size_t));
-  for (size_t i = 0; i < n; i++)
-    xs[i] = (size_t)THxVALUE_as_int(v->u.seq.items[i]);
-  *rank_out = n;
-  return xs;
+static Value *as_tensor(Value *v) {
+  if (v->tag != T_TENSOR) thrax_fault("expected a tensor");
+  return v;
 }
 
-static size_t *row_major(size_t *shape, size_t rank) {
-  size_t *s = xmalloc((rank ? rank : 1) * sizeof(size_t));
-  if (rank > 0) s[rank - 1] = 1;
-  for (size_t k = rank - 1; k > 0; k--) s[k - 1] = s[k] * shape[k];
-  return s;
-}
-
-static Value *mk_tensor(Value *buf, size_t off, size_t *shape, size_t *strides,
-                        size_t rank) {
-  const char *fnames[4] = {"buf", "off", "shape", "strides"};
-  Value *vals[4] = {buf, THxRT_int((int64_t)off), int_vec(shape, rank),
-                    int_vec(strides, rank)};
-  return THxRT_struct("@tensor", 4, fnames, vals);
-}
-
-/* A tensor is a struct NAMED `@tensor`; the tag alone does not say so, because
- * every user struct shares it. */
-static int is_tensor(Value *v) {
-  return v->tag == T_STRUCT && v->u.strct.name &&
-         strcmp(v->u.strct.name, "@tensor") == 0;
-}
-
-static void tensor_fields(Value *t, Value **buf, size_t *off, size_t **shape,
-                          size_t **strides, size_t *rank) {
-  if (t->tag != T_STRUCT) thrax_fault("expected a tensor");
-  Value *b = struct_field(t, "buf"), *o = struct_field(t, "off"),
-        *sh = struct_field(t, "shape"), *st = struct_field(t, "strides");
-  if (!b || !o || !sh || !st) thrax_fault("malformed tensor");
-  *buf = b;
-  *off = (size_t)THxVALUE_as_int(o);
-  size_t r2;
-  *shape = read_dims(sh, rank);
-  *strides = read_dims(st, &r2);
-}
-
-/* The tensor's scalars in row-major logical order (following a view). */
-static Value *materialize(Value *t) {
-  Value *buf;
-  size_t off, *shape, *strides, rank;
-  tensor_fields(t, &buf, &off, &shape, &strides, &rank);
+static size_t row_major(const size_t *shape, size_t rank, size_t *out) {
   size_t total = 1;
-  for (size_t k = 0; k < rank; k++) total *= shape[k];
-  Value **items = xmalloc((total ? total : 1) * sizeof(Value *));
+  for (size_t k = rank; k-- > 0;) {
+    out[k] = total;
+    total *= shape[k];
+  }
+  return total;
+}
+
+static size_t tensor_total(Value *t) {
+  size_t total = 1;
+  for (size_t k = 0; k < t->u.tensor.rank; k++) total *= T_SHAPE(t)[k];
+  return total;
+}
+
+static Value *tensor_cell(Value *t, size_t flat) {
+  Value *buf = t->u.tensor.buf;
+  if (flat >= buf->u.seq.len) thrax_fault("tensor index out of bounds");
+  return buf->u.seq.items[flat];
+}
+
+/* What remains at buffer position `base` once the leading `k` axes are fixed:
+ * the scalar itself (borrowed) when no axis is left, else a view. */
+static Value *tensor_sub(Value *t, size_t base, size_t k) {
+  size_t rank = t->u.tensor.rank;
+  if (k >= rank) return tensor_cell(t, base);
+  return mk_tensor(t->u.tensor.buf, base, T_SHAPE(t) + k, T_STRIDES(t) + k,
+                   rank - k);
+}
+
+/* `i` wrapped into `[0, n)`: tensor indexing is modular. `n` is nonzero. */
+static size_t wrap_index(int64_t i, size_t n) {
+  if (i >= 0 && (uint64_t)i < n) return (size_t)i;
+  int64_t s = (int64_t)n;
+  return (size_t)(((i % s) + s) % s);
+}
+
+/* The tensor's scalars in row-major logical order (following a view), into
+ * `out[0..tensor_total(t))`, borrowed. */
+static void tensor_gather(Value *t, Value **out) {
+  size_t rank = t->u.tensor.rank, total = tensor_total(t);
+  if (total == 0) return;
+  size_t *shape = T_SHAPE(t), *strides = T_STRIDES(t);
+  if (rank == 1) {
+    for (size_t m = 0; m < total; m++)
+      out[m] = tensor_cell(t, t->u.tensor.off + m * strides[0]);
+    return;
+  }
   size_t *idx = xmalloc((rank ? rank : 1) * sizeof(size_t));
   for (size_t k = 0; k < rank; k++) idx[k] = 0;
   for (size_t m = 0; m < total; m++) {
-    size_t flat = off;
+    size_t flat = t->u.tensor.off;
     for (size_t k = 0; k < rank; k++) flat += idx[k] * strides[k];
-    if (flat >= buf->u.seq.len) thrax_fault("tensor buffer out of range");
-    items[m] = buf->u.seq.items[flat];
+    out[m] = tensor_cell(t, flat);
     for (size_t k = rank; k-- > 0;) {
       if (++idx[k] < shape[k]) break;
       idx[k] = 0;
     }
   }
-  Value *v = mk_vec(items, total);
-  free(items);
   free(idx);
-  free(shape);
+}
+
+/* A fresh contiguous tensor of `shape` over `items` (retained). */
+static Value *tensor_of(Value **items, size_t total, const size_t *shape,
+                        size_t rank) {
+  size_t *strides = xmalloc((rank ? rank : 1) * sizeof(size_t));
+  row_major(shape, rank, strides);
+  Value *t = mk_tensor(mk_vec(items, total), 0, shape, strides, rank);
   free(strides);
-  return v;
+  return t;
 }
 
 /* Stack `elems` on a new leading axis (scalars -> rank 1; tensors flattened). */
 static Value *tensor_stack(Value **elems, size_t n) {
   if (n == 0) {
-    size_t sh[1] = {0}, st[1] = {1};
-    return mk_tensor(mk_vec(NULL, 0), 0, sh, st, 1);
+    size_t sh[1] = {0};
+    return tensor_of(NULL, 0, sh, 1);
   }
-  if (is_tensor(elems[0])) {
-    Value *b0;
-    size_t o0, *sub_shape, *sub_strides, sub_rank;
-    tensor_fields(elems[0], &b0, &o0, &sub_shape, &sub_strides, &sub_rank);
-    free(sub_strides);
-    size_t sub_total = 1;
-    for (size_t k = 0; k < sub_rank; k++) sub_total *= sub_shape[k];
-    size_t total = n * sub_total;
-    Value **items = xmalloc((total ? total : 1) * sizeof(Value *));
-    size_t pos = 0;
-    for (size_t i = 0; i < n; i++) {
-      Value *mat = materialize(elems[i]);
-      if (mat->u.seq.len != sub_total)
-        thrax_fault("stacking tensors of unequal shape");
-      for (size_t j = 0; j < sub_total; j++) items[pos++] = mat->u.seq.items[j];
-    }
-    Value *buf = mk_vec(items, total);
-    free(items);
-    size_t rank = 1 + sub_rank;
-    size_t *shape = xmalloc(rank * sizeof(size_t));
-    shape[0] = n;
-    for (size_t k = 0; k < sub_rank; k++) shape[k + 1] = sub_shape[k];
-    free(sub_shape);
-    size_t *strides = row_major(shape, rank);
-    Value *t = mk_tensor(buf, 0, shape, strides, rank);
-    free(shape);
-    free(strides);
-    return t;
+  if (elems[0]->tag != T_TENSOR) {
+    size_t sh[1] = {n};
+    return tensor_of(elems, n, sh, 1);
   }
-  Value *buf = mk_vec(elems, n);
-  size_t sh[1] = {n}, st[1] = {1};
-  return mk_tensor(buf, 0, sh, st, 1);
+  Value *e0 = elems[0];
+  size_t sub_rank = e0->u.tensor.rank, sub_total = tensor_total(e0);
+  size_t total = n * sub_total, rank = 1 + sub_rank;
+  Value **items = xmalloc((total ? total : 1) * sizeof(Value *));
+  for (size_t i = 0; i < n; i++) {
+    Value *e = elems[i];
+    if (e->tag != T_TENSOR || e->u.tensor.rank != sub_rank ||
+        memcmp(T_SHAPE(e), T_SHAPE(e0), sub_rank * sizeof(size_t)) != 0)
+      thrax_fault("stacking tensors of unequal shape");
+    tensor_gather(e, items + i * sub_total);
+  }
+  size_t *shape = xmalloc(rank * sizeof(size_t));
+  shape[0] = n;
+  memcpy(shape + 1, T_SHAPE(e0), sub_rank * sizeof(size_t));
+  Value *t = tensor_of(items, total, shape, rank);
+  free(shape);
+  free(items);
+  return t;
+}
+
+/* Equal shapes and equal elements in logical order: two views of different
+ * buffers can be equal. */
+static bool tensor_eq(Value *x, Value *y) {
+  size_t rank = x->u.tensor.rank;
+  if (rank != y->u.tensor.rank ||
+      memcmp(T_SHAPE(x), T_SHAPE(y), rank * sizeof(size_t)) != 0)
+    return false;
+  size_t total = tensor_total(x);
+  Value **xs = xmalloc((total ? total : 1) * sizeof(Value *));
+  Value **ys = xmalloc((total ? total : 1) * sizeof(Value *));
+  tensor_gather(x, xs);
+  tensor_gather(y, ys);
+  bool eq = true;
+  for (size_t m = 0; eq && m < total; m++) eq = value_eq(xs[m], ys[m]);
+  free(xs);
+  free(ys);
+  return eq;
 }
 
 #ifdef THRAX_WITH_COMPILER
@@ -1290,6 +1325,23 @@ static const char *intern_name(const char *s) {
   return g_names[g_nn++] = copy;
 }
 
+/* A tensor crosses from the compiler as the struct
+ * `@tensor.{ .buf = vec[row-major elements], .shape = vec[sizes] }`. */
+static Value *tensor_from_struct(Value *v) {
+  if (strcmp(v->u.strct.name, "@tensor") != 0) return v;
+  Value *buf = struct_field(v, "buf"), *sh = struct_field(v, "shape");
+  if (!buf || !sh || buf->tag != T_VEC || sh->tag != T_VEC)
+    thrax_fault("malformed tensor constant");
+  size_t rank = sh->u.seq.len;
+  size_t *dims = xmalloc((rank ? 2 * rank : 1) * sizeof(size_t));
+  for (size_t k = 0; k < rank; k++) dims[k] = as_index(sh->u.seq.items[k]);
+  if (row_major(dims, rank, dims + rank) != buf->u.seq.len)
+    thrax_fault("malformed tensor constant");
+  Value *t = mk_tensor(buf, 0, dims, dims + rank, rank);
+  free(dims);
+  return t;
+}
+
 static Value *from_thrax(const thrax_value *v) {
   switch (v->kind) {
     case THRAX_UNIT: return THxRT_unit();
@@ -1317,6 +1369,7 @@ static Value *from_thrax(const thrax_value *v) {
     for (size_t i = 0; i < v->len; i++) keys[i] = intern_name(v->keys[i]);
     r = THxRT_struct(intern_name(v->name), v->len, keys, items);
     free(keys);
+    r = tensor_from_struct(r);
   }
   free(items);
   return r;
@@ -1623,93 +1676,71 @@ static Value *run_builtin(int id, Value **a) {
     return THxRT_int((int64_t)a[0]->u.seq.len);
   }
   case THxB_TENSOR_LENGTH: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    int64_t r = rank > 0 ? (int64_t)shape[0] : 0;
-    free(shape);
-    free(strides);
-    return THxRT_int(r);
+    Value *t = as_tensor(a[0]);
+    return THxRT_int(t->u.tensor.rank > 0 ? (int64_t)T_SHAPE(t)[0] : 0);
   }
   case THxB_TENSOR_STACK: {
     if (a[0]->tag != T_VEC) thrax_fault("@tensor_stack expects a vector");
     return tensor_stack(a[0]->u.seq.items, a[0]->u.seq.len);
   }
   case THxB_TENSOR_TRANSPOSE: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    for (size_t i = 0; i < rank / 2; i++) { /* reverse both in place */
-      size_t j = rank - 1 - i;
-      size_t ts = shape[i]; shape[i] = shape[j]; shape[j] = ts;
-      size_t td = strides[i]; strides[i] = strides[j]; strides[j] = td;
+    Value *t = as_tensor(a[0]);
+    size_t rank = t->u.tensor.rank;
+    size_t *d = xmalloc((rank ? 2 * rank : 1) * sizeof(size_t));
+    for (size_t k = 0; k < rank; k++) { /* every axis reversed */
+      d[k] = T_SHAPE(t)[rank - 1 - k];
+      d[rank + k] = T_STRIDES(t)[rank - 1 - k];
     }
-    Value *t = mk_tensor(buf, off, shape, strides, rank);
-    free(shape);
-    free(strides);
-    return t;
-  }
-  case THxB_TENSOR_SLICE: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    if (rank == 0) thrax_fault("slice of a rank-0 tensor");
-    size_t lo = as_index(a[1]);
-    size_t hi = as_index(a[2]);
-    if (lo > shape[0]) lo = shape[0];
-    if (hi < lo) hi = lo;
-    if (hi > shape[0]) hi = shape[0];
-    size_t base = off + lo * strides[0];
-    shape[0] = hi - lo;
-    Value *t = mk_tensor(buf, base, shape, strides, rank);
-    free(shape);
-    free(strides);
-    return t;
-  }
-  case THxB_TENSOR_INDEX_AXIS: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    size_t axis = as_index(a[1]);
-    if (axis >= rank) { free(shape); free(strides); thrax_fault("index axis out of range"); }
-    if (shape[axis] == 0) { free(shape); free(strides); thrax_fault("index into an empty axis"); }
-    int64_t iw = THxVALUE_as_int(a[2]);
-    int64_t s = (int64_t)shape[axis];
-    size_t i = (size_t)(((iw % s) + s) % s);
-    size_t base = off + i * strides[axis];
-    for (size_t k = axis; k + 1 < rank; k++) { /* drop `axis` */
-      shape[k] = shape[k + 1];
-      strides[k] = strides[k + 1];
-    }
-    rank -= 1;
-    Value *r;
-    if (rank == 0) {
-      if (base >= buf->u.seq.len) thrax_fault("tensor index out of bounds");
-      r = buf->u.seq.items[base]; /* scalar; borrowed */
-    } else {
-      r = mk_tensor(buf, base, shape, strides, rank);
-    }
-    free(shape);
-    free(strides);
+    Value *r = mk_tensor(t->u.tensor.buf, t->u.tensor.off, d, d + rank, rank);
+    free(d);
     return r;
   }
+  case THxB_TENSOR_SLICE:
   case THxB_TENSOR_SLICE_AXIS: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    size_t axis = as_index(a[1]);
-    if (axis >= rank) { free(shape); free(strides); thrax_fault("slice axis out of range"); }
-    size_t lo = as_index(a[2]);
-    size_t hi = as_index(a[3]);
-    if (lo > shape[axis]) lo = shape[axis];
+    Value *t = as_tensor(a[0]);
+    size_t rank = t->u.tensor.rank;
+    size_t axis = 0;
+    Value **range = a + 1;
+    if (id == THxB_TENSOR_SLICE_AXIS) {
+      axis = as_index(a[1]);
+      if (axis >= rank) thrax_fault("slice axis out of range");
+      range = a + 2;
+    } else if (rank == 0) {
+      thrax_fault("slice of a rank-0 tensor");
+    }
+    size_t n = T_SHAPE(t)[axis];
+    size_t lo = as_index(range[0]);
+    size_t hi = as_index(range[1]);
+    if (lo > n) lo = n;
     if (hi < lo) hi = lo;
-    if (hi > shape[axis]) hi = shape[axis];
-    size_t base = off + lo * strides[axis];
+    if (hi > n) hi = n;
+    size_t *shape = xmalloc(rank * sizeof(size_t));
+    memcpy(shape, T_SHAPE(t), rank * sizeof(size_t));
     shape[axis] = hi - lo;
-    Value *t = mk_tensor(buf, base, shape, strides, rank);
+    Value *r = mk_tensor(t->u.tensor.buf, t->u.tensor.off + lo * T_STRIDES(t)[axis],
+                         shape, T_STRIDES(t), rank);
     free(shape);
-    free(strides);
-    return t;
+    return r;
+  }
+  case THxB_TENSOR_INDEX_AXIS: {
+    Value *t = as_tensor(a[0]);
+    size_t rank = t->u.tensor.rank;
+    size_t axis = as_index(a[1]);
+    if (axis >= rank) thrax_fault("index axis out of range");
+    size_t n = T_SHAPE(t)[axis];
+    if (n == 0) thrax_fault("index into an empty axis");
+    size_t base = t->u.tensor.off + wrap_index(THxVALUE_as_int(a[2]), n) * T_STRIDES(t)[axis];
+    if (rank == 1) return tensor_cell(t, base); /* borrowed; do_ret retains it */
+    size_t *d = xmalloc(2 * (rank - 1) * sizeof(size_t));
+    for (size_t k = 0, j = 0; k < rank; k++) { /* drop `axis` */
+      if (k == axis) continue;
+      d[j] = T_SHAPE(t)[k];
+      d[rank - 1 + j] = T_STRIDES(t)[k];
+      j++;
+    }
+    Value *r = mk_tensor(t->u.tensor.buf, base, d, d + rank - 1, rank - 1);
+    free(d);
+    return r;
   }
   case THxB_DELAY: return THxRT_thunk(a[0]);
   case THxB_PAR: return THxPAR_spawn(a[0]);
@@ -1745,56 +1776,31 @@ static Value *run_builtin(int id, Value **a) {
     return mk_vec(a[0]->u.seq.items + lo, hi - lo); /* mk_vec retains each */
   }
   case THxB_TENSOR_CONCAT: {
-    Value *bx, *by;
-    size_t ox, oy, *shx, *stx, rx, *shy, *sty, ry;
-    tensor_fields(a[0], &bx, &ox, &shx, &stx, &rx);
-    tensor_fields(a[1], &by, &oy, &shy, &sty, &ry);
-    if (rx != ry) thrax_fault("concat: rank mismatch");
-    for (size_t k = 1; k < rx; k++)
-      if (shx[k] != shy[k]) thrax_fault("concat: trailing shape mismatch");
-    Value *mx = materialize(a[0]), *my = materialize(a[1]);
-    size_t total = mx->u.seq.len + my->u.seq.len;
-    Value **items = xmalloc((total ? total : 1) * sizeof(Value *));
-    memcpy(items, mx->u.seq.items, mx->u.seq.len * sizeof(Value *));
-    memcpy(items + mx->u.seq.len, my->u.seq.items, my->u.seq.len * sizeof(Value *));
-    Value *buf = mk_vec(items, total);
-    free(items);
-    size_t *shape = xmalloc((rx ? rx : 1) * sizeof(size_t));
-    for (size_t k = 0; k < rx; k++) shape[k] = shx[k];
-    if (rx > 0) shape[0] = shx[0] + shy[0];
-    size_t *strides = row_major(shape, rx);
-    Value *t = mk_tensor(buf, 0, shape, strides, rx);
-    free(shx);
-    free(stx);
-    free(shy);
-    free(sty);
+    Value *x = as_tensor(a[0]), *y = as_tensor(a[1]);
+    size_t rank = x->u.tensor.rank;
+    if (rank != y->u.tensor.rank) thrax_fault("concat: rank mismatch");
+    if (rank == 0) thrax_fault("concat of rank-0 tensors");
+    for (size_t k = 1; k < rank; k++)
+      if (T_SHAPE(x)[k] != T_SHAPE(y)[k]) thrax_fault("concat: trailing shape mismatch");
+    size_t nx = tensor_total(x), ny = tensor_total(y);
+    Value **items = xmalloc((nx + ny ? nx + ny : 1) * sizeof(Value *));
+    tensor_gather(x, items);
+    tensor_gather(y, items + nx);
+    size_t *shape = xmalloc(rank * sizeof(size_t));
+    memcpy(shape, T_SHAPE(x), rank * sizeof(size_t));
+    shape[0] += T_SHAPE(y)[0];
+    Value *r = tensor_of(items, nx + ny, shape, rank);
     free(shape);
-    free(strides);
-    return t;
+    free(items);
+    return r;
   }
   case THxB_TENSOR_INDEX: {
-    Value *buf;
-    size_t off, *shape, *strides, rank;
-    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
-    if (rank == 0 || shape[0] == 0) {
-      free(shape);
-      free(strides);
+    Value *t = as_tensor(a[0]);
+    if (t->u.tensor.rank == 0 || T_SHAPE(t)[0] == 0)
       thrax_fault("index into an empty tensor");
-    }
-    int64_t iw = THxVALUE_as_int(a[1]);
-    int64_t s0 = (int64_t)shape[0];
-    size_t i = (size_t)(((iw % s0) + s0) % s0);
-    size_t base = off + i * strides[0];
-    Value *r;
-    if (rank == 1) {
-      if (base >= buf->u.seq.len) thrax_fault("tensor index out of bounds");
-      r = buf->u.seq.items[base]; /* borrowed; do_ret retains it */
-    } else {
-      r = mk_tensor(buf, base, shape + 1, strides + 1, rank - 1); /* view */
-    }
-    free(shape);
-    free(strides);
-    return r;
+    size_t i = wrap_index(THxVALUE_as_int(a[1]), T_SHAPE(t)[0]);
+    /* a scalar is borrowed (do_ret retains it); a row is a fresh view */
+    return tensor_sub(t, t->u.tensor.off + i * T_STRIDES(t)[0], 1);
   }
   case THxB_VEC_SET: return vec_update(id, a, 0);
 
@@ -1868,6 +1874,10 @@ static void payload_destroy(Value *v) {
         if (v->u.seq.items[i] != v) THxMEM_release(v->u.seq.items[i]);
       THxMEM_free(v->u.seq.items);
       return;
+    case T_TENSOR:
+      THxMEM_release(v->u.tensor.buf);
+      THxMEM_free(v->u.tensor.dims);
+      return;
     case T_STRUCT: {
       Field *fs = v->u.strct.fields;
       if (fs) {
@@ -1935,6 +1945,14 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
       dst->u.seq.items = copy_children(self, v->u.seq.items, dst->u.seq.len);
       dst->u.seq.cap = dst->u.seq.len;
       break;
+    case T_TENSOR: {
+      size_t n = 2 * dst->u.tensor.rank;
+      size_t *d = THxMEM_alloc((n ? n : 1) * sizeof(size_t));
+      if (n) memcpy(d, v->u.tensor.dims, n * sizeof(size_t));
+      dst->u.tensor.dims = d;
+      THxMEM_retain(dst->u.tensor.buf);
+      break;
+    }
     case T_STRUCT: {
       size_t n = dst->u.strct.len;
       if (n == 0) {
@@ -2005,6 +2023,7 @@ static int has_child(Value *v, Value *c) {
       return 0;
     case T_THUNK:
     case T_BLACKHOLE: return v->u.thunk == c;
+    case T_TENSOR: return v->u.tensor.buf == c;
     default: return 0;
   }
   for (size_t i = 0; i < n; i++)
@@ -2789,12 +2808,8 @@ Value *THxK_call(Value *f, Value *arg); /* synchronous closure application */
  * f(i). Higher-order, so it lives here (not in leaf `run_builtin`) and applies the
  * closure via THxK_call. Mirrors the interpreter's generate. */
 static Value *rt_generate(Value *tmpl, Value *f) {
-  Value *buf;
-  size_t off, *shape, *strides, rank;
-  tensor_fields(tmpl, &buf, &off, &shape, &strides, &rank);
-  size_t len = rank > 0 ? shape[0] : 0;
-  free(shape);
-  free(strides);
+  Value *t = as_tensor(tmpl);
+  size_t len = t->u.tensor.rank > 0 ? T_SHAPE(t)[0] : 0;
   Value **items = xmalloc((len ? len : 1) * sizeof(Value *));
   for (size_t i = 0; i < len; i++) {
     Value *iv = THxRT_int((int64_t)i);
@@ -2828,11 +2843,205 @@ Value *THxK_array_push_owned(Value *s, Value *b) {
   return s;
 }
 
+/* -- tensor kernels ---------------------------------------------------- */
+/* `@tensor_dot add mul zero x y` and `@tensor_matmul add mul zero a b`. Each
+ * computes exactly what the element-wise Thrax definition would: a dot is
+ * `add (... (add zero (mul x0 y0)) ...) (mul xn yn)` over the length of `x`,
+ * with `y` indexed modulo its own length. When `add`/`mul` are the bare
+ * intrinsics (CORE's numeric instances eta-reduce to them) and the elements are
+ * the matching scalars, the loop runs on unboxed C numbers; otherwise it applies
+ * the operations as closures. */
+
+enum { DOT_GENERIC, DOT_INT, DOT_F64, DOT_F32 };
+
+static int dot_kind(Value *add, Value *mul, Value *zero) {
+  if (add->tag != T_BUILTIN || mul->tag != T_BUILTIN || add->u.builtin.nargs ||
+      mul->u.builtin.nargs)
+    return DOT_GENERIC;
+  int ia = add->u.builtin.id, im = mul->u.builtin.id;
+  if (ia == THxB_IADD && im == THxB_IMUL && zero->tag == T_INT) return DOT_INT;
+  if (ia == THxB_FADD && im == THxB_FMUL && zero->tag == T_REAL) return DOT_F64;
+  if (ia == THxB_F32ADD && im == THxB_F32MUL && zero->tag == T_REAL32) return DOT_F32;
+  return DOT_GENERIC;
+}
+
+/* One operand of a dot: element i is what remains of `t` at buffer position
+ * `base + (i mod len) * step` once `k` leading axes are fixed. */
+typedef struct {
+  Value *t;
+  size_t base, step, len, k;
+} Lane;
+
+static Value *lane_at(const Lane *l, size_t i) {
+  return tensor_sub(l->t, l->base + (i < l->len ? i : i % l->len) * l->step, l->k);
+}
+
+static Value *apply2(Value *f, Value *x, Value *y) {
+  Value *g = THxK_call(f, x); /* owned */
+  Value *r = THxK_call(g, y);
+  THxMEM_release(g);
+  return r;
+}
+
+/* The scalar kernels must round exactly like the boxed `@fadd`/`@fmul`: one
+ * rounding per operation, never a fused multiply-add. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
+#endif
+
+/* The dot of `n` elements on unboxed scalars into `*out` (fresh), or 0 when an
+ * element is not the scalar `kind` expects. */
+static int dot_scalar(int kind, Value *zero, const Lane *x, const Lane *y,
+                      Value **out) {
+#ifdef __clang__
+#pragma STDC FP_CONTRACT OFF
+#endif
+  if (x->k < x->t->u.tensor.rank || y->k < y->t->u.tensor.rank) return 0;
+  size_t n = x->len;
+  Value **xs = x->t->u.tensor.buf->u.seq.items, **ys = y->t->u.tensor.buf->u.seq.items;
+  if (n > 0) {
+    size_t ylast = y->len < n ? y->len - 1 : n - 1;
+    if (x->base + (n - 1) * x->step >= x->t->u.tensor.buf->u.seq.len ||
+        y->base + ylast * y->step >= y->t->u.tensor.buf->u.seq.len)
+      thrax_fault("tensor index out of bounds");
+  }
+  int wrap = y->len < n;
+  switch (kind) {
+  case DOT_INT: {
+    uint64_t acc = (uint64_t)zero->u.i;
+    for (size_t i = 0; i < n; i++) {
+      Value *p = xs[x->base + i * x->step];
+      Value *q = ys[y->base + (wrap ? i % y->len : i) * y->step];
+      if (p->tag != T_INT || q->tag != T_INT) return 0;
+      acc += (uint64_t)p->u.i * (uint64_t)q->u.i;
+    }
+    *out = THxRT_int((int64_t)acc);
+    return 1;
+  }
+  case DOT_F64: {
+    double acc = zero->u.r;
+    for (size_t i = 0; i < n; i++) {
+      Value *p = xs[x->base + i * x->step];
+      Value *q = ys[y->base + (wrap ? i % y->len : i) * y->step];
+      if ((p->tag != T_REAL && p->tag != T_INT) || (q->tag != T_REAL && q->tag != T_INT))
+        return 0;
+      double prod = as_f64(p) * as_f64(q);
+      acc = acc + prod;
+    }
+    *out = THxRT_real(acc);
+    return 1;
+  }
+  case DOT_F32: {
+    float acc = (float)zero->u.r;
+    for (size_t i = 0; i < n; i++) {
+      Value *p = xs[x->base + i * x->step];
+      Value *q = ys[y->base + (wrap ? i % y->len : i) * y->step];
+      if ((p->tag != T_REAL32 && p->tag != T_REAL && p->tag != T_INT) ||
+          (q->tag != T_REAL32 && q->tag != T_REAL && q->tag != T_INT))
+        return 0;
+      float prod = as_f32(p) * as_f32(q);
+      acc = acc + prod;
+    }
+    *out = THxRT_real32(acc);
+    return 1;
+  }
+  }
+  return 0;
+}
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
+
+/* One dot product, owned. */
+static Value *dot_lanes(int kind, Value *add, Value *mul, Value *zero,
+                        const Lane *x, const Lane *y) {
+  if (x->len > 0 && y->len == 0) thrax_fault("index into an empty tensor");
+  Value *r;
+  if (kind != DOT_GENERIC && dot_scalar(kind, zero, x, y, &r)) {
+    THxMEM_retain(r);
+    return r;
+  }
+  Value *acc = zero;
+  THxMEM_retain(acc);
+  for (size_t i = 0; i < x->len; i++) {
+    Value *m = apply2(mul, lane_at(x, i), lane_at(y, i));
+    Value *s = apply2(add, acc, m);
+    THxMEM_release(m);
+    THxMEM_release(acc);
+    acc = s;
+  }
+  return acc;
+}
+
+static Lane leading_lane(Value *t) {
+  t = as_tensor(t);
+  Lane l = {t, t->u.tensor.off, 0, 0, 1};
+  if (t->u.tensor.rank > 0) {
+    l.step = T_STRIDES(t)[0];
+    l.len = T_SHAPE(t)[0];
+  }
+  return l;
+}
+
+static Value *rt_dot(Value **a) {
+  Lane x = leading_lane(a[3]), y = leading_lane(a[4]);
+  Value *r = dot_lanes(dot_kind(a[0], a[1], a[2]), a[0], a[1], a[2], &x, &y);
+  pool_adopt(r); /* hand our reference over: the result is fresh */
+  return r;
+}
+
+/* `c[i][j] = dot a[i] (column j of b)` over `a : [m][k]` and `b : [k][n]`. */
+static Value *rt_matmul(Value **a) {
+  Value *x = as_tensor(a[3]), *y = as_tensor(a[4]);
+  if (x->u.tensor.rank < 2 || y->u.tensor.rank < 2) thrax_fault("matmul of a non-matrix");
+  size_t m = T_SHAPE(x)[0], n = T_SHAPE(y)[1];
+  if (m == 0) return tensor_stack(NULL, 0);
+  int kind = dot_kind(a[0], a[1], a[2]);
+  size_t mark = THxMEM_pool_mark();
+  Value **cells = xmalloc((m * n ? m * n : 1) * sizeof(Value *));
+  Lane row = {x, 0, T_STRIDES(x)[1], T_SHAPE(x)[1], 2};
+  Lane col = {y, 0, T_STRIDES(y)[0], T_SHAPE(y)[0], 2};
+  int scalar = 1;
+  for (size_t i = 0; i < m; i++) {
+    row.base = x->u.tensor.off + i * T_STRIDES(x)[0];
+    for (size_t j = 0; j < n; j++) {
+      col.base = y->u.tensor.off + j * T_STRIDES(y)[1];
+      Value *c = dot_lanes(kind, a[0], a[1], a[2], &row, &col);
+      cells[i * n + j] = c;
+      if (c->tag == T_TENSOR) scalar = 0;
+    }
+    THxMEM_pool_drain(mark); /* every cell is held by its own reference */
+  }
+  Value *r;
+  if (scalar) {
+    size_t shape[2] = {m, n};
+    r = tensor_of(cells, m * n, shape, 2);
+  } else {
+    Value **rows = xmalloc(m * sizeof(Value *));
+    for (size_t i = 0; i < m; i++) {
+      rows[i] = tensor_stack(cells + i * n, n);
+      THxMEM_retain(rows[i]);
+    }
+    r = tensor_stack(rows, m);
+    for (size_t i = 0; i < m; i++) THxMEM_release(rows[i]);
+    free(rows);
+  }
+  for (size_t i = 0; i < m * n; i++) THxMEM_release(cells[i]);
+  free(cells);
+  return r;
+}
+
 /* A built-in applied to all `n` of its operands at once, which are borrowed.
  * The result is fresh or one of the operands' children, as through do_apply. */
 Value *THxK_prim(int id, Value **a) {
-  if (id == THxB_TENSOR_CREATE) return rt_generate(a[0], a[1]);
-  return run_builtin(id, a);
+  switch (id) {
+  case THxB_TENSOR_CREATE: return rt_generate(a[0], a[1]);
+  case THxB_TENSOR_DOT: return rt_dot(a);
+  case THxB_TENSOR_MATMUL: return rt_matmul(a);
+  default: return run_builtin(id, a);
+  }
 }
 /* THxK_prim for `@vec_push` / `@vec_set`. `owned` says the caller moved its
  * first operand out of a slot or captured field (the temp pool now holds that
@@ -3135,6 +3344,7 @@ static void mark_level(Value *root, uint8_t level) {
       case T_VEC:
         for (size_t i = 0; i < v->u.seq.len; i++) THX_MARK_PUSH(v->u.seq.items[i]);
         break;
+      case T_TENSOR: THX_MARK_PUSH(v->u.tensor.buf); break;
       case T_STRUCT:
         for (size_t i = 0; i < v->u.strct.len; i++)
           THX_MARK_PUSH(v->u.strct.fields[i].val);
@@ -3992,6 +4202,22 @@ static void show_bytes_debug(Str *s, const uint8_t *data, size_t len) {
   str_puts(s, "\"");
 }
 
+static void show_into(Str *s, Value *v);
+
+/* A tensor as nested brackets, one level per axis. */
+static void show_tensor(Str *s, Value *t, size_t k, size_t base) {
+  if (k == t->u.tensor.rank) {
+    show_into(s, tensor_cell(t, base));
+    return;
+  }
+  str_puts(s, "[");
+  for (size_t i = 0; i < T_SHAPE(t)[k]; i++) {
+    if (i) str_puts(s, ", ");
+    show_tensor(s, t, k + 1, base + i * T_STRIDES(t)[k]);
+  }
+  str_puts(s, "]");
+}
+
 static void show_into(Str *s, Value *v) {
   char num[32];
   switch (v->tag) {
@@ -4044,6 +4270,7 @@ static void show_into(Str *s, Value *v) {
       }
       str_puts(s, "]");
       break;
+    case T_TENSOR: show_tensor(s, v, 0, v->u.tensor.off); break;
     case T_CLOS:
     case T_BUILTIN:
     case T_EXTERN:

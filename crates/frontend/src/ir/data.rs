@@ -528,6 +528,8 @@ builtins! {
     TensorSlice = leaf("@tensor_slice", 3),
     TensorIndexAxis = leaf("@tensor_index_axis", 3),
     TensorSliceAxis = leaf("@tensor_slice_axis", 4),
+    TensorDot = leaf("@tensor_dot", 5),
+    TensorMatmul = leaf("@tensor_matmul", 5),
     Delay = leaf("@delay", 1),
     Par = parallel("@par", 1),
     Spawn = parallel("@spawn", 1),
