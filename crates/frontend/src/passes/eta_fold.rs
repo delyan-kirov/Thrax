@@ -8,6 +8,9 @@
 //! A global that is itself an eta-expanded primitive folds the same way
 //! (`$ at : @Str -> @Int -> @Int = \s i = @array_get s i`), so a byte loop over
 //! `STR.at s i` reads the byte directly instead of building a closure per call.
+//! That also covers the methods [`super::specialize`] lifts out of an instance
+//! literal (`impl_IAdd_for_int#f_add`), which is what a projection from a known
+//! instance becomes.
 //!
 //! The rewrite is an eta-reduction, not an inliner: the method's body must apply
 //! the primitive to exactly its own parameters, in order, and the use must be
@@ -70,14 +73,23 @@ pub fn primitive_methods(program: &CoreProgram) -> Prims {
     let mut out = Prims::default();
     for &(name, term) in &program.globals {
         if let Some(found) = eta_primitive(terms, term) {
-            out.globals.insert(name, found);
-            continue;
+            out.globals.entry(name).or_insert(found);
         }
+    }
+    for &(name, term) in &program.globals {
         let Term::Struct { base: None, fields, .. } = terms.get(term) else {
             continue;
         };
         for &(field, body) in fields {
-            if let Some(found) = eta_primitive(terms, body) {
+            // A method `super::specialize` lifted out of the literal is a
+            // reference to the global it became.
+            let found = match terms.get(body) {
+                Term::Var { module: Some(m), name } => {
+                    out.globals.get(&StrId::intern(&format!("{m}.{name}"))).copied()
+                }
+                _ => eta_primitive(terms, body),
+            };
+            if let Some(found) = found {
                 out.methods.insert((name, field), found);
             }
         }

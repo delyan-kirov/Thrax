@@ -146,3 +146,20 @@ fn an_under_applied_or_reordering_global_is_left_alone() {
     fold_primitive_methods(&mut p);
     assert!(rendered(&p, 1).contains("Var STR.at"));
 }
+
+/// A saturated call of a GLOBAL that is an eta-expanded primitive folds too,
+/// which is what a method lifted out of a known instance looks like.
+#[test]
+fn a_call_of_a_lifted_method_global_folds() {
+    let mut p = prog(vec![
+        ("M.add", |t| eta(t, "@iadd", "a", "b")),
+        ("M.sum", |t| {
+            let add = t.add(Term::Var { module: Some(StrId::intern("M")), name: StrId::intern("add") });
+            let (one, two) = (t.add(Term::Int(1)), t.add(Term::Int(2)));
+            let partial = t.app(add, one);
+            t.app(partial, two)
+        }),
+    ]);
+    fold_primitive_methods(&mut p);
+    assert_eq!(rendered(&p, 1), "(App (App (Var @iadd) (Int 1)) (Int 2))");
+}

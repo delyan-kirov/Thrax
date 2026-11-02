@@ -31,6 +31,7 @@ use utilities::StrId;
 /// `machine::glob`). Root first, so a bare name collision resolves to the root.
 pub fn lower_modules(modules: &[CoreProgram]) -> IrProgram {
     let mut merged = merge(modules);
+    passes::specialize::specialize_contexts(&mut merged);
     passes::eta_fold::fold_primitive_methods(&mut merged);
     run_passes(&mut merged);
     lower(&merged)
@@ -51,6 +52,9 @@ fn merge(modules: &[CoreProgram]) -> CoreProgram {
             merged
                 .globals
                 .push((StrId::intern(&format!("{}.{}", m.module, name)), term));
+        }
+        for &name in &m.ctx_globals {
+            merged.ctx_globals.push(StrId::intern(&format!("{}.{}", m.module, name)));
         }
         for (name, layout) in &m.crepr_layouts {
             if !merged.crepr_layouts.iter().any(|(n, _)| n == name) {
@@ -79,6 +83,11 @@ fn run_passes(merged: &mut CoreProgram) {
 // name any global of the second, which holds when it is a set of modules
 // closed under imports. The shell lowers the standard library once and each
 // entry onto it.
+//
+// Context specialization is the exception: it clones `@ctx` functions across
+// the whole program, so the second part is not specialized against the first.
+// Its code is the unspecialized form, equal in meaning and slower; the prefix
+// itself is specialized, and its lifted methods still fold through `prims`.
 
 /// The IR of the first modules of a program, ready for the rest to be lowered
 /// onto it with [`lower_onto`]. See Note [Lowering onto a lowered prefix].
@@ -91,6 +100,7 @@ pub struct LoweredPrefix {
 /// Lower `modules`, which import nothing outside themselves, as a prefix.
 pub fn lower_prefix(modules: &[CoreProgram]) -> LoweredPrefix {
     let mut merged = merge(modules);
+    passes::specialize::specialize_contexts(&mut merged);
     let prims = passes::eta_fold::primitive_methods(&merged);
     passes::eta_fold::fold_primitive_methods_with(&mut merged, &prims);
     run_passes(&mut merged);

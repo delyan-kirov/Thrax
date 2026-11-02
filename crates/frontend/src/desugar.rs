@@ -75,17 +75,21 @@ pub fn desugar_program(
     let mut effects = Vec::new();
     let mut globals = Vec::new();
     let mut ct_runs = Vec::new();
+    let mut ctx_globals = Vec::new();
     for item in ast.slice(program.items).iter() {
         match item {
             Item::Def { body, .. } if matches!(ast.expr(*body), Expr::Builtin) => {}
             Item::Def {
-                name, sig, body, ..
+                name, sig, ctx, body,
             } => {
                 if let Some(sig) = sig {
                     lw.collect_meta_types(*sig);
                 }
                 let term = lw.def(*sig, *body);
                 globals.push((*name, term));
+                if ctx.is_some() {
+                    ctx_globals.push(*name);
+                }
             }
             // `$ @e <expr>`: back it with a synthetic global, forced at compile
             // time by the driver. The name is bare here (index-tagged so several
@@ -140,6 +144,7 @@ pub fn desugar_program(
     core.terms = lw.terms;
     core.effects = effects;
     core.globals = globals;
+    core.ctx_globals = ctx_globals;
     core.crepr_layouts = resolved
         .crepr_layouts
         .iter()
