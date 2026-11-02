@@ -347,6 +347,9 @@ pub struct Checker<'a> {
     /// so a module that forward-references an about-to-be-injected definition still
     /// checks well enough to run its generators. The final round checks strictly.
     lenient: bool,
+    /// Whether a lenient check took any of its lenient branches. One that did not
+    /// is exactly the strict check of the same module.
+    deferred: bool,
     /// Set for the interactive shell: a top-level body is checked under an open
     /// ambient effect row rather than the pure closed row, so an entered expression
     /// may perform effects (`println`, file IO) the way a `main` body can. A
@@ -510,6 +513,7 @@ impl<'a> Checker<'a> {
             ambient,
             unknown_type: None,
             lenient: false,
+            deferred: false,
             open_effects: false,
             inferred: None,
         };
@@ -523,6 +527,20 @@ impl<'a> Checker<'a> {
     /// enough to run its `$ @e` generators. The final round leaves this off.
     pub fn set_lenient(&mut self, lenient: bool) {
         self.lenient = lenient;
+    }
+
+    /// Whether a lenient check deferred anything (an unbound name, a missing
+    /// instance or overload). When it did not, the check is the strict one.
+    pub fn deferred(&self) -> bool {
+        self.deferred
+    }
+
+    /// Point the checker at `ast`, a copy of its tree with nodes only appended
+    /// since it checked. Every handle it holds resolves the same in the copy, so
+    /// the copy can stand in for the original, which may then be dropped.
+    pub fn rebind_ast(&mut self, ast: &'a Ast) {
+        assert!(ast.exprs.len() >= self.ast.exprs.len(), "a rebound tree must extend the original");
+        self.ast = ast;
     }
 
     /// Check top-level bodies under an open ambient effect row (see `open_effects`).

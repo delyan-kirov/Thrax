@@ -299,18 +299,17 @@ impl Base {
         let ast = Box::new(parsed.ast);
         // SAFETY: see `Base`: the box outlives the checkers and is not mutated.
         let ast_ref: &'static Ast = unsafe { &*(ast.as_ref() as *const Ast) };
-        let checked =
-            driver::check_modules_with(ast_ref, &parsed.programs, &graph, &sources, false, None, parsed.errors, false);
-        let mark = checked.types.mark();
+        let (checkers, types) = driver::check_modules(ast_ref, &parsed.programs, &graph, &sources, parsed.errors);
+        let mark = types.mark();
         let stamps = sources.iter().map(|(_, path, src)| stamp(path, src, overlay)).collect();
         Ok(Base {
-            checkers: checked.checkers,
+            checkers,
             ast,
             programs: parsed.programs,
             sources,
             index,
             expr_ranges: parsed.expr_ranges,
-            types: checked.types,
+            types,
             mark,
             stamps,
             root_name: root_name.to_string(),

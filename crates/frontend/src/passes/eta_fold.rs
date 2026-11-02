@@ -22,17 +22,25 @@ use crate::core::{CoreProgram, Term, Terms};
 
 /// `(global name, field) -> (primitive, arity)` for every eta-expanded primitive
 /// method of a global struct literal.
-type Prims = HashMap<(StrId, StrId), (StrId, usize)>;
+pub type Prims = HashMap<(StrId, StrId), (StrId, usize)>;
 
 pub fn fold_primitive_methods(program: &mut CoreProgram) {
-    let prims = collect(program);
+    let prims = primitive_methods(program);
+    fold_primitive_methods_with(program, &prims);
+}
+
+/// [`fold_primitive_methods`] with the eta-expanded primitive methods `prims`,
+/// which may include those of globals lowered separately.
+pub fn fold_primitive_methods_with(program: &mut CoreProgram, prims: &Prims) {
     if prims.is_empty() {
         return;
     }
-    program.rewrite_globals(|terms, term| rewrite(terms, term, &prims));
+    program.rewrite_globals(|terms, term| rewrite(terms, term, prims));
 }
 
-fn collect(program: &CoreProgram) -> Prims {
+/// The eta-expanded primitive methods of `program`'s global struct literals,
+/// by `(global, field)`. Read off the merged program, before any other pass.
+pub fn primitive_methods(program: &CoreProgram) -> Prims {
     let terms = &program.terms;
     let mut out = Prims::new();
     for &(name, term) in &program.globals {

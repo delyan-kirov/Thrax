@@ -138,7 +138,7 @@ pub struct Resolved {
 /// sequence-view hook panics), so every caller that checks a program and then
 /// lowers it must fill `Resolved` the same way. This is that one way: a second
 /// hand-written copy silently loses whichever map it was written before.
-pub fn collect_resolved(checkers: &[Checker]) -> Resolved {
+pub fn collect_resolved<'c, 'a: 'c>(checkers: impl IntoIterator<Item = &'c Checker<'a>>) -> Resolved {
     let mut resolved = Resolved::default();
     for checker in checkers {
         resolved.declarations.add_module(checker);

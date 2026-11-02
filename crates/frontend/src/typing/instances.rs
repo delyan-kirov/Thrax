@@ -229,7 +229,10 @@ impl<'a> Checker<'a> {
             // than failing. The final strict round rejects it if it is still missing.
             let val = match resolved {
                 Ok(val) => val,
-                Err(_) if self.lenient => continue,
+                Err(_) if self.lenient => {
+                    self.deferred = true;
+                    continue;
+                }
                 Err(d) => {
                     return Err(match self.ast.expr_span(p.site) {
                         Some(span) => d.fill_span(span),

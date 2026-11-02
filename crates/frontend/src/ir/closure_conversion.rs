@@ -29,12 +29,19 @@ use crate::core::{CoreArm, CoreClause, CoreHandler, Pat, CoreProgram, Term};
 /// Closure-convert a Core program (already match-compiled, A-normal, and De
 /// Bruijn indexed) into the IR.
 pub fn convert_closures(core: &CoreProgram) -> data::IrProgram {
-    let mut conv = ClosureConverter { core, codes: Vec::new() };
+    convert_closures_after(core, 0, &HashSet::new())
+}
+
+/// [`convert_closures`] for a program that will follow `first` codes already
+/// lowered, whose globals are `before`: code ids start at `first`, and a name in
+/// `before` is a global, not a built-in.
+pub fn convert_closures_after(core: &CoreProgram, first: usize, before: &HashSet<StrId>) -> data::IrProgram {
+    let mut conv = ClosureConverter { core, codes: Vec::new(), first };
     let mut globals = Vec::new();
     for &(name, term) in &core.globals {
         let mut ctx = FunctionScope::new();
         let body = conv.expr(term, &mut ctx, true);
-        let id = conv.codes.len();
+        let id = first + conv.codes.len();
         conv.codes.push(Code {
             nparams: 0,
             nlocals: ctx.nlocals,
@@ -44,7 +51,8 @@ pub fn convert_closures(core: &CoreProgram) -> data::IrProgram {
         globals.push((name, id));
     }
     let mut codes = conv.codes;
-    let names: HashSet<StrId> = globals.iter().map(|(n, _)| *n).collect();
+    let mut names: HashSet<StrId> = globals.iter().map(|(n, _)| *n).collect();
+    names.extend(before.iter().copied());
     for code in &mut codes {
         let body = std::mem::replace(&mut code.body, IrExpr::Fault(String::new()));
         code.body = sink_partials(body, &names);
@@ -105,6 +113,8 @@ impl FunctionScope {
 struct ClosureConverter<'c> {
     core: &'c CoreProgram,
     codes: Vec<Code>,
+    /// The id of `codes[0]`.
+    first: usize,
 }
 
 impl<'c> ClosureConverter<'c> {
@@ -191,7 +201,7 @@ impl<'c> ClosureConverter<'c> {
 
         let (captures, mut inner) = Self::enter(&free, m, nparams, outer);
         let cbody = self.expr(body, &mut inner, true);
-        let id = self.codes.len();
+        let id = self.first + self.codes.len();
         self.codes.push(Code {
             nparams,
             nlocals: inner.nlocals,
@@ -439,7 +449,7 @@ impl<'c> ClosureConverter<'c> {
     /// parameter, and it captures nothing.
     fn identity(&mut self, ctx: &mut FunctionScope) -> data::Atom {
         let (captures, inner) = Self::enter(&BTreeSet::new(), ctx.scope.len(), 1, ctx);
-        let id = self.codes.len();
+        let id = self.first + self.codes.len();
         self.codes.push(Code {
             nparams: 1,
             nlocals: inner.nlocals,
@@ -454,7 +464,7 @@ impl<'c> ClosureConverter<'c> {
     fn clause(&mut self, c: &CoreClause, continuation: StrId, ctx: &mut FunctionScope) -> HandleClause {
         let fun = self.lift(c.body, 2, &[c.arg, continuation], ctx);
         let resume = match &fun {
-            Atom::Clos { code, .. } => resume_use(&self.codes[*code].body),
+            Atom::Clos { code, .. } => resume_use(&self.codes[*code - self.first].body),
             _ => ResumeUse::Captured,
         };
         HandleClause {
