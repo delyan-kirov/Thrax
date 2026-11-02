@@ -1161,19 +1161,39 @@ impl<'p> Emitter<'p> {
                 out.push_str(&format!("  thrax_fault({});\n", cstr(msg.as_bytes())))
             }
 
-            IrExpr::App { fun, arg, .. } => {
+            IrExpr::App { fun, arg: arg_atom, lend, .. } => {
                 let fn_ = self.atom(fun);
-                let arg = self.atom(arg);
+                let arg = self.atom(arg_atom);
                 // Tail-ness follows the sink, not the ANF flag: only a RET sink is a
                 // genuine tail position. A call the ANF marked tail but which IR
                 // lowering hoisted into a `let` is delivered into a slot: a normal,
                 // non-tail call.
+                //
+                // A lent argument must outlive the callee. A tail call ends this
+                // activation, so it lends only a global or, through
+                // `THxK_tailcall_pass`, a slot this activation was itself lent.
+                // See Note [Borrowed parameters].
                 match sink {
-                    Sink::Ret => out.push_str(&format!("  THxK_tailcall({fn_}, {arg});\n")),
+                    Sink::Ret => match arg_atom {
+                        Atom::Local(s) if *lend => {
+                            out.push_str(&format!("  THxK_tailcall_pass(fr, {fn_}, {s});\n"))
+                        }
+                        Atom::Glob { .. } if *lend && arg.starts_with("force_code(") => {
+                            out.push_str(&format!("  THxK_tailcall_lent({fn_}, {arg});\n"))
+                        }
+                        _ => out.push_str(&format!("  THxK_tailcall({fn_}, {arg});\n")),
+                    },
                     Sink::Slot { slot, cont } => {
                         let cont = cont.expect("a non-tail App needs a continuation block");
+                        let lends = *lend
+                            && match arg_atom {
+                                Atom::Local(_) | Atom::Env(_) => true,
+                                Atom::Glob { .. } => arg.starts_with("force_code("),
+                                _ => false,
+                            };
+                        let apply = if lends { "THxK_apply_lent" } else { "THxK_apply" };
                         out.push_str(&format!(
-                            "  THxK_apply(fr, {fn_}, {arg}, blk_{cont}, {slot});\n"
+                            "  {apply}(fr, {fn_}, {arg}, blk_{cont}, {slot});\n"
                         ));
                     }
                 }

@@ -80,6 +80,7 @@ fn app_k() -> IrExpr {
         fun: Atom::Local(1),
         arg: Atom::Unit,
         tail: false,
+        lend: false,
     }
 }
 
@@ -123,6 +124,7 @@ fn any_mention_of_the_continuation_captures_the_slice() {
         fun: Atom::Glob { name: "M.go".into() },
         arg: Atom::Local(1),
         tail: false,
+        lend: false,
     };
     for e in [&app_k(), &twice, &in_one_branch, &stored, &captured, &passed] {
         assert_eq!(resume_use(e), ResumeUse::Captured);

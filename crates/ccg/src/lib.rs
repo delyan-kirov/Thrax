@@ -222,6 +222,12 @@ pub fn emit_program(
         out.push_str(&format!("  {},\n", c.nlocals));
     }
     out.push_str("};\n");
+    out.push_str("const unsigned char THxRT_code_borrowed[] = {\n");
+    for c in &prog.codes {
+        let bits = c.borrowed.iter().take(8).enumerate().fold(0u8, |m, (i, b)| m | (u8::from(*b) << i));
+        out.push_str(&format!("  {bits},\n"));
+    }
+    out.push_str("};\n");
     out.push_str(&format!("const size_t THxRT_code_count = {ncodes};\n\n"));
 
     // Entry. `@main` is applied to the argument vector (`@Vec @Str`) and its

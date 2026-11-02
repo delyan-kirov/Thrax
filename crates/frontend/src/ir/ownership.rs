@@ -66,12 +66,15 @@ struct Flow {
 // read into a move (`Atom::Move`, or `Atom::MoveEnv` for a closure field). A
 // value that dies without being read gets an explicit `Expr::Drop` where it
 // dies. Reference counts are then exact: a value held once is held by
-// whoever is about to use it. Two kinds of slot are exempt, because their
+// whoever is about to use it. Three kinds of slot are exempt, because their
 // last use is not a point in this code: a recursive `let`'s slot (closures
-// reach it through a weak edge, so the slot keeps it alive) and anything a
+// reach it through a weak edge, so the slot keeps it alive), anything a
 // handler body reads from outside it (a resumption can re-enter the body
-// after the code that follows it has run). Both engines and the C backend
-// read the same annotations, so they agree on when a value dies.
+// after the code that follows it has run), and a borrowed parameter (the
+// caller owns it). A value lent to a borrowed parameter does not move either:
+// it dies once the call returns. Both engines and the C backend read the same
+// annotations, so they agree on when a value dies.
+// See Note [Borrowed parameters].
 
 /// Annotate every code block. Run once, on freshly closure-converted codes.
 /// See Note [Last use moves].
@@ -80,6 +83,7 @@ pub fn insert_moves_and_drops(codes: &mut [Code]) {
         let mut body = std::mem::replace(&mut code.body, IrExpr::Fault(String::new()));
         let mut pinned = Live::new();
         handler_reads(&body, &mut pinned);
+        pinned.extend((0..code.nparams).filter(|p| code.borrowed[*p]).map(Place::Local));
         let flow = expr(&mut body, &pinned);
         let dead_params = (0..code.nparams)
             .filter(|p| !flow.live.contains(&Place::Local(*p)))
@@ -279,11 +283,21 @@ fn each_var<'a>(atoms: impl IntoIterator<Item = &'a mut Atom>, f: &mut impl FnMu
 /// moves when its variable is dead afterwards and appears nowhere else in the
 /// node.
 fn node<'a>(atoms: impl IntoIterator<Item = &'a mut Atom>, out: &Live) -> Flow {
+    node_lending(atoms, None, out)
+}
+
+/// [`node`], where `lent` is a variable the node lends to a borrowed
+/// parameter: it never moves there, so a local whose last use it is dies once
+/// the node is done. See Note [Borrowed parameters].
+fn node_lending<'a>(atoms: impl IntoIterator<Item = &'a mut Atom>, lent: Option<Place>, out: &Live) -> Flow {
     let mut atoms: Vec<&mut Atom> = atoms.into_iter().collect();
     let mut count: BTreeMap<Place, usize> = BTreeMap::new();
     each_var(atoms.iter_mut().map(|a| &mut **a), &mut |a| {
         *count.entry(var(a).expect("a variable occurrence")).or_default() += 1;
     });
+    if let Some(v) = lent {
+        *count.entry(v).or_default() += 1;
+    }
     let mut live = out.clone();
     let mut leftover = BTreeSet::new();
     each_var(atoms.iter_mut().map(|a| &mut **a), &mut |a| {
@@ -343,7 +357,10 @@ fn locals_in(vars: impl IntoIterator<Item = Place>) -> Vec<usize> {
 fn expr(e: &mut IrExpr, out: &Live) -> Flow {
     match e {
         IrExpr::Ret(a) => node([a], out),
-        IrExpr::App { fun, arg, .. } => node([fun, arg], out),
+        IrExpr::App { fun, arg, lend, .. } => {
+            let lent = if *lend { var(arg) } else { None };
+            node_lending([fun, arg], lent, out)
+        }
         IrExpr::MkStruct { base, fields, .. } => {
             node(base.iter_mut().chain(fields.iter_mut().map(|(_, a)| a)), out)
         }

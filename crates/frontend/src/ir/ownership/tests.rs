@@ -7,6 +7,7 @@ fn code(nparams: usize, body: IrExpr) -> IrExpr {
         nlocals: 8,
         body,
         name: "t".into(),
+        borrowed: vec![false; nparams],
     }];
     insert_moves_and_drops(&mut codes);
     let [c] = codes;
@@ -18,6 +19,7 @@ fn app(fun: Atom, arg: Atom) -> IrExpr {
         fun,
         arg,
         tail: false,
+        lend: false,
     }
 }
 
@@ -218,6 +220,7 @@ fn a_dying_scrutinee_hands_its_cell_to_a_constructor_of_the_same_arity() {
         nlocals: 3,
         body: case,
         name: "t".into(),
+        borrowed: vec![false],
     }];
     insert_moves_and_drops(&mut codes);
     let [c] = codes;
@@ -330,4 +333,35 @@ fn a_binder_a_handler_body_reads_is_not_dropped_where_it_is_bound() {
         "{:?}",
         alts[1].body
     );
+}
+
+#[test]
+fn a_lent_argument_does_not_move_and_dies_after_the_call() {
+    let lent = IrExpr::App {
+        fun: glob(),
+        arg: Atom::Local(1),
+        tail: false,
+        lend: true,
+    };
+    let body = code(1, let_(1, IrExpr::Ret(Atom::LitI(0)), let_(2, lent, IrExpr::Ret(Atom::Local(2)))));
+    let IrExpr::Drop { body, .. } = body else {
+        panic!("{body:?}")
+    };
+    let IrExpr::Let { body, .. } = *body else { panic!() };
+    let IrExpr::Let { rhs, body, .. } = *body else { panic!() };
+    assert!(matches!(*rhs, IrExpr::App { arg: Atom::Local(1), .. }));
+    assert!(matches!(*body, IrExpr::Drop { ref slots, .. } if slots == &[1]));
+}
+
+#[test]
+fn a_borrowed_parameter_is_never_moved_or_dropped() {
+    let mut codes = [Code {
+        nparams: 1,
+        nlocals: 4,
+        body: app(glob(), Atom::Local(0)),
+        name: "t".into(),
+        borrowed: vec![true],
+    }];
+    insert_moves_and_drops(&mut codes);
+    assert!(matches!(codes[0].body, IrExpr::App { arg: Atom::Local(0), .. }));
 }

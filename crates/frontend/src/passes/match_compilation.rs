@@ -95,6 +95,14 @@ impl MatchCompiler {
     // patterns, a false guard falls through exactly like a mismatch, and the
     // rest runs only on failure, because a lambda's body does not run until it
     // is called. See Note [Case is never lowered to application].
+    //
+    // An arm that can fail at only one point, before it binds any variable
+    // (a literal, or a constructor whose fields are all irrefutable, with no
+    // guard), needs no thunk: the remaining arms go at that one point as the
+    // case default, copied nowhere else, and no binding of the arm can shadow
+    // a variable they read. Most matches are of this kind (every `if`, and
+    // the `[]` / `h :: t` split), and a thunk there would cost a closure per
+    // match and capture every variable the remaining arms read.
 
     /// The code for arms `i..`: try arm `i`, falling through to arms `i+1..` on
     /// any mismatch, or to `fail` when the arms are exhausted.
@@ -107,6 +115,9 @@ impl MatchCompiler {
             return group;
         }
         let fail_rest = self.compile_arms(t, s, arms, i + 1, fail);
+        if fails_at_most_once_unbound(&arms[i]) {
+            return self.compile_arm(t, s, &arms[i], fail_rest);
+        }
         let fk = self.fresh("k");
         let fkv = t.var(fk);
         let unit = t.add(Term::Unit);
@@ -472,6 +483,28 @@ impl MatchCompiler {
         }
         let rest = self.compile_binders_from(t, binders, pats, i + 1, on_match, on_fail);
         self.compile_pat(t, binders[i], &pats[i], rest, on_fail)
+    }
+}
+
+/// Whether `arm` can fail at one point at most, and binds no variable before
+/// it. See Note [Fallthrough thunks].
+fn fails_at_most_once_unbound(arm: &CoreArm) -> bool {
+    arm.guard.is_none()
+        && match &arm.pat {
+            Pat::Int(_) | Pat::Real(_) | Pat::Bool(_) | Pat::Str(_) | Pat::HookEq { .. } => true,
+            Pat::Range { hi, .. } => hi.is_none(),
+            Pat::Variant { fields, .. } => fields.iter().all(irrefutable),
+            p => irrefutable(p),
+        }
+}
+
+/// Whether `pat` matches every value of its type, so it cannot fail.
+fn irrefutable(pat: &Pat) -> bool {
+    match pat {
+        Pat::Wild | Pat::Var(_) => true,
+        Pat::Tuple(pats) => pats.iter().all(irrefutable),
+        Pat::Struct { fields, .. } => fields.iter().all(|(_, p)| irrefutable(p)),
+        _ => false,
     }
 }
 

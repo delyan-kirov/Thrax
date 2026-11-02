@@ -186,10 +186,14 @@ pub enum IrExpr {
         body: Box<IrExpr>,
     },
     /// Apply a closure/builtin/operation to one atom; `tail` marks tail position.
+    /// `lend` marks a call that lends `arg` to a borrowed parameter: the caller
+    /// keeps its reference alive until the callee returns, so the callee need
+    /// not count one. See Note [Borrowed parameters].
     App {
         fun: Atom,
         arg: Atom,
         tail: bool,
+        lend: bool,
     },
     /// Match `scrut` against `alts`, falling to `default`.
     Case {
@@ -247,12 +251,15 @@ pub enum IrExpr {
 /// lambdas nest, so a multi-argument source function is several `Code`s);
 /// `nlocals` is the activation's slot count (params occupy `[0..nparams)`);
 /// globals are nullary `Code`s (CAFs) whose body computes the global's value.
+/// `borrowed[i]` says parameter `i` is borrowed: the body only reads it, never
+/// moving or dropping it. See Note [Borrowed parameters].
 #[derive(Clone, Debug)]
 pub struct Code {
     pub nparams: usize,
     pub nlocals: usize,
     pub body: IrExpr,
     pub name: StrId,
+    pub borrowed: Vec<bool>,
 }
 
 /// One declared effect operation (carried through for the machine's operation

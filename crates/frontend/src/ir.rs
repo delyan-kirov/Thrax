@@ -4,14 +4,16 @@
 //! patterns, which the `interpreter`'s abstract machine and the `ccg` backend
 //! both consume. [`lower_modules`] is the whole middle end: it merges the
 //! desugared modules into one Core program, runs the [`crate::passes`] over it,
-//! closure-converts it ([`closure_conversion`]), and marks where each local's
-//! reference ends ([`ownership`]).
+//! closure-converts it ([`closure_conversion`]), finds the parameters each
+//! code only reads ([`borrow`]), and marks where each local's reference ends
+//! ([`ownership`]).
 //!
 //! Input: every module's Core, root first. Output: one [`IrProgram`].
 //!
 //! Entry points: [`lower_modules`], and [`lower_prefix`] with [`lower_onto`]
 //! to lower a program's first modules once and the rest onto them.
 
+pub mod borrow;
 pub mod closure_conversion;
 pub mod data;
 pub mod ownership;
@@ -126,10 +128,11 @@ pub fn lower_onto(prefix: &LoweredPrefix, rest: &[CoreProgram]) -> IrProgram {
     IrProgram { codes, globals, effects, crepr_layouts }
 }
 
-/// Closure-convert a Core program that has been through the passes, then mark
-/// its moves and drops.
+/// Closure-convert a Core program that has been through the passes, infer its
+/// borrowed parameters, then mark its moves and drops.
 pub fn lower(core: &CoreProgram) -> IrProgram {
     let mut program = closure_conversion::convert_closures(core);
+    borrow::infer_borrowed_params(&mut program);
     ownership::insert_moves_and_drops(&mut program.codes);
     program
 }

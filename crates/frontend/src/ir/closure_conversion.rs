@@ -47,6 +47,7 @@ pub fn convert_closures_after(core: &CoreProgram, first: usize, before: &HashSet
             nlocals: ctx.nlocals,
             body,
             name,
+            borrowed: Vec::new(),
         });
         globals.push((name, id));
     }
@@ -55,7 +56,7 @@ pub fn convert_closures_after(core: &CoreProgram, first: usize, before: &HashSet
     names.extend(before.iter().copied());
     for code in &mut codes {
         let body = std::mem::replace(&mut code.body, IrExpr::Fault(String::new()));
-        code.body = sink_partials(body, &names);
+        code.body = propagate_copies(sink_partials(body, &names));
     }
     data::IrProgram {
         codes,
@@ -207,6 +208,7 @@ impl<'c> ClosureConverter<'c> {
             nlocals: inner.nlocals,
             body: cbody,
             name: params.last().copied().unwrap_or_else(|| StrId::intern("%thunk")),
+            borrowed: vec![false; nparams],
         });
         data::Atom::Clos { code: id, captures }
     }
@@ -258,6 +260,7 @@ impl<'c> ClosureConverter<'c> {
                 fun: self.atom(*f, ctx),
                 arg: self.atom(*x, ctx),
                 tail,
+                lend: false,
             },
 
             Term::Let { rec, val, body, .. } => {
@@ -457,6 +460,7 @@ impl<'c> ClosureConverter<'c> {
             nlocals: inner.nlocals,
             body: IrExpr::Ret(data::Atom::Local(0)),
             name: StrId::intern("%x"),
+            borrowed: vec![false],
         });
         data::Atom::Clos { code: id, captures }
     }
@@ -592,6 +596,95 @@ fn place_partial(slot: usize, rhs: &IrExpr, body: IrExpr) -> Result<IrExpr, IrEx
             }
         }
         e => Err(e),
+    }
+}
+
+/// Replace each `let s = x in body`, where `x` is a local or a captured field,
+/// by `body` reading `x` where it read `s`. Match compilation binds every
+/// scrutinee and pattern variable this way; left in, each copy would be one
+/// more owner to count, and a parameter copied into a slot would look stored
+/// to borrow inference. See Note [Borrowed parameters].
+fn propagate_copies(e: IrExpr) -> IrExpr {
+    match e {
+        IrExpr::Let { slot, rhs, body } => match *rhs {
+            IrExpr::Ret(x @ (Atom::Local(_) | Atom::Env(_))) if !x.mentions(slot) => {
+                let mut body = propagate_copies(*body);
+                substitute(&mut body, slot, &x);
+                body
+            }
+            rhs => IrExpr::Let {
+                slot,
+                rhs: Box::new(propagate_copies(rhs)),
+                body: Box::new(propagate_copies(*body)),
+            },
+        },
+        IrExpr::Case { scrut, alts, default } => IrExpr::Case {
+            scrut,
+            alts: alts
+                .into_iter()
+                .map(|a| Alt {
+                    body: propagate_copies(a.body),
+                    ..a
+                })
+                .collect(),
+            default: Box::new(propagate_copies(*default)),
+        },
+        IrExpr::Handle { body, clauses, els } => IrExpr::Handle {
+            body: Box::new(propagate_copies(*body)),
+            clauses,
+            els,
+        },
+        IrExpr::Defer { cleanup, body } => IrExpr::Defer {
+            cleanup,
+            body: Box::new(propagate_copies(*body)),
+        },
+        e => e,
+    }
+}
+
+/// Read `x` wherever `e` reads local `slot`, including in the captures of the
+/// closures it builds. `slot` stays bound throughout `e`, so no binder inside
+/// reuses it.
+fn substitute(e: &mut IrExpr, slot: usize, x: &Atom) {
+    fn atom(a: &mut Atom, slot: usize, x: &Atom) {
+        match a {
+            Atom::Local(s) if *s == slot => *a = x.clone(),
+            Atom::Clos { captures, .. } => captures.iter_mut().for_each(|c| atom(c, slot, x)),
+            _ => {}
+        }
+    }
+    match e {
+        IrExpr::Ret(a) | IrExpr::Field { rec: a, .. } => atom(a, slot, x),
+        IrExpr::App { fun, arg, .. } => {
+            atom(fun, slot, x);
+            atom(arg, slot, x);
+        }
+        IrExpr::MkStruct { base, fields, .. } => {
+            base.iter_mut().chain(fields.iter_mut().map(|(_, a)| a)).for_each(|a| atom(a, slot, x))
+        }
+        IrExpr::MkVariant { fields: items, .. } | IrExpr::MkTuple(items) => {
+            items.iter_mut().for_each(|a| atom(a, slot, x))
+        }
+        IrExpr::Let { rhs, body, .. } => {
+            substitute(rhs, slot, x);
+            substitute(body, slot, x);
+        }
+        IrExpr::Case { scrut, alts, default } => {
+            atom(scrut, slot, x);
+            alts.iter_mut().for_each(|a| substitute(&mut a.body, slot, x));
+            substitute(default, slot, x);
+        }
+        IrExpr::Handle { body, clauses, els } => {
+            clauses.iter_mut().for_each(|c| atom(&mut c.fun, slot, x));
+            atom(els, slot, x);
+            substitute(body, slot, x);
+        }
+        IrExpr::Defer { cleanup, body } => {
+            atom(cleanup, slot, x);
+            substitute(body, slot, x);
+        }
+        IrExpr::Drop { .. } => unreachable!("copies are propagated before the ownership pass"),
+        IrExpr::Fault(_) => {}
     }
 }
 

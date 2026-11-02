@@ -298,6 +298,15 @@ so those functions carry the ownership rules:
   operand rows), every kont frame's payload (KRet's frame, KPrompt's
   clauses + `els`, KDefer's cleanup, KThunkRet's saved value, KAfterClause's
   kval), and the global CAF cache each hold `+1`; reads borrow.
+- **Lent parameters** (issue #385): a parameter the frontend infers as
+  borrowed (`Code::borrowed`, emitted as `THxRT_code_borrowed`) is bound
+  without a count when the call lends it (`THxK_apply_lent`,
+  `THxK_tailcall_lent`, `THxK_tailcall_pass`). The frame's `lent` mask marks
+  the slot, so neither a drop nor the frame's death releases it, and a slice
+  copy does not retain it. A borrowed parameter entered by a call that did not
+  lend takes a counted reference that dies with the frame. See Note [Borrowed
+  parameters] in `crates/frontend/src/ir/borrow.rs`. Build the emitted C with
+  `-DTHRAX_RC_STATS` to print the retain and release counts at exit.
 - **Frames are refcounted** (driver's current activation + every KRet, live or
   captured) and retain the closure whose `env` they borrow.
 - **The temp pool**: every fresh value is registered with the pool owning its

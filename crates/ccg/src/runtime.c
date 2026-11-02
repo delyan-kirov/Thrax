@@ -26,6 +26,9 @@ typedef void (*BlockFn)(Frame *fr, Value *in);
 /* Provided by the generated program. */
 extern BlockFn THxRT_code_table[];
 extern const size_t THxRT_code_nlocals[];
+/* Per code, a bit per parameter the body only borrows (frontend
+ * `Code::borrowed`): it never moves or drops one. */
+extern const unsigned char THxRT_code_borrowed[];
 extern const size_t THxRT_code_count;
 
 /* One foreign-call wrapper per distinct `@extern`: it marshals the collected
@@ -139,12 +142,17 @@ struct Value {
  * survives a suspension captured in the continuation stack. */
 struct Frame {
   unsigned rc;
+  /* A bit per local slot holding a lent value: the slot owns no reference, the
+   * caller that lent it keeps it alive. Only parameters are ever lent. */
+  unsigned lent;
   Value *clos; /* retained; NULL for a nullary CAF */
   Value **locals;
   size_t nlocals;
   Value **env; /* borrowed from `clos` */
   size_t nenv;
 };
+
+static inline int frame_lent(Frame *f, size_t i) { return i < 32 && (f->lent >> i & 1u); }
 
 /* Continuation frames (the reified-K stack) and captured resumptions. */
 typedef enum {
@@ -323,6 +331,20 @@ static void alloc_stats_report(void) {
 }
 #endif
 
+#ifdef THRAX_RC_STATS
+/* Every count change on a value, reported at exit: build the emitted C with
+ * -DTHRAX_RC_STATS to measure reference-count traffic. Thread-local, so a
+ * threaded program reports the main thread's share. */
+static THX_TLS unsigned long long g_rc_retains = 0, g_rc_releases = 0;
+static void rc_stats_report(void) {
+  fprintf(stderr, "thrax: %llu retains, %llu releases\n", g_rc_retains, g_rc_releases);
+}
+__attribute__((constructor)) static void rc_stats_init(void) { atexit(rc_stats_report); }
+#define THX_RC_COUNT(n) (++(n))
+#else
+#define THX_RC_COUNT(n) ((void)0)
+#endif
+
 /* Allocate `size` zeroed bytes with value lifetime (counted). */
 static void *THxMEM_alloc(size_t size) {
   void *p = calloc(1, size ? size : 1);
@@ -474,6 +496,7 @@ __attribute__((noinline)) static int release_slow(Value *v) {
 
 static inline void THxMEM_retain(Value *v) {
   if (!v) return;
+  THX_RC_COUNT(g_rc_retains);
 #ifdef THRAX_THREADS
   int rc = rc_load(v);
   if (__builtin_expect(rc > 0, 1))
@@ -525,6 +548,7 @@ static void dead_push(Value *v) {
 
 static void THxMEM_release(Value *v) {
   if (!v) return;
+  THX_RC_COUNT(g_rc_releases);
 #ifdef THRAX_THREADS
   int rc = rc_load(v);
   if (__builtin_expect(rc > 1, 1)) {
@@ -791,6 +815,10 @@ Value *THxVALUE_env(Value **env, size_t n, size_t i) {
 Value *THxVALUE_take(Frame *fr, size_t i) {
   Value *v = THxVALUE_local(fr->locals, fr->nlocals, i);
   fr->locals[i] = NULL;
+  if (frame_lent(fr, i)) {
+    fr->lent &= ~(1u << i);
+    THxMEM_retain(v);
+  }
   pool_adopt(v);
   return v;
 }
@@ -2043,6 +2071,7 @@ static inline size_t frame_size(size_t nlocals) {
 static Frame *frame_new(size_t nlocals, Value *clos) {
   Frame *f = THxMEM_cell(frame_size(nlocals));
   f->rc = 1;
+  f->lent = 0;
   f->clos = clos;
   if (clos) {
     THxMEM_retain(clos);
@@ -2065,7 +2094,8 @@ static void frame_release(Frame *f) {
   if (!f) return;
   if (f->rc == 0) thrax_fault("frame_release: releasing a freed frame");
   if (--f->rc > 0) return;
-  for (size_t i = 0; i < f->nlocals; i++) THxMEM_release(f->locals[i]);
+  for (size_t i = 0; i < f->nlocals; i++)
+    if (!frame_lent(f, i)) THxMEM_release(f->locals[i]);
   THxMEM_release(f->clos);
   THxMEM_cell_free(f, frame_size(f->nlocals));
 }
@@ -2130,10 +2160,11 @@ static Frame *frame_clone(Frame *f) {
   c->env = f->env;
   c->nenv = f->nenv;
   c->nlocals = f->nlocals;
+  c->lent = f->lent;
   c->locals = f->nlocals ? (Value **)(c + 1) : NULL;
   for (size_t i = 0; i < f->nlocals; i++) {
     c->locals[i] = f->locals[i];
-    THxMEM_retain(c->locals[i]);
+    if (!frame_lent(f, i)) THxMEM_retain(c->locals[i]);
   }
   return c;
 }
@@ -2260,6 +2291,8 @@ static KFrame segment_cleanups(KFrame *seg, size_t n) {
 typedef enum { ACT_NONE, ACT_RET, ACT_APPLY, ACT_JUMP } Act;
 static THX_TLS Act g_act;
 static THX_TLS Value *g_v, *g_fn, *g_arg;
+/* Whether the pending application lends `g_arg` (see `THxK_apply_lent`). */
+static THX_TLS int g_lend;
 static THX_TLS BlockFn g_blk;
 static THX_TLS Value *g_result;
 
@@ -2273,6 +2306,21 @@ void THxK_tailcall(Value *fn, Value *arg) {
   g_act = ACT_APPLY;
   g_fn = fn;
   g_arg = arg;
+  g_lend = 0;
+}
+/* A tail call lending `arg`, which outlives the callee (a global's cached
+ * value). */
+void THxK_tailcall_lent(Value *fn, Value *arg) {
+  THxK_tailcall(fn, arg);
+  g_lend = 1;
+}
+/* A tail call passing on local `slot`: lent again when this activation was lent
+ * it (its lender outlives the callee too), else its reference moves over. */
+void THxK_tailcall_pass(Frame *fr, Value *fn, size_t slot) {
+  if (frame_lent(fr, slot))
+    THxK_tailcall_lent(fn, THxVALUE_local(fr->locals, fr->nlocals, slot));
+  else
+    THxK_tailcall(fn, THxVALUE_take(fr, slot));
 }
 void THxK_apply(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
   KFrame kf;
@@ -2285,6 +2333,15 @@ void THxK_apply(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
   g_act = ACT_APPLY;
   g_fn = fn;
   g_arg = arg;
+  g_lend = 0;
+}
+/* A non-tail call lending `arg`: the waiting activation (or a global's cache)
+ * keeps it alive until the callee returns, so a callee that borrows its
+ * parameter binds it without counting. See the frontend's Note [Borrowed
+ * parameters]. */
+void THxK_apply_lent(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
+  THxK_apply(fr, fn, arg, cont, slot);
+  g_lend = 1;
 }
 void THxK_jump(BlockFn cont) {
   g_act = ACT_JUMP;
@@ -2355,12 +2412,18 @@ void THxK_defer_run(Frame *fr, BlockFn cont, size_t slot, Value *cleanup,
 void THxK_setlocal(Frame *fr, size_t slot, Value *v) {
   if (slot >= fr->nlocals) thrax_fault("setlocal: slot out of range");
   THxMEM_retain(v); /* retain-before-release: v may be the slot's old value */
-  THxMEM_release(fr->locals[slot]);
+  if (frame_lent(fr, slot))
+    fr->lent &= ~(1u << slot);
+  else
+    THxMEM_release(fr->locals[slot]);
   fr->locals[slot] = v;
 }
 void THxK_drop(Frame *fr, size_t slot) {
   if (slot >= fr->nlocals) thrax_fault("drop: slot out of range");
-  THxMEM_release(fr->locals[slot]);
+  if (frame_lent(fr, slot))
+    fr->lent &= ~(1u << slot);
+  else
+    THxMEM_release(fr->locals[slot]);
   fr->locals[slot] = NULL;
 }
 void THxK_setbox(Frame *fr, size_t slot) {
@@ -2472,12 +2535,19 @@ Value *THxRT_variant_at(Frame *fr, size_t token, const char *ty, const char *tag
  * retain the args; the outgoing activation is released. nargs: 0 (defer
  * cleanup), 1 (value clause / a call), 2 (handler clause). */
 static void enter_clo(BlockFn *cur, Frame **fr, Value **in, Value *clo,
-                      Value **args, size_t nargs) {
+                      Value **args, size_t nargs, int lent) {
   if (clo->tag != T_CLOS) thrax_fault("entering a non-closure");
   size_t code = (size_t)clo->u.clos.code;
   if (code >= THxRT_code_count) thrax_fault("code index out of range");
   Frame *nf = frame_new(THxRT_code_nlocals[code], clo);
-  for (size_t i = 0; i < nargs; i++) THxK_setlocal(nf, i, args[i]);
+  for (size_t i = 0; i < nargs; i++) {
+    if (lent && i == 0) {
+      nf->locals[0] = args[0];
+      nf->lent = 1;
+    } else {
+      THxK_setlocal(nf, i, args[i]);
+    }
+  }
   frame_release(*fr);
   *cur = THxRT_code_table[code];
   *fr = nf;
@@ -2520,7 +2590,7 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
       }
       case K_PROMPT: {
         /* body finished normally -> run the value clause on the result */
-        enter_clo(cur, fr, in, kf.u.prompt.els, &v, 1);
+        enter_clo(cur, fr, in, kf.u.prompt.els, &v, 1, 0);
         kframe_release(&kf); /* els survives via the new frame's clos ref */
         THxMEM_release(v);   /* delivered: retained in the clause's slot 0 */
         return 1;
@@ -2532,7 +2602,7 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
         tr.u.thunkret.saved = v; /* park the in-flight reference in the kont */
         kont_push(tr);
         Value *u = unit();
-        enter_clo(cur, fr, in, kf.u.defer.cleanup, &u, 0);
+        enter_clo(cur, fr, in, kf.u.defer.cleanup, &u, 0, 0);
         kframe_release(&kf); /* cleanup survives via the new frame's clos ref */
         return 1;
       }
@@ -2667,7 +2737,7 @@ Value *THxK_vec_update(int id, Value **a, int owned) {
 }
 
 static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
-                    size_t base, int owned) {
+                    size_t base, int owned, int lent) {
   if (!fn) thrax_fault("apply: null callee");
   if (!owned) {
     THxMEM_retain(fn);
@@ -2676,7 +2746,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
   int r = 0;
   switch (fn->tag) {
     case T_CLOS:
-      enter_clo(cur, fr, in, fn, &arg, 1);
+      enter_clo(cur, fr, in, fn, &arg, 1, lent);
       r = 1;
       break;
     case T_BUILTIN: {
@@ -2784,7 +2854,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       Value *args[2];
       args[0] = arg;
       args[1] = kval;
-      enter_clo(cur, fr, in, clause, args, 2);
+      enter_clo(cur, fr, in, clause, args, 2, 0);
       if (uses == RESUME_NEVER) THxMEM_release(clause); /* the frame holds it now */
       r = 1;
       break;
@@ -2817,7 +2887,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       thrax_fault("apply: callee is not a function");
   }
   THxMEM_release(fn);
-  THxMEM_release(arg);
+  if (!lent) THxMEM_release(arg);
   return r;
 }
 
@@ -2838,12 +2908,19 @@ static Value *run_loop(BlockFn cur, Frame *fr, Value *in, size_t base) {
         cont = do_ret(&cur, &fr, &in, g_v, base);
         THxMEM_release(g_v);
         break;
-      case ACT_APPLY:
+      case ACT_APPLY: {
+        /* A lent argument outlives the callee, so it needs no in-flight
+         * reference across the switch; one the callee does not borrow is
+         * counted as usual. */
+        int lent = g_lend && g_fn && g_fn->tag == T_CLOS &&
+                   (size_t)g_fn->u.clos.code < THxRT_code_count &&
+                   (THxRT_code_borrowed[g_fn->u.clos.code] & 1);
         THxMEM_retain(g_fn);
-        THxMEM_retain(g_arg);
+        if (!lent) THxMEM_retain(g_arg);
         THxMEM_pool_drain(pm);
-        cont = do_apply(&cur, &fr, &in, g_fn, g_arg, base, 1);
+        cont = do_apply(&cur, &fr, &in, g_fn, g_arg, base, 1, lent);
         break;
+      }
       case ACT_NONE: thrax_fault("block set no terminator");
     }
     /* Everything this bounce constructed and did not store dies here; what was
@@ -2865,7 +2942,7 @@ Value *THxK_call(Value *f, Value *arg) {
   BlockFn cur = NULL;
   Frame *fr = NULL;
   Value *in = NULL;
-  if (!do_apply(&cur, &fr, &in, f, arg, base, 0)) return g_result;
+  if (!do_apply(&cur, &fr, &in, f, arg, base, 0, 0)) return g_result;
   return run_loop(cur, fr, in, base);
 }
 
@@ -2876,7 +2953,7 @@ static Value *THxK_call_owned(Value *f, Value *arg) {
   BlockFn cur = NULL;
   Frame *fr = NULL;
   Value *in = NULL;
-  if (!do_apply(&cur, &fr, &in, f, arg, base, 1)) return g_result;
+  if (!do_apply(&cur, &fr, &in, f, arg, base, 1, 0)) return g_result;
   return run_loop(cur, fr, in, base);
 }
 
