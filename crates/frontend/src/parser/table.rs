@@ -22,7 +22,7 @@ const fn bp(left: u8, right: u8) -> Bp {
 /// Application by juxtaposition, the tightest binary form.
 pub const APP: Bp = bp(50, 51);
 
-/// Binding power of the unary prefix operators (`-`, `!`).
+/// Binding power of the unary prefix operators (`-`, `!`, `~~~`).
 pub const PREFIX: u8 = 40;
 
 /// Binding power of `op` as an infix operator, or `None` if it is not infix.
@@ -40,6 +40,7 @@ pub fn prefix(op: &str) -> Option<&'static str> {
         OpRole::Prefix | OpRole::InfixPrefix(..) => match op {
             "-" => Some("neg"),
             "!" => Some("not"),
+            "~~~" => Some("complement"),
             _ => None,
         },
         _ => None,

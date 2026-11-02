@@ -865,6 +865,27 @@ static Value *arith_intrinsic(int id, Value *x, Value *y) {
   }
 }
 
+/* A bitwise intrinsic on the 64-bit value representation. A shift count is read
+ * unsigned, and one of 64 or more (a negative count included) shifts every bit
+ * out: `@ishl`/`@ushr` give 0, `@ishr` the sign. The bare C shifts would be
+ * undefined there, and `>>` on a negative signed value is
+ * implementation-defined, so the arithmetic shift goes through the complement. */
+static Value *bit_intrinsic(int id, int64_t x, int64_t y) {
+  uint64_t n = (uint64_t)y;
+  switch (id) {
+  case THxB_IAND: return THxRT_int(x & y);
+  case THxB_IOR: return THxRT_int(x | y);
+  case THxB_IXOR: return THxRT_int(x ^ y);
+  case THxB_ISHL: return THxRT_int(n >= 64 ? 0 : (int64_t)((uint64_t)x << n));
+  case THxB_USHR: return THxRT_int(n >= 64 ? 0 : (int64_t)((uint64_t)x >> n));
+  case THxB_ISHR: {
+    if (n > 63) n = 63;
+    return THxRT_int(x < 0 ? ~(int64_t)((uint64_t)~x >> n) : (int64_t)((uint64_t)x >> n));
+  }
+  default: thrax_fault("not a bitwise intrinsic");
+  }
+}
+
 static int cmp_bytes(Value *a, Value *b) {
   size_t n = a->u.str.len < b->u.str.len ? a->u.str.len : b->u.str.len;
   int c = memcmp(a->u.str.data, b->u.str.data, n);
@@ -1232,6 +1253,34 @@ static Value *run_builtin(int id, Value **a) {
   case THxB_IEQ: case THxB_ILT: case THxB_ULT: case THxB_FEQ:
   case THxB_FLT: case THxB_SEQ: case THxB_SLT:
     return compare_intrinsic(id, a[0], a[1]);
+  case THxB_IAND: case THxB_IOR: case THxB_IXOR:
+  case THxB_ISHL: case THxB_ISHR: case THxB_USHR:
+    return bit_intrinsic(id, as_i64(a[0]), as_i64(a[1]));
+  case THxB_INOT: return THxRT_int(~as_i64(a[0]));
+  case THxB_F64_BITS: {
+    double d = as_f64(a[0]);
+    uint64_t u;
+    memcpy(&u, &d, sizeof u);
+    return THxRT_int((int64_t)u);
+  }
+  case THxB_BITS_F64: {
+    uint64_t u = (uint64_t)as_i64(a[0]);
+    double d;
+    memcpy(&d, &u, sizeof d);
+    return THxRT_real(d);
+  }
+  case THxB_F32_BITS: {
+    float f = as_f32(a[0]);
+    uint32_t u;
+    memcpy(&u, &f, sizeof u);
+    return THxRT_int((int64_t)u);
+  }
+  case THxB_BITS_F32: {
+    uint32_t u = (uint32_t)as_i64(a[0]);
+    float f;
+    memcpy(&f, &u, sizeof f);
+    return THxRT_real32(f);
+  }
   case THxB_SWRAP: case THxB_UWRAP: {
     int64_t bits = a[0]->u.i, x = a[1]->u.i;
     if (bits < 1 || bits >= 64) return THxRT_int(x);

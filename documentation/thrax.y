@@ -81,15 +81,16 @@
 %left  EQEQ NEQ LT GT LE GE         /* == != < > <= >= */
 %right CONS                         /* :: */
 %left  CONCAT                       /* ++ */
-%left  PLUS MINUS
-%left  STAR SLASH PERCENT
+%left  PLUS MINUS BAR3 CARET3      /* ||| ^^^ bitwise or, xor */
+%left  STAR SLASH PERCENT AMP3 SHL3 SHR3  /* &&& <<< >>> bitwise and, shifts */
 %right CARET                        /* ^ exponentiation */
 %right COMPOSE                      /* <|> composition (desugars to `\x = f (g x)`) */
-%precedence NEG                     /* unary - ! */
+%precedence NEG                     /* unary - ! ~~~ */
 %precedence APP                     /* application */
 %left  DOT                          /* postfix . */
 
 %token BANG                         /* ! */
+%token TILDE3                       /* ~~~ bitwise complement */
 %token ANGLE_EMPTY                  /* <> */
 %token BAR                          /* | */
 %token ELLIPSIS                     /* ... inclusive range (patterns + `t.[p...q]` slices) */
@@ -151,6 +152,7 @@ sig
  * delimiters (`|`, `<>`) are excluded: they are not operators. */
 operator_name
   : PLUS | MINUS | STAR | SLASH | PERCENT | CARET | BANG | CONCAT | CONS
+  | AMP3 | BAR3 | CARET3 | SHL3 | SHR3 | TILDE3
   | EQEQ | NEQ | LT | GT | LE | GE
   | AND_AND | OR_OR | SEMI | PIPE_FWD | PIPE_BACK | COMPOSE
   ;
@@ -342,10 +344,16 @@ op_expr
   | op_expr STAR op_expr
   | op_expr SLASH op_expr
   | op_expr PERCENT op_expr
+  | op_expr AMP3 op_expr
+  | op_expr SHL3 op_expr
+  | op_expr SHR3 op_expr
+  | op_expr BAR3 op_expr
+  | op_expr CARET3 op_expr
   | op_expr CARET op_expr
   | op_expr COMPOSE op_expr
   | MINUS op_expr %prec NEG
   | BANG  op_expr %prec NEG
+  | TILDE3 op_expr %prec NEG
   | app
   ;
 

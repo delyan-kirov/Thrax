@@ -63,6 +63,23 @@ $ @f32div : t -> t -> t = @extern "thrax"
 $ @f32mod : t -> t -> t = @extern "thrax"
 $ @f32pow : t -> t -> t = @extern "thrax"
 
+# Bitwise operations on the 64-bit value an integer is at runtime, under the
+# `IAnd`.. `IShr` instances. A shift count of 64 or more, or a negative one, shifts
+# every bit out: `@ishl` and `@ushr` give 0, `@ishr` (arithmetic) the sign. The
+# reinterprets read and write the IEEE 754 bit pattern: `@f32_bits` is the low 32
+# bits, zero-extended. A NaN's bits are whatever the platform produced.
+$ @iand : t -> t -> t = @extern "thrax"
+$ @ior : t -> t -> t = @extern "thrax"
+$ @ixor : t -> t -> t = @extern "thrax"
+$ @inot : t -> t = @extern "thrax"
+$ @ishl : t -> @Int -> t = @extern "thrax"
+$ @ishr : t -> @Int -> t = @extern "thrax"
+$ @ushr : t -> @Int -> t = @extern "thrax"
+$ @f64_bits : @Float64 -> @Int = @extern "thrax"
+$ @bits_f64 : @Int -> @Float64 = @extern "thrax"
+$ @f32_bits : @Float32 -> @Int = @extern "thrax"
+$ @bits_f32 : @Int -> @Float32 = @extern "thrax"
+
 # Comparison, under the `IEq` / `IOrd` instances. `@ieq` serves signed and unsigned
 # alike (equality reads the same bits); the float pair compares at `@Float64`,
 # which is exact for a `@Float32` too; `@seq`/`@slt` compare byte strings.
@@ -317,6 +334,96 @@ $ impl_IPow_for_int : IPow @Int = .{ .raise = int_pow }
 $ real_pow : Real -> Real -> Real = \b e = @fpow b e
 $ impl_IPow_for_float64 : IPow @Float64 = .{ .raise = real_pow }
 $ impl_IPow_for_float32 : IPow @Float32 = .{ .raise = \b e = @f32pow b e }
+
+# Bitwise operators, F#'s spelling: `&&&` `|||` `^^^` `<<<` `>>>` and prefix `~~~`
+# (`|` delimits arms and rows, `^` raises to a power). `&&&` and the shifts bind
+# like `*`, `|||` and `^^^` like `+`, all tighter than comparison. `>>>` is
+# arithmetic on the signed types and logical on the nats, as division is signed or
+# unsigned by type. A shift count is an `@Int`; see `@ishl` for counts past the
+# width. A narrow type wraps what it shifts left or complements back into range.
+$ IAnd : @struct t = and: t -> t -> t,
+$ IOr : @struct t = or: t -> t -> t,
+$ IXor : @struct t = xor: t -> t -> t,
+$ INot : @struct t = not: t -> t,
+$ IShl : @struct t = shl: t -> @Int -> t,
+$ IShr : @struct t = shr: t -> @Int -> t,
+
+$ (&&&) : @ctx IAnd t -> t -> t -> t = \d a b = d.and a b
+$ (|||) : @ctx IOr t -> t -> t -> t = \d a b = d.or a b
+$ (^^^) : @ctx IXor t -> t -> t -> t = \d a b = d.xor a b
+$ complement : @ctx INot t -> t -> t = \d a = d.not a
+$ (<<<) : @ctx IShl t -> t -> @Int -> t = \d a n = d.shl a n
+$ (>>>) : @ctx IShr t -> t -> @Int -> t = \d a n = d.shr a n
+
+$ impl_IAnd_for_int : IAnd @Int = .{ .and = \a b = @iand a b }
+$ impl_IOr_for_int : IOr @Int = .{ .or = \a b = @ior a b }
+$ impl_IXor_for_int : IXor @Int = .{ .xor = \a b = @ixor a b }
+$ impl_INot_for_int : INot @Int = .{ .not = \a = @inot a }
+$ impl_IShl_for_int : IShl @Int = .{ .shl = \a n = @ishl a n }
+$ impl_IShr_for_int : IShr @Int = .{ .shr = \a n = @ishr a n }
+
+$ impl_IAnd_for_int8 : IAnd @Int8 = .{ .and = \a b = @iand a b }
+$ impl_IOr_for_int8 : IOr @Int8 = .{ .or = \a b = @ior a b }
+$ impl_IXor_for_int8 : IXor @Int8 = .{ .xor = \a b = @ixor a b }
+$ impl_INot_for_int8 : INot @Int8 = .{ .not = \a = @inot a }
+$ impl_IShl_for_int8 : IShl @Int8 = .{ .shl = \a n = @cast (@ishl a n) }
+$ impl_IShr_for_int8 : IShr @Int8 = .{ .shr = \a n = @ishr a n }
+
+$ impl_IAnd_for_int16 : IAnd @Int16 = .{ .and = \a b = @iand a b }
+$ impl_IOr_for_int16 : IOr @Int16 = .{ .or = \a b = @ior a b }
+$ impl_IXor_for_int16 : IXor @Int16 = .{ .xor = \a b = @ixor a b }
+$ impl_INot_for_int16 : INot @Int16 = .{ .not = \a = @inot a }
+$ impl_IShl_for_int16 : IShl @Int16 = .{ .shl = \a n = @cast (@ishl a n) }
+$ impl_IShr_for_int16 : IShr @Int16 = .{ .shr = \a n = @ishr a n }
+
+$ impl_IAnd_for_int32 : IAnd @Int32 = .{ .and = \a b = @iand a b }
+$ impl_IOr_for_int32 : IOr @Int32 = .{ .or = \a b = @ior a b }
+$ impl_IXor_for_int32 : IXor @Int32 = .{ .xor = \a b = @ixor a b }
+$ impl_INot_for_int32 : INot @Int32 = .{ .not = \a = @inot a }
+$ impl_IShl_for_int32 : IShl @Int32 = .{ .shl = \a n = @cast (@ishl a n) }
+$ impl_IShr_for_int32 : IShr @Int32 = .{ .shr = \a n = @ishr a n }
+
+$ impl_IAnd_for_int64 : IAnd @Int64 = .{ .and = \a b = @iand a b }
+$ impl_IOr_for_int64 : IOr @Int64 = .{ .or = \a b = @ior a b }
+$ impl_IXor_for_int64 : IXor @Int64 = .{ .xor = \a b = @ixor a b }
+$ impl_INot_for_int64 : INot @Int64 = .{ .not = \a = @inot a }
+$ impl_IShl_for_int64 : IShl @Int64 = .{ .shl = \a n = @ishl a n }
+$ impl_IShr_for_int64 : IShr @Int64 = .{ .shr = \a n = @ishr a n }
+
+$ impl_IAnd_for_nat : IAnd @Nat = .{ .and = \a b = @iand a b }
+$ impl_IOr_for_nat : IOr @Nat = .{ .or = \a b = @ior a b }
+$ impl_IXor_for_nat : IXor @Nat = .{ .xor = \a b = @ixor a b }
+$ impl_INot_for_nat : INot @Nat = .{ .not = \a = @inot a }
+$ impl_IShl_for_nat : IShl @Nat = .{ .shl = \a n = @ishl a n }
+$ impl_IShr_for_nat : IShr @Nat = .{ .shr = \a n = @ushr a n }
+
+$ impl_IAnd_for_nat8 : IAnd @Nat8 = .{ .and = \a b = @iand a b }
+$ impl_IOr_for_nat8 : IOr @Nat8 = .{ .or = \a b = @ior a b }
+$ impl_IXor_for_nat8 : IXor @Nat8 = .{ .xor = \a b = @ixor a b }
+$ impl_INot_for_nat8 : INot @Nat8 = .{ .not = \a = @cast (@inot a) }
+$ impl_IShl_for_nat8 : IShl @Nat8 = .{ .shl = \a n = @cast (@ishl a n) }
+$ impl_IShr_for_nat8 : IShr @Nat8 = .{ .shr = \a n = @ushr a n }
+
+$ impl_IAnd_for_nat16 : IAnd @Nat16 = .{ .and = \a b = @iand a b }
+$ impl_IOr_for_nat16 : IOr @Nat16 = .{ .or = \a b = @ior a b }
+$ impl_IXor_for_nat16 : IXor @Nat16 = .{ .xor = \a b = @ixor a b }
+$ impl_INot_for_nat16 : INot @Nat16 = .{ .not = \a = @cast (@inot a) }
+$ impl_IShl_for_nat16 : IShl @Nat16 = .{ .shl = \a n = @cast (@ishl a n) }
+$ impl_IShr_for_nat16 : IShr @Nat16 = .{ .shr = \a n = @ushr a n }
+
+$ impl_IAnd_for_nat32 : IAnd @Nat32 = .{ .and = \a b = @iand a b }
+$ impl_IOr_for_nat32 : IOr @Nat32 = .{ .or = \a b = @ior a b }
+$ impl_IXor_for_nat32 : IXor @Nat32 = .{ .xor = \a b = @ixor a b }
+$ impl_INot_for_nat32 : INot @Nat32 = .{ .not = \a = @cast (@inot a) }
+$ impl_IShl_for_nat32 : IShl @Nat32 = .{ .shl = \a n = @cast (@ishl a n) }
+$ impl_IShr_for_nat32 : IShr @Nat32 = .{ .shr = \a n = @ushr a n }
+
+$ impl_IAnd_for_nat64 : IAnd @Nat64 = .{ .and = \a b = @iand a b }
+$ impl_IOr_for_nat64 : IOr @Nat64 = .{ .or = \a b = @ior a b }
+$ impl_IXor_for_nat64 : IXor @Nat64 = .{ .xor = \a b = @ixor a b }
+$ impl_INot_for_nat64 : INot @Nat64 = .{ .not = \a = @inot a }
+$ impl_IShl_for_nat64 : IShl @Nat64 = .{ .shl = \a n = @ishl a n }
+$ impl_IShr_for_nat64 : IShr @Nat64 = .{ .shr = \a n = @ushr a n }
 
 # Float width conversions. Unlike integers, `@Float32` and `@Float64` differ in
 # runtime representation, so widening is genuine work: these bind the C runtime

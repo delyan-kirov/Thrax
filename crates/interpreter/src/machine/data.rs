@@ -381,6 +381,14 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         Prim::Ieq | Prim::Ilt | Prim::Ult | Prim::Feq | Prim::Flt | Prim::Seq | Prim::Slt => {
             compare_intrinsic(name, &a[0], &a[1])
         }
+        Prim::Iand | Prim::Ior | Prim::Ixor | Prim::Ishl | Prim::Ishr | Prim::Ushr => {
+            bit_intrinsic(name, as_int(&a[0])?, as_int(&a[1])?)
+        }
+        Prim::Inot => Ok(Value::Int(!as_int(&a[0])?)),
+        Prim::F64Bits => Ok(Value::Int(as_f64(&a[0])?.to_bits() as i64)),
+        Prim::BitsF64 => Ok(Value::Real(f64::from_bits(as_int(&a[0])? as u64))),
+        Prim::F32Bits => Ok(Value::Int(as_f32(&a[0])?.to_bits() as i64)),
+        Prim::BitsF32 => Ok(Value::Real32(f32::from_bits(as_int(&a[0])? as u32))),
         Prim::Swrap | Prim::Uwrap => {
             let (bits, x) = (as_int(&a[0])?, as_int(&a[1])?);
             if !(1..64).contains(&bits) {
@@ -945,6 +953,25 @@ fn arith_intrinsic<'p>(name: Prim, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'
         Prim::F32pow => Ok(Value::Real32(as_f32(x)?.powf(as_f32(y)?))),
         _ => unreachable!("arith_intrinsic called with `{name}`"),
     }
+}
+
+/// A bitwise intrinsic on the 64-bit value representation. A shift count is read
+/// unsigned, and one of 64 or more (a negative count included) shifts every bit
+/// out: `@ishl`/`@ushr` give 0, `@ishr` the sign. This matches the C runtime,
+/// where the bare operators would be undefined.
+fn bit_intrinsic<'p>(name: Prim, x: i64, y: i64) -> Result<Value<'p>> {
+    let n = y as u64;
+    Ok(Value::Int(match name {
+        Prim::Iand => x & y,
+        Prim::Ior => x | y,
+        Prim::Ixor => x ^ y,
+        Prim::Ishl if n >= 64 => 0,
+        Prim::Ishl => ((x as u64) << n) as i64,
+        Prim::Ishr => x >> n.min(63),
+        Prim::Ushr if n >= 64 => 0,
+        Prim::Ushr => ((x as u64) >> n) as i64,
+        _ => unreachable!("bit_intrinsic called with `{name}`"),
+    }))
 }
 
 /// A monomorphic comparison intrinsic, the primitive the comparison instances are

@@ -116,7 +116,7 @@ impl Layout<'_, '_> {
     fn unary(&self, i: usize) -> bool {
         let t = &self.toks[i];
         let next_glued = self.toks.get(i + 1).is_some_and(|n| !n.gap);
-        matches!(t.kind, Kind::Op) && matches!(t.text, "-" | "!") && next_glued
+        matches!(t.kind, Kind::Op) && matches!(t.text, "-" | "!" | "~~~") && next_glued
             && (i == 0
                 || t.gap
                 || matches!(
