@@ -312,6 +312,20 @@ so those functions carry the ownership rules:
   count of their own since `patch_box` can alias a resumption value.
 - **Release is iterative** (a dead-value worklist in `THxMEMRC.c`), so dropping
   a long list does not recurse on the C stack.
+- **Small blocks are recycled** (`THxMEM_cell` / `THxMEM_cell_free` in
+  `crates/ccg/src/runtime.c`): value cells, frames (one block with their slot
+  array) and the child arrays of tuples, records, variants, closures and
+  partial applications go on a per-thread free list per 8-byte size class (up
+  to 256 bytes, a bounded number of blocks per class) instead of back to
+  malloc. Every size is a multiple of 8 and a class holds blocks of exactly its
+  size, so a block may come from malloc and go to a list, or the other way
+  round. A block on a list is not live, so the leak check stays exact; a worker
+  hands its lists back to malloc when it exits.
+- **Shared constants**: `{}`, `@true`, `@false` and the integers -128 to 1023
+  are static cells (`THxRT_unit` / `THxRT_bool` / `THxRT_int`), immortal under
+  threads (`rc == 0`) and out of reach of zero without. A let box is always a
+  fresh cell (`fresh_box`), since it is patched in place; patching a constant
+  is a runtime fault.
 
 **The built-in leak check:** in the value-printing harness mode the generated
 `main` releases the CAF cache and the temp pool on exit and then asserts

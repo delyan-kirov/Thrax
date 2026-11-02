@@ -328,6 +328,67 @@ static void THxMEM_free(void *p) {
   free(p);
 }
 
+/* Recycled small blocks: value cells, frames and the child arrays of tuples,
+ * records, variants, closures and partial applications. A freed block goes on
+ * its size class's list for this thread instead of back to malloc, and the
+ * next allocation of that size takes it. Every size is a multiple of 8 and a
+ * class holds blocks of exactly its size, so a block from THxMEM_alloc may be
+ * freed here and a block from here by THxMEM_free: both are plain malloc
+ * blocks of at least the size asked for. A block on a list is not live, so the
+ * leak check stays exact. A block may be freed, and so recycled, by a thread
+ * other than the one that allocated it; each list is touched only by its
+ * owning thread. */
+#define THX_CELL_CLASSES 33 /* sizes 8 .. 256 */
+#define THX_CELL_KEEP 8192  /* blocks a class keeps before handing back to malloc */
+typedef struct FreeCell {
+  struct FreeCell *next;
+} FreeCell;
+static THX_TLS FreeCell *g_cells[THX_CELL_CLASSES];
+static THX_TLS unsigned g_ncells[THX_CELL_CLASSES];
+
+/* `size` (a multiple of 8) zeroed bytes with value lifetime (counted). */
+static inline void *THxMEM_cell(size_t size) {
+  size_t k = size >> 3;
+  if (k < THX_CELL_CLASSES && g_cells[k]) {
+    FreeCell *c = g_cells[k];
+    g_cells[k] = c->next;
+    --g_ncells[k];
+    ++g_live;
+    memset(c, 0, size);
+    return c;
+  }
+  return THxMEM_alloc(size);
+}
+
+static inline void THxMEM_cell_free(void *p, size_t size) {
+  size_t k = size >> 3;
+  if (!p) return;
+  if (k == 0 || k >= THX_CELL_CLASSES || g_ncells[k] >= THX_CELL_KEEP) {
+    THxMEM_free(p);
+    return;
+  }
+#ifndef THRAX_THREADS
+  if (g_live == 0) thrax_fault("THxMEM_free: more frees than allocations");
+#endif
+  --g_live;
+  FreeCell *c = p;
+  c->next = g_cells[k];
+  g_cells[k] = c;
+  ++g_ncells[k];
+}
+
+/* Hand this thread's recycled blocks back to malloc (they are not live). */
+static void THxMEM_cells_release(void) {
+  for (size_t k = 0; k < THX_CELL_CLASSES; k++) {
+    while (g_cells[k]) {
+      FreeCell *c = g_cells[k];
+      g_cells[k] = c->next;
+      free(c);
+    }
+    g_ncells[k] = 0;
+  }
+}
+
 /* The temp pool: every fresh value is registered here holding the pool's
  * initial reference; the driver drains to a mark after each block bounce. */
 static THX_TLS Value **g_pool = NULL;
@@ -346,7 +407,7 @@ static void pool_adopt(Value *v) {
 }
 
 static Value *alloc_value(Tag t) {
-  Value *v = THxMEM_alloc(sizeof(Value));
+  Value *v = THxMEM_cell(sizeof(Value));
   v->tag = t;
   v->rc = 1; /* the pool's reference */
   pool_adopt(v);
@@ -450,7 +511,7 @@ static void THxMEM_release(Value *v) {
   while (g_dn > 0) {
     Value *d = g_dead[--g_dn];
     THxVALUE_destroy(d); /* re-enters THxMEM_release: enqueues only */
-    THxMEM_free(d);
+    THxMEM_cell_free(d, sizeof(Value));
   }
   g_draining = 0;
 }
@@ -465,7 +526,41 @@ static size_t THxMEM_live(void) {
 
 /* -- constructors -------------------------------------------------------- */
 
+/* Shared constants: unit, the booleans and the small integers are one static
+ * cell each, never counted down to zero and never freed. With THRAX_THREADS
+ * they are immortal (`rc == 0`, the counting slow path ignores them, and
+ * `mark_level` stops at them); without, their count starts out of reach of
+ * zero. A cell that is patched in place (a let box, a forced thunk) must never
+ * be one of these, which is what `fresh_box` is for. */
+#ifdef THRAX_THREADS
+#define THX_CONST_RC 0
+#else
+#define THX_CONST_RC (1 << 30)
+#endif
+#define THX_CONST(t, init) {(uint8_t)(t), SH_IMMORTAL, THX_CONST_RC, {init}}
+#define THX_SMALL_MIN (-128)
+#define THX_SMALL_MAX 1023
+#define THX_SI(n) THX_CONST(T_INT, .i = (n))
+#define THX_SI4(n) THX_SI(n), THX_SI((n) + 1), THX_SI((n) + 2), THX_SI((n) + 3)
+#define THX_SI16(n) THX_SI4(n), THX_SI4((n) + 4), THX_SI4((n) + 8), THX_SI4((n) + 12)
+#define THX_SI64(n) THX_SI16(n), THX_SI16((n) + 16), THX_SI16((n) + 32), THX_SI16((n) + 48)
+#define THX_SI256(n) THX_SI64(n), THX_SI64((n) + 64), THX_SI64((n) + 128), THX_SI64((n) + 192)
+static Value g_small_ints[THX_SMALL_MAX - THX_SMALL_MIN + 1] = {
+    THX_SI64(-128), THX_SI64(-64), THX_SI256(0), THX_SI256(256), THX_SI256(512), THX_SI256(768)};
+static Value g_unit = THX_CONST(T_UNIT, .i = 0);
+static Value g_false = THX_CONST(T_BOOL, .b = false);
+static Value g_true = THX_CONST(T_BOOL, .b = true);
+_Static_assert(sizeof(g_small_ints) / sizeof(Value) == THX_SMALL_MAX - THX_SMALL_MIN + 1,
+               "small integer table size");
+_Static_assert(sizeof(Value) % 8 == 0, "a value cell is a recyclable size");
+#undef THX_SI256
+#undef THX_SI64
+#undef THX_SI16
+#undef THX_SI4
+#undef THX_SI
+
 Value *THxRT_int(long long n) {
+  if (n >= THX_SMALL_MIN && n <= THX_SMALL_MAX) return &g_small_ints[n - THX_SMALL_MIN];
   Value *v = alloc_value(T_INT);
   v->u.i = (int64_t)n;
   return v;
@@ -482,12 +577,10 @@ Value *THxRT_real32(float r) {
   v->u.r = (double)r;
   return v;
 }
-Value *THxRT_bool(int b) {
-  Value *v = alloc_value(T_BOOL);
-  v->u.b = b ? true : false;
-  return v;
-}
-Value *THxRT_unit(void) { return alloc_value(T_UNIT); }
+Value *THxRT_bool(int b) { return b ? &g_true : &g_false; }
+Value *THxRT_unit(void) { return &g_unit; }
+/* A placeholder a let's value is later patched into. */
+static Value *fresh_box(void) { return alloc_value(T_UNIT); }
 
 /* Byte vectors carry a trailing NUL that is not counted in `len`, so
  * THxVALUE_str is a valid C string for the FFI seam (matching the C++
@@ -510,7 +603,7 @@ static Value *mk_str_owned(uint8_t *data, size_t len) {
 
 Value *THxRT_tuple(Value **items, size_t len) {
   Value *v = alloc_value(T_TUPLE);
-  v->u.seq.items = len ? THxMEM_alloc(len * sizeof(Value *)) : NULL;
+  v->u.seq.items = len ? THxMEM_cell(len * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < len; i++) {
     v->u.seq.items[i] = items[i];
     THxMEM_retain(items[i]);
@@ -532,7 +625,7 @@ Value *THxRT_struct(const char *name, size_t len, const char **fnames,
                     Value **vals) {
   Value *v = alloc_value(T_STRUCT);
   v->u.strct.name = name;
-  v->u.strct.fields = len ? THxMEM_alloc(len * sizeof(Field)) : NULL;
+  v->u.strct.fields = len ? THxMEM_cell(len * sizeof(Field)) : NULL;
   for (size_t i = 0; i < len; i++) {
     v->u.strct.fields[i].name = fnames[i];
     v->u.strct.fields[i].val = vals[i];
@@ -546,7 +639,7 @@ Value *THxRT_variant(const char *ty, const char *tag, size_t len,
   Value *v = alloc_value(T_VARIANT);
   v->u.variant.ty = ty;
   v->u.variant.tag = tag;
-  v->u.variant.fields = len ? THxMEM_alloc(len * sizeof(Value *)) : NULL;
+  v->u.variant.fields = len ? THxMEM_cell(len * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < len; i++) {
     v->u.variant.fields[i] = fields[i];
     THxMEM_retain(fields[i]);
@@ -557,7 +650,7 @@ Value *THxRT_variant(const char *ty, const char *tag, size_t len,
 Value *THxRT_closure(int code, Value **captures, size_t n) {
   Value *v = alloc_value(T_CLOS);
   v->u.clos.code = code;
-  v->u.clos.env = n ? THxMEM_alloc(n * sizeof(Value *)) : NULL;
+  v->u.clos.env = n ? THxMEM_cell(n * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < n; i++) {
     v->u.clos.env[i] = captures[i];
     THxMEM_retain(captures[i]);
@@ -1632,7 +1725,7 @@ static void release_children(Value *v, Value **f, size_t n) {
   if (!f) return;
   for (size_t i = 0; i < n; i++)
     if (f[i] != v) THxMEM_release(f[i]);
-  THxMEM_free(f);
+  THxMEM_cell_free(f, n * sizeof(Value *));
 }
 
 /* Free v's owned payload: release children, free raw blocks. Shared by
@@ -1647,14 +1740,18 @@ static void payload_destroy(Value *v) {
     case T_UNIT:
     case T_OP: return;
     case T_STR: THxMEM_free(v->u.str.data); return;
-    case T_TUPLE:
-    case T_VEC: release_children(v, v->u.seq.items, v->u.seq.len); return;
+    case T_TUPLE: release_children(v, v->u.seq.items, v->u.seq.len); return;
+    case T_VEC:
+      for (size_t i = 0; i < v->u.seq.len; i++)
+        if (v->u.seq.items[i] != v) THxMEM_release(v->u.seq.items[i]);
+      THxMEM_free(v->u.seq.items);
+      return;
     case T_STRUCT: {
       Field *fs = v->u.strct.fields;
       if (fs) {
         for (size_t i = 0; i < v->u.strct.len; i++)
           if (fs[i].val != v) THxMEM_release(fs[i].val);
-        THxMEM_free(fs);
+        THxMEM_cell_free(fs, v->u.strct.len * sizeof(Field));
       }
       return;
     }
@@ -1678,7 +1775,7 @@ static void THxVALUE_destroy(Value *v) { payload_destroy(v); }
  * (child == self). NULL when n == 0. */
 static Value **copy_children(Value *self, Value **f, size_t n) {
   if (n == 0) return NULL;
-  Value **c = THxMEM_alloc(n * sizeof(Value *));
+  Value **c = THxMEM_cell(n * sizeof(Value *));
   for (size_t i = 0; i < n; i++) {
     c[i] = f[i];
     if (c[i] != self) THxMEM_retain(c[i]);
@@ -1720,7 +1817,7 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
         dst->u.strct.fields = NULL;
         break;
       }
-      Field *fs = THxMEM_alloc(n * sizeof(Field));
+      Field *fs = THxMEM_cell(n * sizeof(Field));
       for (size_t i = 0; i < n; i++) {
         fs[i].name = v->u.strct.fields[i].name;
         fs[i].val = v->u.strct.fields[i].val;
@@ -1762,11 +1859,17 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
   }
 }
 
+static int is_constant(Value *v) {
+  return v == &g_unit || v == &g_true || v == &g_false ||
+         (v >= g_small_ints && v < g_small_ints + (THX_SMALL_MAX - THX_SMALL_MIN + 1));
+}
+
 /* Back-patch a let box: make `box` a copy of `v` (see `copy_payload`),
  * preserving box's own count and shared mark. A box other threads can reach
  * must not take in a thread-local value, so `v` is marked first. */
 static void THxVALUE_patch_box(Value *box, Value *v) {
   if (box == v) return;
+  if (is_constant(box)) thrax_fault("patch_box: patching a shared constant");
   payload_destroy(box); /* a box is normally T_UNIT: a no-op */
 #ifdef THRAX_THREADS
   uint8_t sh = sh_load(box);
@@ -1798,8 +1901,13 @@ static void kont_push(KFrame f) {
 
 /* -- frames (refcounted activations) ------------------------------------- */
 
+/* A frame and its slot array are one block, recycled by size. */
+static inline size_t frame_size(size_t nlocals) {
+  return sizeof(Frame) + nlocals * sizeof(Value *);
+}
+
 static Frame *frame_new(size_t nlocals, Value *clos) {
-  Frame *f = THxMEM_alloc(sizeof(Frame));
+  Frame *f = THxMEM_cell(frame_size(nlocals));
   f->rc = 1;
   f->clos = clos;
   if (clos) {
@@ -1810,7 +1918,7 @@ static Frame *frame_new(size_t nlocals, Value *clos) {
     f->env = NULL;
     f->nenv = 0;
   }
-  f->locals = nlocals ? THxMEM_alloc(nlocals * sizeof(Value *)) : NULL;
+  f->locals = nlocals ? (Value **)(f + 1) : NULL;
   f->nlocals = nlocals;
   return f;
 }
@@ -1824,9 +1932,8 @@ static void frame_release(Frame *f) {
   if (f->rc == 0) thrax_fault("frame_release: releasing a freed frame");
   if (--f->rc > 0) return;
   for (size_t i = 0; i < f->nlocals; i++) THxMEM_release(f->locals[i]);
-  THxMEM_free(f->locals);
   THxMEM_release(f->clos);
-  THxMEM_free(f);
+  THxMEM_cell_free(f, frame_size(f->nlocals));
 }
 
 /* -- kont-frame + segment lifetime --------------------------------------- */
@@ -1882,14 +1989,14 @@ static void THxK_resump_release(Resump *seg) {
 /* A fresh activation holding the same values as `f`. The locals are retained,
  * not copied: a value is immutable, so only the slot array has to be private. */
 static Frame *frame_clone(Frame *f) {
-  Frame *c = THxMEM_alloc(sizeof(Frame));
+  Frame *c = THxMEM_cell(frame_size(f->nlocals));
   c->rc = 1;
   c->clos = f->clos;
   THxMEM_retain(c->clos);
   c->env = f->env;
   c->nenv = f->nenv;
   c->nlocals = f->nlocals;
-  c->locals = f->nlocals ? THxMEM_alloc(f->nlocals * sizeof(Value *)) : NULL;
+  c->locals = f->nlocals ? (Value **)(c + 1) : NULL;
   for (size_t i = 0; i < f->nlocals; i++) {
     c->locals[i] = f->locals[i];
     THxMEM_retain(c->locals[i]);
@@ -1948,7 +2055,7 @@ static void segment_copy(Resump *src, KFrame *out) {
          * return, so the copy needs its own; a closure built by the right-hand
          * side still reads the original's (it captured that very value). */
         if (c->locals[kf.u.ret.slot]) {
-          Value *box = THxRT_unit();
+          Value *box = fresh_box();
           THxMEM_retain(box);
           THxMEM_release(c->locals[kf.u.ret.slot]);
           c->locals[kf.u.ret.slot] = box;
@@ -2123,7 +2230,7 @@ void THxK_drop(Frame *fr, size_t slot) {
   fr->locals[slot] = NULL;
 }
 void THxK_setbox(Frame *fr, size_t slot) {
-  THxK_setlocal(fr, slot, THxRT_unit());
+  THxK_setlocal(fr, slot, fresh_box());
 }
 /* A slot with no box is a non-recursive `let`'s: the value moves in. */
 void THxK_backpatch(Frame *fr, size_t slot, Value *v) {
@@ -2271,7 +2378,7 @@ static Value *builtin_push(Value *f, Value *arg) {
   nb->u.builtin.id = f->u.builtin.id;
   nb->u.builtin.arity = f->u.builtin.arity;
   nb->u.builtin.nargs = n + 1;
-  Value **args = THxMEM_alloc((n + 1) * sizeof(Value *));
+  Value **args = THxMEM_cell((n + 1) * sizeof(Value *));
   for (size_t i = 0; i < n; i++) args[i] = f->u.builtin.args[i];
   args[n] = arg;
   for (size_t i = 0; i <= n; i++)
@@ -2287,7 +2394,7 @@ static Value *extern_push(Value *f, Value *arg) {
   ne->u.ext.idx = f->u.ext.idx;
   ne->u.ext.arity = f->u.ext.arity;
   ne->u.ext.nargs = n + 1;
-  Value **args = THxMEM_alloc((n + 1) * sizeof(Value *));
+  Value **args = THxMEM_cell((n + 1) * sizeof(Value *));
   for (size_t i = 0; i < n; i++) args[i] = f->u.ext.args[i];
   args[n] = arg;
   for (size_t i = 0; i <= n; i++) THxMEM_retain(args[i]);
@@ -2349,11 +2456,11 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
         /* borrow the operand row: fn (retained) keeps args[0..nn) alive, and
          * arg is retained; run_builtin only reads them and returns fresh (or a
          * child do_ret then retains). */
-        Value **args = THxMEM_alloc((nn + 1) * sizeof(Value *));
+        Value **args = THxMEM_cell((nn + 1) * sizeof(Value *));
         for (size_t i = 0; i < nn; i++) args[i] = fn->u.builtin.args[i];
         args[nn] = arg;
         Value *res = THxK_prim(fn->u.builtin.id, args);
-        THxMEM_free(args);
+        THxMEM_cell_free(args, (nn + 1) * sizeof(Value *));
         r = do_ret(cur, fr, in, res, base);
       } else {
         r = do_ret(cur, fr, in, builtin_push(fn, arg), base);
@@ -2365,11 +2472,11 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       if (nn + 1 == fn->u.ext.arity) {
         if ((size_t)fn->u.ext.idx >= THxRT_extern_count)
           thrax_fault("extern index out of range");
-        Value **args = THxMEM_alloc((nn + 1) * sizeof(Value *));
+        Value **args = THxMEM_cell((nn + 1) * sizeof(Value *));
         for (size_t i = 0; i < nn; i++) args[i] = fn->u.ext.args[i];
         args[nn] = arg;
         Value *res = THxRT_extern_table[fn->u.ext.idx](args);
-        THxMEM_free(args);
+        THxMEM_cell_free(args, (nn + 1) * sizeof(Value *));
         r = do_ret(cur, fr, in, res, base);
       } else {
         r = do_ret(cur, fr, in, extern_push(fn, arg), base);
@@ -2541,6 +2648,7 @@ void THxRT_shutdown(void) {
   free(g_dead);
   g_dead = NULL;
   g_dcap = g_dn = 0;
+  THxMEM_cells_release();
   stm_free_log();
 }
 
