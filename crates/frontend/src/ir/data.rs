@@ -84,6 +84,41 @@ pub struct Alt {
     pub binder_base: usize,
     pub binders: Vec<Option<StrId>>,
     pub body: IrExpr,
+    pub unpack: Unpack,
+}
+
+// Note [Constructor reuse]
+//
+// The second half of Perceus (see `super::ownership`): when a `Case`
+// alternative is the last use of its scrutinee and allocates a constructor of
+// the same arity, the scrutinee's cell can hold the new value instead of being
+// freed while a fresh one is allocated. A functional map over a uniquely owned
+// list, or a tree rebuild, then runs in place.
+//
+// The ownership pass marks it statically ([`Unpack::Consume`] with a token
+// slot, and [`IrExpr::MkVariant::reuse`] naming that slot); the engines decide
+// it at runtime by ownership. Entering the alternative, a cell nobody else
+// holds hands its fields straight to the binders (no count changes at all,
+// which is also the drop specialization) and is either freed or parked in the
+// token slot. A shared cell is bound as usual, its slot's reference released,
+// and the token left empty. The constructor takes the token and, if it still
+// holds the only reference to a cell (a copied activation of a resumption can
+// share it), overwrites it; otherwise it allocates.
+//
+// No count can lie here: a lazy slot whose thunk still points at the cell, a
+// continuation that captured it, or another thread holding it all count as
+// owners, so the cell is not unique and is never reused.
+
+/// What an alternative does with its scrutinee's cell.
+/// See Note [Constructor reuse].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Unpack {
+    /// The scrutinee lives on: the binders share its fields.
+    Borrow,
+    /// The scrutinee is local `slot`, and this alternative is where it dies.
+    /// A uniquely held cell gives its fields to the binders and is freed, or,
+    /// with a `token`, kept in that slot for a constructor to reuse.
+    Consume { slot: usize, token: Option<usize> },
 }
 
 /// The head a Case alternative matches on.
@@ -177,6 +212,9 @@ pub enum IrExpr {
         ty: StrId,
         tag: StrId,
         fields: Vec<Atom>,
+        /// A token slot an earlier [`Unpack::Consume`] filled: the cell it holds,
+        /// if any and still unique, is overwritten instead of allocating one.
+        reuse: Option<usize>,
     },
     MkTuple(Vec<Atom>),
     /// Install a handler around `body`. `els` is the closure of the value clause

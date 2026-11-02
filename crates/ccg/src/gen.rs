@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use frontend::ir::data::{native_builtin, native_builtins, Atom, AltKind, BuiltinHost, IrExpr, IrProgram, ResumeUse};
+use frontend::ir::data::{native_builtin, native_builtins, Atom, AltKind, BuiltinHost, IrExpr, IrProgram, ResumeUse, Unpack};
 use utilities::StrId;
 
 /// A saturated built-in call found by `prim_chain`.
@@ -1041,22 +1041,17 @@ impl<'p> Emitter<'p> {
             IrExpr::Field { rec, name } => {
                 format!("THxVALUE_field({}, {})", self.atom(rec), cstr(name.bytes()))
             }
-            IrExpr::MkVariant { ty, tag, fields } => {
-                if fields.is_empty() {
-                    format!(
-                        "THxRT_variant({}, {}, 0, NULL)",
-                        cstr(ty.bytes()),
-                        cstr(tag.bytes())
-                    )
+            IrExpr::MkVariant { ty, tag, fields, reuse } => {
+                let vals = if fields.is_empty() {
+                    "NULL".to_string()
                 } else {
                     let vs: Vec<String> = fields.iter().map(|f| self.atom(f)).collect();
-                    format!(
-                        "THxRT_variant({}, {}, {}, (Value*[]){{ {} }})",
-                        cstr(ty.bytes()),
-                        cstr(tag.bytes()),
-                        fields.len(),
-                        vs.join(", ")
-                    )
+                    format!("(Value*[]){{ {} }}", vs.join(", "))
+                };
+                let (ty, tag, n) = (cstr(ty.bytes()), cstr(tag.bytes()), fields.len());
+                match reuse {
+                    Some(t) => format!("THxRT_variant_at(fr, {t}, {ty}, {tag}, {n}, {vals})"),
+                    None => format!("THxRT_variant({ty}, {tag}, {n}, {vals})"),
                 }
             }
             IrExpr::MkTuple(items) => {
@@ -1114,6 +1109,11 @@ impl<'p> Emitter<'p> {
     /// emitted inline. Never reaches App/Handle/Defer.
     fn emit_pure_into(&mut self, e: &IrExpr, slot: usize, out: &mut String) {
         match e {
+            // Slot to slot, not through the temp pool, so the value stays
+            // uniquely held for a reuse later in the same block.
+            IrExpr::Ret(Atom::Move(from)) => {
+                out.push_str(&format!("  THxK_move(fr, {slot}, {from});\n"));
+            }
             IrExpr::Ret(_)
             | IrExpr::MkStruct { .. }
             | IrExpr::Field { .. }
@@ -1369,15 +1369,33 @@ impl<'p> Emitter<'p> {
                 "  {} ({cond}) {{\n",
                 if first { "if" } else { "else if" }
             ));
-            if let AltKind::Con(_) = &al.kind {
-                for (i, b) in al.binders.iter().enumerate() {
-                    if b.is_some() {
-                        out.push_str(&format!(
-                            "  THxK_setlocal(fr, {}, THxVALUE_variant_field({s}, {i}));\n",
-                            al.binder_base + i
-                        ));
+            match (&al.kind, al.unpack) {
+                (AltKind::Con(_), Unpack::Consume { slot, token }) => {
+                    let bind: Vec<&str> =
+                        al.binders.iter().map(|b| if b.is_some() { "1" } else { "0" }).collect();
+                    let bind = if bind.is_empty() {
+                        "NULL".to_string()
+                    } else {
+                        format!("(const unsigned char[]){{ {} }}", bind.join(", "))
+                    };
+                    let token = token.map_or("-1".to_string(), |t| t.to_string());
+                    out.push_str(&format!(
+                        "  THxK_unpack(fr, {s}, {slot}, {token}, {}, {bind}, {});\n",
+                        al.binder_base,
+                        al.binders.len()
+                    ));
+                }
+                (AltKind::Con(_), Unpack::Borrow) => {
+                    for (i, b) in al.binders.iter().enumerate() {
+                        if b.is_some() {
+                            out.push_str(&format!(
+                                "  THxK_setlocal(fr, {}, THxVALUE_variant_field({s}, {i}));\n",
+                                al.binder_base + i
+                            ));
+                        }
                     }
                 }
+                _ => {}
             }
             self.emit_branch(&al.body, sink, out);
             out.push_str("  }\n");

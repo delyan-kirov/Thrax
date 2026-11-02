@@ -23,7 +23,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use frontend::ir::data::{builtin, Atom, AltKind, Builtin, IrExpr, IrProgram, Prim, ResumeUse, Strictness};
+use frontend::ir::data::{builtin, Alt, Atom, AltKind, Builtin, IrExpr, IrProgram, Prim, ResumeUse, Strictness, Unpack};
 use utilities::{Result, StrId};
 
 use data::{fault, mk, run_builtin, run_extern, PVal, Resumption, Task, TVar, Value};
@@ -617,11 +617,30 @@ impl<'p> Machine<'p> {
                 Value::Thunk(f) => f.clone(),
                 _ => break,
             };
-            let forced = deref(self.apply(thunk, mk(Value::Unit))?);
+            let sole = Rc::strong_count(&thunk) == 2 && Rc::weak_count(&thunk) == 0;
+            let forced = if sole && matches!(&*thunk.borrow(), Value::Code { .. }) {
+                // The cell is the closure's only other owner and patching drops
+                // it anyway, so the call takes it over and can move the
+                // captures out: a lazy tail then reaches the next call uniquely
+                // held, ready for reuse. See Note [Constructor reuse].
+                *v.borrow_mut() = Value::Unk;
+                let (code, env) = match &mut *thunk.borrow_mut() {
+                    Value::Code { code, env } => (*code, std::mem::take(env)),
+                    _ => unreachable!("checked to be a closure"),
+                };
+                deref(self.run(code, vec![mk(Value::Unit)], env)?)
+            } else {
+                deref(self.apply(thunk, mk(Value::Unit))?)
+            };
             if Rc::ptr_eq(&forced, &v) {
                 break;
             }
-            let replacement = forced.borrow().clone_shallow();
+            // A result nobody else holds moves in rather than being copied.
+            let replacement = if Rc::strong_count(&forced) == 1 && Rc::weak_count(&forced) == 0 {
+                std::mem::replace(&mut *forced.borrow_mut(), Value::Unk)
+            } else {
+                forced.borrow().clone_shallow()
+            };
             *v.borrow_mut() = replacement;
         }
         Ok(v)
@@ -738,16 +757,7 @@ impl<'p> Machine<'p> {
                         };
                         if matched {
                             if let AltKind::Con(_) = &alt.kind {
-                                let fields = match &*sv.borrow() {
-                                    Value::Variant { fields, .. } => fields.clone(),
-                                    _ => unreachable!("Con alt matched a non-variant"),
-                                };
-                                let mut f = ex.frame.borrow_mut();
-                                for (i, val) in fields.into_iter().enumerate() {
-                                    if alt.binders.get(i).is_some_and(Option::is_some) {
-                                        f.locals[alt.binder_base + i] = val;
-                                    }
-                                }
+                                self.unpack(&ex.frame, sv, alt);
                             }
                             next = Some(&alt.body);
                             break;
@@ -809,16 +819,31 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                IrExpr::MkVariant { ty, tag, fields } => {
-                    let mut fs = Vec::with_capacity(fields.len());
+                IrExpr::MkVariant { ty, tag, fields, reuse } => {
+                    let cell = reuse.and_then(|t| self.reusable(&ex.frame, t));
+                    let mut fs = match &cell {
+                        Some(c) => match &mut *c.borrow_mut() {
+                            Value::Variant { fields, .. } => std::mem::take(fields),
+                            _ => unreachable!("a reuse token holds a variant cell"),
+                        },
+                        None => Vec::with_capacity(fields.len()),
+                    };
+                    fs.clear();
                     for a in fields {
                         fs.push(deref(self.eval_atom(a, &ex.frame)?));
                     }
-                    let v = mk(Value::Variant {
+                    let built = Value::Variant {
                         ty: *ty,
                         tag: *tag,
                         fields: fs,
-                    });
+                    };
+                    let v = match cell {
+                        Some(c) => {
+                            *c.borrow_mut() = built;
+                            c
+                        }
+                        None => mk(built),
+                    };
                     if let Some(r) = ex.ret(self, v)? {
                         return Ok(r);
                     }
@@ -878,6 +903,59 @@ impl<'p> Machine<'p> {
                 IrExpr::Fault(s) => return Err(fault(s.clone())),
             }
         }
+    }
+
+    /// Bind a matched constructor alternative's payload. An alternative that
+    /// consumes its scrutinee takes the slot's reference, and when that is the
+    /// only one moves the fields into the binders and keeps the emptied cell as
+    /// the reuse token. See Note [Constructor reuse].
+    fn unpack(&self, frame: &FrameP<'p>, sv: PVal<'p>, alt: &'p Alt) {
+        let bound = |i: usize| alt.binders.get(i).is_some_and(Option::is_some);
+        let mut f = frame.borrow_mut();
+        if let Unpack::Consume { slot, token } = alt.unpack {
+            let held = std::mem::replace(&mut f.locals[slot], self.unk.clone());
+            let same = Rc::ptr_eq(&held, &sv);
+            drop(sv);
+            if same && Rc::strong_count(&held) == 1 && Rc::weak_count(&held) == 0 {
+                if let Value::Variant { fields, .. } = &mut *held.borrow_mut() {
+                    for (i, val) in fields.drain(..).enumerate() {
+                        if bound(i) {
+                            f.locals[alt.binder_base + i] = val;
+                        }
+                    }
+                }
+                if let Some(t) = token {
+                    f.locals[t] = held;
+                }
+                return;
+            }
+            Self::bind_shared(&mut f, &deref(held), alt);
+            if let Some(t) = token {
+                f.locals[t] = self.unk.clone();
+            }
+            return;
+        }
+        Self::bind_shared(&mut f, &sv, alt);
+    }
+
+    fn bind_shared(f: &mut Frame<'p>, sv: &PVal<'p>, alt: &Alt) {
+        let fields = match &*sv.borrow() {
+            Value::Variant { fields, .. } => fields.clone(),
+            _ => unreachable!("Con alt matched a non-variant"),
+        };
+        for (i, val) in fields.into_iter().enumerate() {
+            if alt.binders.get(i).is_some_and(Option::is_some) {
+                f.locals[alt.binder_base + i] = val;
+            }
+        }
+    }
+
+    /// Take reuse token `t` out of its slot: the cell, if this is still its only
+    /// reference (a copied activation shares it otherwise).
+    fn reusable(&self, frame: &FrameP<'p>, t: usize) -> Option<PVal<'p>> {
+        let cell = std::mem::replace(&mut frame.borrow_mut().locals[t], self.unk.clone());
+        let unique = Rc::strong_count(&cell) == 1 && Rc::weak_count(&cell) == 0;
+        (unique && matches!(&*cell.borrow(), Value::Variant { .. })).then_some(cell)
     }
 
     /// Dispatch an application inside the run loop: a closure jumps in place (a

@@ -103,6 +103,9 @@ impl MatchCompiler {
         if i == arms.len() {
             return fail;
         }
+        if let Some(group) = self.shallow_group(t, s, arms, i, fail) {
+            return group;
+        }
         let fail_rest = self.compile_arms(t, s, arms, i + 1, fail);
         let fk = self.fresh("k");
         let fkv = t.var(fk);
@@ -111,6 +114,79 @@ impl MatchCompiler {
         let arm_code = self.compile_arm(t, s, &arms[i], on_fail);
         let thunk = t.lam(StrId::intern("_"), fail_rest);
         t.let_(fk, thunk, arm_code)
+    }
+
+    // Note [Shallow arm groups]
+    //
+    // An arm whose pattern only tests the scrutinee's head (a constructor with
+    // plain binders, or a literal) and has no guard fails at exactly one point,
+    // the head test. A run of such arms with distinct heads is therefore one
+    // multi-way shallow case, and its single failure point, the default, can
+    // hold the code for the remaining arms directly: no fallthrough thunk.
+    // Besides saving a closure per match, this keeps the scrutinee out of any
+    // closure, so an alternative can be its last owner and reuse its cell.
+    // See Note [Constructor reuse].
+
+    /// Arms `i..` as one shallow case, when arm `i` starts a run of shallow
+    /// arms. A catch-all arm right after the run is the default; otherwise the
+    /// arms after it are. See Note [Shallow arm groups].
+    fn shallow_group(&mut self, t: &mut Terms, s: StrId, arms: &[CoreArm], i: usize, fail: Aol<Term>) -> Option<Aol<Term>> {
+        // A shallow alternative binds every field (a wildcard too gets a
+        // name), since each field occupies a binder slot.
+        let mut head = |p: &Pat| -> Option<Pat> {
+            match p {
+                Pat::Int(_) | Pat::Real(_) | Pat::Bool(_) => Some(p.clone()),
+                Pat::Variant { tag, fields } if fields.iter().all(|f| matches!(f, Pat::Var(_) | Pat::Wild)) => {
+                    let fields = fields
+                        .iter()
+                        .map(|f| match f {
+                            Pat::Wild => Pat::Var(self.fresh("v")),
+                            _ => f.clone(),
+                        })
+                        .collect();
+                    Some(Pat::Variant { tag: *tag, fields })
+                }
+                _ => None,
+            }
+        };
+        let same_head = |a: &Pat, b: &Pat| match (a, b) {
+            (Pat::Variant { tag: x, .. }, Pat::Variant { tag: y, .. }) => x == y,
+            (Pat::Int(x), Pat::Int(y)) => x == y,
+            (Pat::Real(x), Pat::Real(y)) => x == y,
+            (Pat::Bool(x), Pat::Bool(y)) => x == y,
+            _ => false,
+        };
+        let mut group: Vec<CoreArm> = Vec::new();
+        let mut j = i;
+        while let Some(arm) = arms.get(j) {
+            let Some(pat) = head(&arm.pat).filter(|_| arm.guard.is_none()) else {
+                break;
+            };
+            if group.iter().any(|g| same_head(&g.pat, &pat)) {
+                break;
+            }
+            group.push(CoreArm {
+                pat,
+                guard: None,
+                body: arm.body,
+            });
+            j += 1;
+        }
+        if group.is_empty() {
+            return None;
+        }
+        let default = match arms.get(j) {
+            Some(arm) if arm.guard.is_none() && matches!(arm.pat, Pat::Wild | Pat::Var(_)) => {
+                self.compile_pat(t, s, &arm.pat, arm.body, fail)
+            }
+            _ => self.compile_arms(t, s, arms, j, fail),
+        };
+        let scrut = t.var(s);
+        Some(t.add(Term::Case {
+            scrut,
+            arms: group,
+            default: Some(default),
+        }))
     }
 
     /// Compile a single arm: match its pattern, then run the guard (if any) and

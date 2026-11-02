@@ -20,14 +20,18 @@
 //! - a `Case` binder the alternative never reads to `None`, so it is not
 //!   bound.
 //!
-//! Input: freshly closure-converted codes. Output: the same codes with moves
-//! and drops marked.
+//! A second walk then pairs each `Case` alternative where the scrutinee dies
+//! with a constructor of the same arity it builds, so the engines can reuse
+//! the cell in place. See Note [Constructor reuse] in `super::data`.
+//!
+//! Input: freshly closure-converted codes. Output: the same codes with moves,
+//! drops and reuse marked.
 //!
 //! Entry point: [`insert_moves_and_drops`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::data::{Atom, Code, IrExpr};
+use super::data::{Atom, Code, IrExpr, Unpack};
 
 /// A value an activation can read: one of its local slots, or a field of its
 /// closure's captured record.
@@ -80,7 +84,145 @@ pub fn insert_moves_and_drops(codes: &mut [Code]) {
         let dead_params = (0..code.nparams)
             .filter(|p| !flow.live.contains(&Place::Local(*p)))
             .collect();
-        code.body = with_drops(dead_params, body);
+        let mut body = with_drops(dead_params, body);
+        consume_scrutinees(&mut body, &mut code.nlocals);
+        code.body = body;
+    }
+}
+
+/// Mark each `Case` alternative where a local scrutinee dies as consuming it,
+/// and pair it with a constructor its body builds, giving the pair a fresh
+/// token slot. See Note [Constructor reuse].
+fn consume_scrutinees(e: &mut IrExpr, nlocals: &mut usize) {
+    if let IrExpr::Case {
+        scrut,
+        alts,
+        default,
+    } = e
+    {
+        let has_con = alts.iter().any(|a| matches!(a.kind, super::data::AltKind::Con(_)));
+        let moved = match scrut {
+            Atom::Move(s) if has_con => Some(*s),
+            _ => None,
+        };
+        let held = match scrut {
+            Atom::Local(s) => Some(*s),
+            _ => None,
+        };
+        if let Some(s) = moved {
+            // The slot now keeps the scrutinee until an alternative ends it.
+            *scrut = Atom::Local(s);
+        }
+        for alt in alts.iter_mut() {
+            let is_con = matches!(alt.kind, super::data::AltKind::Con(_));
+            let dies = match (moved, held) {
+                (Some(s), _) => Some(s),
+                (None, Some(s)) if is_con && take_drop(&mut alt.body, s) => Some(s),
+                _ => None,
+            };
+            let Some(s) = dies else { continue };
+            if !is_con {
+                if !matches!(alt.body, IrExpr::Fault(_)) {
+                    let b = std::mem::replace(&mut alt.body, IrExpr::Fault(String::new()));
+                    alt.body = with_drops(vec![s], b);
+                }
+                continue;
+            }
+            let token = *nlocals;
+            let token = if claim(&mut alt.body, alt.binders.len(), token) {
+                *nlocals += 1;
+                Some(token)
+            } else {
+                None
+            };
+            alt.unpack = Unpack::Consume { slot: s, token };
+        }
+        if let Some(s) = moved {
+            if !matches!(**default, IrExpr::Fault(_)) {
+                let b = std::mem::replace(default.as_mut(), IrExpr::Fault(String::new()));
+                **default = with_drops(vec![s], b);
+            }
+        }
+    }
+    let mut kids: Vec<&mut IrExpr> = Vec::new();
+    match e {
+        IrExpr::Let { rhs, body, .. } => kids.extend([rhs.as_mut(), body.as_mut()]),
+        IrExpr::Case { alts, default, .. } => {
+            kids.extend(alts.iter_mut().map(|a| &mut a.body));
+            kids.push(default.as_mut());
+        }
+        IrExpr::Handle { body, .. } | IrExpr::Defer { body, .. } | IrExpr::Drop { body, .. } => {
+            kids.push(body.as_mut())
+        }
+        _ => {}
+    }
+    for k in kids {
+        consume_scrutinees(k, nlocals);
+    }
+}
+
+/// Remove `slot` from a drop heading `e`, reporting whether there was one.
+fn take_drop(e: &mut IrExpr, slot: usize) -> bool {
+    let IrExpr::Drop { slots, body } = e else {
+        return false;
+    };
+    let Some(i) = slots.iter().position(|s| *s == slot) else {
+        return false;
+    };
+    slots.remove(i);
+    if slots.is_empty() {
+        let b = std::mem::replace(body.as_mut(), IrExpr::Fault(String::new()));
+        *e = b;
+    }
+    true
+}
+
+/// Hand reuse token `token` to a constructor of `arity` fields that `e` builds
+/// along its spine of `let` bodies, drops and case branches. A branch that
+/// builds none drops the token on entry instead, so every path ends it.
+/// Reports whether any constructor took it; when none did, `e` is unchanged.
+/// A handler or `defer` body is never entered: it can run again after the
+/// token is gone.
+fn claim(e: &mut IrExpr, arity: usize, token: usize) -> bool {
+    fn take(e: &mut IrExpr, arity: usize, token: usize) -> bool {
+        match e {
+            IrExpr::MkVariant { fields, reuse, .. } if reuse.is_none() && fields.len() == arity => {
+                *reuse = Some(token);
+                true
+            }
+            _ => false,
+        }
+    }
+    match e {
+        IrExpr::MkVariant { .. } => take(e, arity, token),
+        IrExpr::Let { rhs, body, .. } => take(rhs, arity, token) || claim(body, arity, token),
+        IrExpr::Drop { body, .. } => claim(body, arity, token),
+        IrExpr::Case { alts, default, .. } => {
+            let mut took: Vec<bool> = Vec::with_capacity(alts.len() + 1);
+            for alt in alts.iter_mut() {
+                took.push(claim(&mut alt.body, arity, token));
+            }
+            took.push(claim(default, arity, token));
+            if !took.iter().any(|t| *t) {
+                return false;
+            }
+            let bodies = alts.iter_mut().map(|a| &mut a.body).chain([default.as_mut()]);
+            for (took, body) in took.into_iter().zip(bodies) {
+                if !took && !matches!(body, IrExpr::Fault(_)) {
+                    let b = std::mem::replace(body, IrExpr::Fault(String::new()));
+                    *body = with_drops(vec![token], b);
+                }
+            }
+            true
+        }
+        IrExpr::Ret(_)
+        | IrExpr::App { .. }
+        | IrExpr::MkStruct { .. }
+        | IrExpr::Field { .. }
+        | IrExpr::MkTuple(_)
+        | IrExpr::Handle { .. }
+        | IrExpr::Defer { .. }
+        | IrExpr::Fault(_) => false,
     }
 }
 
@@ -253,7 +395,7 @@ fn expr(e: &mut IrExpr, out: &Live) -> Flow {
             default,
         } => {
             let mut leftover = BTreeSet::new();
-            let mut arms: Vec<(Live, bool)> = Vec::with_capacity(alts.len() + 1);
+            let mut arms: Vec<(Live, bool, std::ops::Range<usize>)> = Vec::with_capacity(alts.len() + 1);
             for alt in alts.iter_mut() {
                 let fa = expr(&mut alt.body, out);
                 let mut live = fa.live;
@@ -265,19 +407,26 @@ fn expr(e: &mut IrExpr, out: &Live) -> Flow {
                     live.remove(&slot);
                 }
                 leftover.extend(fa.leftover);
-                arms.push((live, matches!(alt.body, IrExpr::Fault(_))));
+                let own = alt.binder_base..alt.binder_base + alt.binders.len();
+                arms.push((live, matches!(alt.body, IrExpr::Fault(_)), own));
             }
             let fd = expr(default, out);
             leftover.extend(fd.leftover);
-            arms.push((fd.live, matches!(**default, IrExpr::Fault(_))));
+            arms.push((fd.live, matches!(**default, IrExpr::Fault(_)), 0..0));
 
-            let union: Live = arms.iter().flat_map(|(l, _)| l.iter().copied()).collect();
+            let union: Live = arms.iter().flat_map(|(l, _, _)| l.iter().copied()).collect();
             let bodies = alts.iter_mut().map(|a| &mut a.body).chain([default.as_mut()]);
-            for ((live, faults), body) in arms.iter().zip(bodies) {
+            for ((live, faults, own), body) in arms.iter().zip(bodies) {
                 if *faults {
                     continue;
                 }
-                let dead = locals_in(union.difference(live).copied());
+                // A slot pinned for a handler body reads as live after every
+                // alternative, so a sibling can report one of this alternative's
+                // binders live; the value just bound here is not what dies.
+                let dead: Vec<usize> = locals_in(union.difference(live).copied())
+                    .into_iter()
+                    .filter(|s| !own.contains(s))
+                    .collect();
                 let b = std::mem::replace(body, IrExpr::Fault(String::new()));
                 *body = with_drops(dead, b);
             }

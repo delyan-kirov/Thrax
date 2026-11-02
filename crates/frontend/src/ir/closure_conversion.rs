@@ -385,6 +385,7 @@ impl<'c> ClosureConverter<'c> {
             binder_base,
             binders: binder_names,
             body,
+            unpack: data::Unpack::Borrow,
         }
     }
 
@@ -408,6 +409,7 @@ impl<'c> ClosureConverter<'c> {
             ty,
             tag,
             fields: atoms,
+            reuse: None,
         };
         for (slot, rhs) in lets.iter().rev() {
             res = IrExpr::Let {

@@ -1402,3 +1402,41 @@ fn spawned_tasks_perform_io_on_worker_threads() {
     want.sort_unstable();
     assert_eq!(lines, want);
 }
+
+#[test]
+fn constructor_reuse_never_overwrites_a_shared_cell() {
+    // `inc` reuses each cell it consumes when it holds the only reference. The
+    // first list is also read afterwards, so its cells are shared and must come
+    // through intact; the second is used once and is rebuilt in place. A
+    // non-recursive type is strict, so `step` reuses with no thunk in between.
+    let src = "$ @mod M\n\
+               $ Lst : @union = Nl: {}, Cn: { @Int, Lst },\n\
+               $ St : @union = St: { @Int, @Int },\n\
+               $ build : @Int -> Lst -> Lst = \\n acc = if n == 0 => acc else build (n - 1) (Lst.Cn.{ n, acc })\n\
+               $ inc : Lst -> Lst = \\xs = is xs | Lst.Nl => Lst.Nl | Lst.Cn.{ h, t } => Lst.Cn.{ h + 1, inc t }\n\
+               $ total : Lst -> @Int -> @Int = \\xs acc = is xs | Lst.Nl => acc | Lst.Cn.{ h, t } => total t (acc + h)\n\
+               $ step : St -> St = \\s = is s | St.St.{ a, b } => St.St.{ a + 1, b + a }\n\
+               $ loop : @Int -> St -> St = \\n s = if n == 0 => s else loop (n - 1) (step s)\n\
+               $ shared : @Int = let xs = build 100 Lst.Nl in total (inc xs) 0 * 100000 + total xs 0\n\
+               $ unique : @Int = total (inc (inc (build 100 Lst.Nl))) 0\n\
+               $ strict : @Int = is loop 1000 (St.St.{ 0, 0 }) | St.St.{ a, b } => a * 1000000 + b\n";
+    for entry in ["shared", "unique", "strict"] {
+        assert_matches(src, entry);
+    }
+    assert_eq!(interp_show(src, "shared"), "515005050");
+    assert_eq!(interp_show(src, "unique"), "5250");
+    assert_eq!(interp_show(src, "strict"), "1000499500");
+}
+
+#[test]
+fn a_shallow_arm_with_wildcard_fields_binds_the_right_slots() {
+    // Constructor and literal arms with plain binders compile to one multi-way
+    // case; a wildcard still occupies its field's binder slot.
+    let src = "$ @mod M\n\
+               $ T : @union = L: {}, N: { @Int, @Int, @Int, @Int },\n\
+               $ pick : T -> @Int = \\t = is t | T.N.{ _, b, _, d } => b * 10 + d | T.L => 0\n\
+               $ lit : @Int -> @Int = \\n = is n | 1 => 10 | 2 => 20 | m => m\n\
+               $ test : @Int = pick (T.N.{ 1, 2, 3, 4 }) * 1000 + lit 2 + lit 7 + pick T.L\n";
+    assert_matches(src, "test");
+    assert_eq!(interp_show(src, "test"), "24027");
+}

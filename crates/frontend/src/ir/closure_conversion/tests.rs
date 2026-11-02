@@ -1,4 +1,4 @@
-use super::super::data::{Alt, AltKind, Atom, IrExpr, ResumeUse};
+use super::super::data::{Alt, AltKind, Atom, IrExpr, ResumeUse, Unpack};
 use super::resume_use;
 use crate::ir::lower;
 use crate::core::{CoreProgram, Term, Terms};
@@ -104,6 +104,7 @@ fn any_mention_of_the_continuation_captures_the_slice() {
             binder_base: 2,
             binders: Vec::new(),
             body: app_k(),
+            unpack: Unpack::Borrow,
         }],
         default: Box::new(IrExpr::Ret(Atom::LitI(0))),
     };
@@ -112,6 +113,7 @@ fn any_mention_of_the_continuation_captures_the_slice() {
         ty: "Task".into(),
         tag: "Susp".into(),
         fields: vec![Atom::Local(1)],
+        reuse: None,
     };
     let captured = IrExpr::Ret(Atom::Clos {
         code: 0,

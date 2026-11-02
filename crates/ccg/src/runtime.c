@@ -312,11 +312,25 @@ static THX_TLS long long g_live = 0;
 static long long g_live_folded = 0;
 #endif
 
+/* Built with -DTHRAX_ALLOC_STATS, a program reports on stderr at exit how many
+ * counted blocks it allocated in all, for measuring allocation behaviour. */
+#ifdef THRAX_ALLOC_STATS
+static long long g_allocs_total = 0, g_reuses_total = 0;
+static void alloc_stats_report(void) {
+  fprintf(stderr, "thrax: %lld allocations, %lld cells reused\n",
+          __atomic_load_n(&g_allocs_total, __ATOMIC_RELAXED),
+          __atomic_load_n(&g_reuses_total, __ATOMIC_RELAXED));
+}
+#endif
+
 /* Allocate `size` zeroed bytes with value lifetime (counted). */
 static void *THxMEM_alloc(size_t size) {
   void *p = calloc(1, size ? size : 1);
   if (!p) thrax_fault("out of memory");
   ++g_live;
+#ifdef THRAX_ALLOC_STATS
+  if (__atomic_fetch_add(&g_allocs_total, 1, __ATOMIC_RELAXED) == 0) atexit(alloc_stats_report);
+#endif
   return p;
 }
 
@@ -480,6 +494,16 @@ static int THxMEM_unique(Value *v) {
   int rc = rc_load(v);
   if (rc > 0) return rc == 1;
   return rc < 0 && sh_load(v) != SH_IMMORTAL && __atomic_load_n(&v->rc, __ATOMIC_ACQUIRE) == -1;
+#else
+  return v->rc == 1;
+#endif
+}
+
+/* Whether `v` is held once, by this thread alone. A value other threads can
+ * reach is never reused: its children would have to stay marked shared. */
+static inline int unique_local(Value *v) {
+#ifdef THRAX_THREADS
+  return rc_load(v) == 1;
 #else
   return v->rc == 1;
 #endif
@@ -803,21 +827,46 @@ Value *THxK_call(Value *f, Value *arg);
 #ifdef THRAX_THREADS
 static Value *force_shared(Value *v);
 #endif
+static Value *THxK_call_owned(Value *f, Value *arg);
+static int steal_payload(Value *box, Value *v);
 Value *THxVALUE_force(Value *v) {
 #ifdef THRAX_THREADS
   if (v && __builtin_expect(rc_load(v) <= 0, 0)) return force_shared(v);
 #endif
   while (v && v->tag == T_THUNK) {
-    /* Hold the closure across the call: patching the cell below destroys the
-     * thunk payload, which is what otherwise owns it. */
     Value *f = v->u.thunk;
-    THxMEM_retain(f);
-    Value *forced = THxK_call(f, THxRT_unit()); /* owned */
-    THxMEM_release(f);
-    if (forced == v) break;
-    THxVALUE_patch_box(v, forced); /* deep-copies, so the result is ours to drop */
-    THxMEM_release(forced);
+    Value *forced;
+#ifndef THRAX_THREADS
+    if (unique_local(f)) {
+      /* The cell is the closure's only owner, and patching it below would
+       * drop the closure anyway, so the call takes it over: the activation
+       * is then its sole owner and can move the captures out (a lazy tail
+       * reaches the next call uniquely held, ready for reuse). Meanwhile the
+       * cell is a black hole, so a value that needs itself faults. */
+      v->tag = T_BLACKHOLE;
+      v->u.thunk = NULL;
+      Value *u = THxRT_unit();
+      THxMEM_retain(u);
+      forced = THxK_call_owned(f, u); /* owned */
+      if (forced == v) thrax_fault("a lazy value depends on itself");
+    } else
+#endif
+    {
+      /* Hold the closure across the call: patching the cell below destroys
+       * the thunk payload, which is what otherwise owns it. */
+      THxMEM_retain(f);
+      forced = THxK_call(f, THxRT_unit()); /* owned */
+      THxMEM_release(f);
+      if (forced == v) break;
+    }
+    if (!steal_payload(v, forced)) {
+      THxVALUE_patch_box(v, forced); /* deep-copies, so the result is ours to drop */
+      THxMEM_release(forced);
+    }
   }
+#ifndef THRAX_THREADS
+  if (v && v->tag == T_BLACKHOLE) thrax_fault("a lazy value depends on itself");
+#endif
   return v;
 }
 
@@ -1907,6 +1956,48 @@ static int is_constant(Value *v) {
          (v >= g_small_ints && v < g_small_ints + (THX_SMALL_MAX - THX_SMALL_MIN + 1));
 }
 
+/* Whether `c` is one of `v`'s children. */
+static int has_child(Value *v, Value *c) {
+  Value **f = NULL;
+  size_t n = 0;
+  switch (v->tag) {
+    case T_TUPLE:
+    case T_VEC: f = v->u.seq.items, n = v->u.seq.len; break;
+    case T_VARIANT: f = v->u.variant.fields, n = v->u.variant.len; break;
+    case T_CLOS: f = v->u.clos.env, n = v->u.clos.nenv; break;
+    case T_BUILTIN: f = v->u.builtin.args, n = v->u.builtin.nargs; break;
+    case T_EXTERN: f = v->u.ext.args, n = v->u.ext.nargs; break;
+    case T_STRUCT:
+      for (size_t i = 0; i < v->u.strct.len; i++)
+        if (v->u.strct.fields[i].val == c) return 1;
+      return 0;
+    case T_THUNK:
+    case T_BLACKHOLE: return v->u.thunk == c;
+    default: return 0;
+  }
+  for (size_t i = 0; i < n; i++)
+    if (f[i] == c) return 1;
+  return 0;
+}
+
+/* Patch `box` with `v` by moving `v`'s payload in, when the caller's is the
+ * only reference to `v` (which it gives up) and neither cell is a child of
+ * `v`: a self edge would change meaning in the move. Returns 0, changing
+ * nothing, otherwise. Saves the copy `THxVALUE_patch_box` makes. */
+static int steal_payload(Value *box, Value *v) {
+  if (box == v || is_constant(box) || !unique_local(v)) return 0;
+#ifdef THRAX_THREADS
+  if (sh_load(box) != SH_LOCAL) return 0;
+#endif
+  if (v->tag == T_RESUMP || has_child(v, v) || has_child(v, box)) return 0;
+  payload_destroy(box);
+  box->tag = v->tag;
+  box->u = v->u;
+  v->tag = T_UNIT;
+  THxMEM_release(v);
+  return 1;
+}
+
 /* Back-patch a let box: make `box` a copy of `v` (see `copy_payload`),
  * preserving box's own count and shared mark. A box other threads can reach
  * must not take in a thread-local value, so `v` is marked first. */
@@ -2284,6 +2375,94 @@ void THxK_backpatch(Frame *fr, size_t slot, Value *v) {
     return;
   }
   THxVALUE_patch_box(box, v);
+}
+
+/* `let slot = from` at `from`'s last use: the reference moves between the
+ * slots. Into a recursive let's box it is patched as any value is. */
+void THxK_move(Frame *fr, size_t slot, size_t from) {
+  if (slot >= fr->nlocals) thrax_fault("move: slot out of range");
+  Value *v = THxVALUE_local(fr->locals, fr->nlocals, from);
+  if (fr->locals[slot]) {
+    THxVALUE_patch_box(fr->locals[slot], v);
+    THxK_drop(fr, from);
+    return;
+  }
+  fr->locals[slot] = v;
+  fr->locals[from] = NULL;
+}
+
+/* -- constructor reuse ---------------------------------------------------
+ * See Note [Constructor reuse]. */
+
+/* Release the reuse token in local `token` (if any) and store `v` there. */
+static void set_token(Frame *fr, long token, Value *v) {
+  if (token < 0) {
+    THxMEM_release(v);
+    return;
+  }
+  if ((size_t)token >= fr->nlocals) thrax_fault("reuse token out of range");
+  THxMEM_release(fr->locals[token]);
+  fr->locals[token] = v;
+}
+
+/* Enter a case alternative where the scrutinee `v`, held by local `slot`,
+ * dies. Held once, its fields move into the bound binders (`bind[i]`) without
+ * a count changing, the rest are released, and the emptied cell is freed or
+ * parked in local `token` (-1: none). Otherwise the binders share the fields,
+ * the slot's reference is released, and the token is left empty. */
+void THxK_unpack(Frame *fr, Value *v, size_t slot, long token, size_t base,
+                 const unsigned char *bind, size_t n) {
+  if (slot >= fr->nlocals || base + n > fr->nlocals) thrax_fault("unpack: slot out of range");
+  if (v->tag != T_VARIANT || v->u.variant.len != n) thrax_fault("unpack: shape mismatch");
+  Value **f = v->u.variant.fields;
+  int own = fr->locals[slot] == v && unique_local(v);
+  for (size_t i = 0; own && i < n; i++)
+    if (f[i] == v) own = 0; /* a weak self edge is no reference to hand on */
+  if (own) {
+    fr->locals[slot] = NULL;
+    for (size_t i = 0; i < n; i++) {
+      if (bind[i]) {
+        THxMEM_release(fr->locals[base + i]);
+        fr->locals[base + i] = f[i];
+      } else {
+        THxMEM_release(f[i]);
+      }
+      f[i] = NULL;
+    }
+    set_token(fr, token, v);
+    return;
+  }
+  for (size_t i = 0; i < n; i++)
+    if (bind[i]) THxK_setlocal(fr, base + i, f[i]);
+  THxK_drop(fr, slot);
+  set_token(fr, token, NULL);
+}
+
+/* A variant built into the cell reuse token `token` holds, when it holds one
+ * nobody else does (a copied activation of a resumption shares it); a fresh
+ * one otherwise. Either way the token is used up, and the pool holds the
+ * result's reference as for any fresh value. */
+Value *THxRT_variant_at(Frame *fr, size_t token, const char *ty, const char *tag,
+                        size_t len, Value **fields) {
+  if (token >= fr->nlocals) thrax_fault("reuse token out of range");
+  Value *v = fr->locals[token];
+  fr->locals[token] = NULL;
+  if (!v || v->tag != T_VARIANT || v->u.variant.len != len || !unique_local(v)) {
+    THxMEM_release(v);
+    return THxRT_variant(ty, tag, len, fields);
+  }
+#ifdef THRAX_ALLOC_STATS
+  __atomic_fetch_add(&g_reuses_total, 1, __ATOMIC_RELAXED);
+#endif
+  v->u.variant.ty = ty;
+  v->u.variant.tag = tag;
+  for (size_t i = 0; i < len; i++) {
+    if (v->u.variant.fields[i]) thrax_fault("reuse of a cell with live fields");
+    v->u.variant.fields[i] = fields[i];
+    THxMEM_retain(fields[i]);
+  }
+  pool_adopt(v);
+  return v;
 }
 
 /* -- the machine --------------------------------------------------------- */
@@ -2687,6 +2866,17 @@ Value *THxK_call(Value *f, Value *arg) {
   Frame *fr = NULL;
   Value *in = NULL;
   if (!do_apply(&cur, &fr, &in, f, arg, base, 0)) return g_result;
+  return run_loop(cur, fr, in, base);
+}
+
+/* As THxK_call, but consuming the caller's references to `f` and `arg`, so a
+ * callee nobody else holds is entered uniquely owned. */
+static Value *THxK_call_owned(Value *f, Value *arg) {
+  size_t base = g_kn;
+  BlockFn cur = NULL;
+  Frame *fr = NULL;
+  Value *in = NULL;
+  if (!do_apply(&cur, &fr, &in, f, arg, base, 1)) return g_result;
   return run_loop(cur, fr, in, base);
 }
 
