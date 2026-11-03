@@ -153,6 +153,10 @@ struct Frame {
   /* A bit per local slot holding a lent value: the slot owns no reference, the
    * caller that lent it keeps it alive. Only parameters are ever lent. */
   unsigned lent;
+  /* A bit per local slot (of the first 64) ever written, so releasing a direct
+   * activation visits only those: most of a direct function's slots hold
+   * unboxed scalars and are never written at all. */
+  uint64_t dirty;
   Value *clos; /* retained; NULL for a nullary CAF */
   Value **locals;
   size_t nlocals;
@@ -161,6 +165,9 @@ struct Frame {
 };
 
 static inline int frame_lent(Frame *f, size_t i) { return i < 32 && (f->lent >> i & 1u); }
+static inline void frame_dirty(Frame *f, size_t i) {
+  if (i < 64) f->dirty |= 1ull << i;
+}
 
 /* Continuation frames (the reified-K stack) and captured resumptions. */
 typedef enum {
@@ -448,7 +455,7 @@ static void THxMEM_cells_release(void) {
 static THX_TLS Value **g_pool = NULL;
 static THX_TLS size_t g_pn = 0, g_pcap = 0;
 
-static void THxMEM_release(Value *v);
+static inline void THxMEM_release(Value *v);
 
 /* Hand one reference on `v` to the pool, which releases it at the next drain. */
 static void pool_adopt(Value *v) {
@@ -554,7 +561,11 @@ static void dead_push(Value *v) {
   g_dead[g_dn++] = v;
 }
 
-static void THxMEM_release(Value *v) {
+static void release_dead(Value *v);
+
+/* Inline, since a frame's release releases every slot, most of them empty or
+ * still referenced elsewhere; only a value that dies leaves the fast path. */
+static inline void THxMEM_release(Value *v) {
   if (!v) return;
   THX_RC_COUNT(g_rc_releases);
 #ifdef THRAX_THREADS
@@ -571,6 +582,11 @@ static void THxMEM_release(Value *v) {
   if (v->rc == 0) thrax_fault("release: releasing a freed value");
   if (--v->rc > 0) return;
 #endif
+  release_dead(v);
+}
+
+/* `v` just died: destroy it, and whatever its destruction kills, iteratively. */
+static void release_dead(Value *v) {
   dead_push(v);
   if (g_draining) return; /* an outer drain loop will get to it */
   g_draining = 1;
@@ -806,23 +822,23 @@ double THxVALUE_as_num(Value *v) {
   if (v->tag == T_REAL || v->tag == T_REAL32) return v->u.r;
   thrax_fault("expected a number");
 }
-int THxVALUE_as_bool(Value *v) {
+static inline int THxVALUE_as_bool(Value *v) {
   if (v->tag != T_BOOL) thrax_fault("expected a boolean");
   return v->u.b ? 1 : 0;
 }
-Value *THxVALUE_local(Value **locals, size_t n, size_t i) {
+static inline Value *THxVALUE_local(Value **locals, size_t n, size_t i) {
   if (i >= n) thrax_fault("local slot out of range");
   if (!locals[i]) thrax_fault("read of an empty local slot");
   return locals[i];
 }
-Value *THxVALUE_env(Value **env, size_t n, size_t i) {
+static inline Value *THxVALUE_env(Value **env, size_t n, size_t i) {
   if (i >= n) thrax_fault("env field out of range");
   if (!env[i]) thrax_fault("read of an empty env field");
   return env[i];
 }
 /* A local's last use: its reference moves to the temp pool, so the value lives
  * out this bounce while the slot no longer counts as an owner. */
-Value *THxVALUE_take(Frame *fr, size_t i) {
+static inline Value *THxVALUE_take(Frame *fr, size_t i) {
   Value *v = THxVALUE_local(fr->locals, fr->nlocals, i);
   fr->locals[i] = NULL;
   if (frame_lent(fr, i)) {
@@ -839,6 +855,13 @@ Value *THxVALUE_take(Frame *fr, size_t i) {
 Value *THxVALUE_take_env(Frame *fr, size_t i) {
   Value *v = THxVALUE_env(fr->env, fr->nenv, i);
   Value *clos = fr->clos;
+  if (!clos) {
+    /* A direct function's frame (only those have an env and no closure): the
+       env is its own parameter row, which holds a reference of its own. */
+    fr->env[i] = NULL;
+    pool_adopt(v);
+    return v;
+  }
   if (!THxMEM_unique(clos)) return v;
   for (size_t j = 0; j < fr->nenv; j++)
     if (fr->env[j] == clos) return v;
@@ -846,11 +869,45 @@ Value *THxVALUE_take_env(Frame *fr, size_t i) {
   pool_adopt(v);
   return v;
 }
+/* An argument for a direct function, which owns its arguments (see the ccg's
+ * Note [Direct functions]). A local's last use gives the slot's reference
+ * away (a new one, if the slot was lent one), a captured field's gives its
+ * row's (in a direct frame) or a new one, and any other atom lends a new one.
+ * Unlike `THxVALUE_take`, nothing goes to the pool: a value moved into a call
+ * stays uniquely held there, so the callee can update it in place. */
+static inline Value *THxVALUE_give(Frame *fr, size_t i) {
+  Value *v = THxVALUE_local(fr->locals, fr->nlocals, i);
+  fr->locals[i] = NULL;
+  if (frame_lent(fr, i)) {
+    fr->lent &= ~(1u << i);
+    THxMEM_retain(v);
+  }
+  return v;
+}
+static inline Value *THxVALUE_give_env(Frame *fr, size_t i) {
+  if (!fr->clos) {
+    Value *v = THxVALUE_env(fr->env, fr->nenv, i);
+    fr->env[i] = NULL;
+    return v;
+  }
+  Value *v = THxVALUE_take_env(fr, i);
+  THxMEM_retain(v);
+  return v;
+}
+static inline Value *THxD_lend(Value *v) {
+  THxMEM_retain(v);
+  return v;
+}
 char *THxVALUE_str(Value *v) {
   if (v->tag != T_STR) thrax_fault("expected a byte vector");
   return (char *)v->u.str.data;
 }
+/* Field names are string literals of one translation unit, so a lookup
+ * usually finds its field by address; comparing the spelling of every field
+ * passed over would cost a strcmp each. */
 static Value *struct_field(Value *v, const char *name) {
+  for (size_t i = 0; i < v->u.strct.len; i++)
+    if (v->u.strct.fields[i].name == name) return v->u.strct.fields[i].val;
   for (size_t i = 0; i < v->u.strct.len; i++)
     if (same_name(v->u.strct.fields[i].name, name))
       return v->u.strct.fields[i].val;
@@ -925,6 +982,28 @@ Value *THxVALUE_field(Value *v, const char *name) {
   }
   thrax_fault("field access on a non-record");
 }
+
+/* `THxVALUE_field` at one access site, which remembers in `hint` where it last
+ * found the field, so a site that sees one struct layout reads it at once.
+ * Only a value this thread holds alone, or an immortal one (published whole
+ * before any thread reads it, and never patched after), takes the fast path:
+ * another shared cell may be a thunk some thread is patching in place. */
+static inline Value *THxVALUE_field_ic(Value *v, const char *name, unsigned *hint) {
+#ifdef THRAX_THREADS
+  if ((rc_load(v) > 0 || sh_load(v) == SH_IMMORTAL) && v->tag == T_STRUCT) {
+#else
+  if (v->tag == T_STRUCT) {
+#endif
+    unsigned h = __atomic_load_n(hint, __ATOMIC_RELAXED);
+    if (h < v->u.strct.len && v->u.strct.fields[h].name == name) return v->u.strct.fields[h].val;
+    for (size_t i = 0; i < v->u.strct.len; i++)
+      if (v->u.strct.fields[i].name == name) {
+        __atomic_store_n(hint, (unsigned)i, __ATOMIC_RELAXED);
+        return v->u.strct.fields[i].val;
+      }
+  }
+  return THxVALUE_field(v, name);
+}
 const char *THxVALUE_ctor(Value *v) {
   if (v->tag != T_VARIANT) thrax_fault("expected a variant");
   return v->u.variant.tag;
@@ -964,6 +1043,34 @@ static uint8_t as_byte(Value *v) {
 static Value *as_str(Value *v) {
   if (v->tag != T_STR) thrax_fault("expected a byte vector");
   return v;
+}
+
+/* The byte-buffer reads that yield an integer, shared by the boxed builtins and
+ * the generated code that keeps integers unboxed (`THxB_ARRAY_LEN`, ...). */
+static inline int64_t THxA_len(Value *s) { return (int64_t)as_str(s)->u.str.len; }
+static inline int64_t THxA_get(Value *s, int64_t i) {
+  as_str(s);
+  if (i < 0) thrax_fault("negative index");
+  if ((uint64_t)i >= s->u.str.len) thrax_fault("array index out of bounds");
+  return s->u.str.data[i];
+}
+static inline int THxA_match(Value *s, int64_t at, Value *needle) {
+  as_str(s);
+  as_str(needle);
+  if (at < 0) thrax_fault("negative index");
+  size_t n = needle->u.str.len;
+  if ((uint64_t)at > s->u.str.len || s->u.str.len - (size_t)at < n) return 0;
+  return memcmp(s->u.str.data + at, needle->u.str.data, n) == 0;
+}
+static inline int64_t THxA_scan(Value *s, int64_t from, Value *mask) {
+  as_str(s);
+  as_str(mask);
+  if (from < 0) thrax_fault("negative index");
+  if (mask->u.str.len < 256) thrax_fault("`@array_scan` mask must hold 256 bytes");
+  const uint8_t *data = s->u.str.data, *m = mask->u.str.data;
+  size_t i = (size_t)from, len = s->u.str.len;
+  while (i < len && !m[data[i]]) i++;
+  return (int64_t)(i < len ? i : len);
 }
 
 /* -- structural equality (==) -------------------------------------------- */
@@ -1598,14 +1705,8 @@ static Value *run_builtin(int id, Value **a) {
     memset(data, 0, len + 1);
     return mk_str_owned(data, len);
   }
-  case THxB_ARRAY_LEN:
-    return THxRT_int((int64_t)as_str(a[0])->u.str.len);
-  case THxB_ARRAY_GET: {
-    Value *s = as_str(a[0]);
-    size_t i = as_index(a[1]);
-    if (i >= s->u.str.len) thrax_fault("array index out of bounds");
-    return THxRT_int(s->u.str.data[i]);
-  }
+  case THxB_ARRAY_LEN: return THxRT_int(THxA_len(a[0]));
+  case THxB_ARRAY_GET: return THxRT_int(THxA_get(a[0], (int64_t)as_index(a[1])));
   case THxB_ARRAY_PUSH: {
     Value *s = as_str(a[0]);
     size_t len = s->u.str.len + 1;
@@ -1633,6 +1734,15 @@ static Value *run_builtin(int id, Value **a) {
     if (end < beg) end = beg;
     if (end > s->u.str.len) end = s->u.str.len;
     return THxRT_str((const char *)s->u.str.data + beg, end - beg);
+  }
+  case THxB_ARRAY_SCAN: return THxRT_int(THxA_scan(a[0], (int64_t)as_index(a[1]), a[2]));
+  case THxB_ARRAY_MATCH: return THxRT_bool(THxA_match(a[0], (int64_t)as_index(a[1]), a[2]));
+  case THxB_PTR_BYTES: {
+    size_t n = as_index(a[1]);
+    if (n == 0) return THxRT_str("", 0);
+    const char *p = (const char *)(intptr_t)as_i64(a[0]);
+    if (!p) thrax_fault("`@ptr_bytes` from a null pointer");
+    return THxRT_str(p, n);
   }
 
   case THxB_RECORD_WITHOUT: {
@@ -2095,6 +2205,7 @@ static Frame *frame_new(size_t nlocals, Value *clos) {
   Frame *f = THxMEM_cell(frame_size(nlocals));
   f->rc = 1;
   f->lent = 0;
+  f->dirty = 0;
   f->clos = clos;
   if (clos) {
     THxMEM_retain(clos);
@@ -2178,6 +2289,7 @@ static void THxK_resump_release(Resump *seg) {
 static Frame *frame_clone(Frame *f) {
   Frame *c = THxMEM_cell(frame_size(f->nlocals));
   c->rc = 1;
+  c->dirty = f->dirty;
   c->clos = f->clos;
   THxMEM_retain(c->clos);
   c->env = f->env;
@@ -2432,7 +2544,7 @@ void THxK_defer_run(Frame *fr, BlockFn cont, size_t slot, Value *cleanup,
 
 /* -- let-box helpers ----------------------------------------------------- */
 
-void THxK_setlocal(Frame *fr, size_t slot, Value *v) {
+static inline void THxK_setlocal(Frame *fr, size_t slot, Value *v) {
   if (slot >= fr->nlocals) thrax_fault("setlocal: slot out of range");
   THxMEM_retain(v); /* retain-before-release: v may be the slot's old value */
   if (frame_lent(fr, slot))
@@ -2440,8 +2552,9 @@ void THxK_setlocal(Frame *fr, size_t slot, Value *v) {
   else
     THxMEM_release(fr->locals[slot]);
   fr->locals[slot] = v;
+  frame_dirty(fr, slot);
 }
-void THxK_drop(Frame *fr, size_t slot) {
+static inline void THxK_drop(Frame *fr, size_t slot) {
   if (slot >= fr->nlocals) thrax_fault("drop: slot out of range");
   if (frame_lent(fr, slot))
     fr->lent &= ~(1u << slot);
@@ -2453,7 +2566,7 @@ void THxK_setbox(Frame *fr, size_t slot) {
   THxK_setlocal(fr, slot, fresh_box());
 }
 /* A slot with no box is a non-recursive `let`'s: the value moves in. */
-void THxK_backpatch(Frame *fr, size_t slot, Value *v) {
+static inline void THxK_backpatch(Frame *fr, size_t slot, Value *v) {
   if (slot >= fr->nlocals) thrax_fault("backpatch: slot out of range");
   Value *box = fr->locals[slot];
   if (!box) {
@@ -2475,6 +2588,7 @@ void THxK_move(Frame *fr, size_t slot, size_t from) {
   }
   fr->locals[slot] = v;
   fr->locals[from] = NULL;
+  frame_dirty(fr, slot);
 }
 
 /* -- constructor reuse ---------------------------------------------------
@@ -2489,6 +2603,7 @@ static void set_token(Frame *fr, long token, Value *v) {
   if ((size_t)token >= fr->nlocals) thrax_fault("reuse token out of range");
   THxMEM_release(fr->locals[token]);
   fr->locals[token] = v;
+  frame_dirty(fr, (size_t)token);
 }
 
 /* Enter a case alternative where the scrutinee `v`, held by local `slot`,
@@ -2510,6 +2625,7 @@ void THxK_unpack(Frame *fr, Value *v, size_t slot, long token, size_t base,
       if (bind[i]) {
         THxMEM_release(fr->locals[base + i]);
         fr->locals[base + i] = f[i];
+        frame_dirty(fr, base + i);
       } else {
         THxMEM_release(f[i]);
       }
@@ -2591,10 +2707,13 @@ static inline int THxD_room(void) {
 }
 
 /* A direct function's activation: a Frame on the C stack over the slot array
- * `locals` and the environment `env`, both C arrays of the function. */
+ * `locals` and the environment `env`, both C arrays of the function. The env
+ * is the parameter row itself, which owns a reference on each boxed
+ * parameter, so `THxVALUE_take_env` moves a parameter out on its last use. */
 static inline void THxD_frame(Frame *fr, Value **locals, size_t nlocals, Value **env, size_t nenv) {
   fr->rc = 1;
   fr->lent = 0;
+  fr->dirty = 0;
   fr->clos = NULL;
   fr->locals = locals;
   fr->nlocals = nlocals;
@@ -2603,10 +2722,22 @@ static inline void THxD_frame(Frame *fr, Value **locals, size_t nlocals, Value *
   memset(locals, 0, (nlocals ? nlocals : 1) * sizeof(Value *));
 }
 
+/* Hand the last parameter's reference from the row `params` to slot 0, where
+ * the body finds it; the row keeps none, so a move out of the slot leaves the
+ * value uniquely held. */
+static inline void THxD_param0(Frame *fr, Value **params, size_t last) {
+  fr->locals[0] = params[last];
+  params[last] = NULL;
+  frame_dirty(fr, 0);
+}
+
 /* Release a direct activation: its slots, its arguments `params`, and the
  * temporaries it made since `mark`. */
 static void THxD_reset(Frame *fr, Value **params, size_t nparams, size_t mark) {
-  for (size_t i = 0; i < fr->nlocals; i++) THxMEM_release(fr->locals[i]);
+  if (fr->nlocals <= 64)
+    for (uint64_t d = fr->dirty; d; d &= d - 1) THxMEM_release(fr->locals[__builtin_ctzll(d)]);
+  else
+    for (size_t i = 0; i < fr->nlocals; i++) THxMEM_release(fr->locals[i]);
   for (size_t i = 0; i < nparams; i++) THxMEM_release(params[i]);
   THxMEM_pool_drain(mark);
 }

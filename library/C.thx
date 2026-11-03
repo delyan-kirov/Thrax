@@ -118,6 +118,15 @@ $ pclose : @Int -> <@IO> @Int = @extern "C" "pclose" "libc"
 
 # -- unistd.h / time.h -----------------------------------------------------
 $ write : { fd: @Int, buf: @Str, n: @Int } -> <@IO> @Int = @extern "C" "write" "libc"
+
+# Raw file descriptors, the unbuffered path for whole-file reads. `open`
+# returns -1 on failure; flags 0 is O_RDONLY everywhere. `lseek` with whence 2
+# (SEEK_END) and offset 0 is the file's size. `read` fills C memory (from
+# `malloc`), which `@ptr_bytes` copies into a string.
+$ open : { path: @Str, flags: @Int } -> <@IO> @Int = @extern "C" "open" "libc"
+$ read : { fd: @Int, buf: @Ptr, n: @Int } -> <@IO> @Int = @extern "C" "read" "libc"
+$ close : @Int -> <@IO> @Int = @extern "C" "close" "libc"
+$ lseek : { fd: @Int, off: @Int, whence: @Int } -> <@IO> @Int = @extern "C" "lseek" "libc"
 $ getenv : @Str -> <@IO> @Str = @extern "C" "getenv" "libc"
 $ time : @Int -> <@IO> @Int = @extern "C" "time" "libc"
 $ clock : {} -> <@IO> @Int = @extern "C" "clock" "libc"
@@ -135,12 +144,34 @@ $ d2i : @Float64 -> @Int = @extern "C" "thx_d2i" ""
 $ i2f : @Int -> @Float32 = @extern "C" "thx_i2f" ""
 $ f2i : @Float32 -> @Int = @extern "C" "thx_f2i" ""
 
-# A pointer travels as a machine word; `i2p` reinterprets one, and `null` is the
-# null pointer (the language has no `@Ptr` literal). For C APIs taking an
-# optional `T*` you want to pass as NULL.
+# A pointer travels as a machine word; `i2p` reinterprets one, `p2i` gives its
+# address back, and `null` is the null pointer (the language has no `@Ptr`
+# literal). For C APIs taking an optional `T*` you want to pass as NULL.
 $ i2p : @Int -> @Ptr = @extern "C" "thx_i2p" ""
+$ p2i : @Ptr -> @Int = @extern "C" "thx_p2i" ""
 $ null : @Ptr = i2p 0
+
+# The address `n` bytes past `p`.
+$ ptr_add : { p: @Ptr, n: @Int } -> @Ptr = @extern "C" "thx_ptr_add" ""
 
 # A directory's entry names, one per line, `.` and `..` excluded, unsorted; ""
 # when it cannot be opened. `IO.read_dir` is the friendly form.
 $ dir_entries : @Str -> <@IO> @Str = @extern "C" "thx_read_dir" ""
+
+# A directory's entries, one per line, each name prefixed with its kind: `d`
+# directory, `f` regular file, `l` symbolic link, `o` other. Unsorted, `.` and
+# `..` excluded, "" when it cannot be opened. No `stat` per entry where the
+# system reports kinds while listing. `IO.list_dir` is the friendly form.
+$ list_dir : @Str -> <@IO> @Str = @extern "C" "thx_list_dir" ""
+# When a file was last modified, in nanoseconds since the epoch; -1 when it
+# cannot be stat'ed. `IO.mtime` is the friendly form.
+$ mtime : @Str -> <@IO> @Int =
+    @extern "C" "thx_mtime" ""
+    # -- C memory --------------------------------------------------------------
+     # `@ptr_bytes p n` (CORE) copies `n` bytes at `p` into a string. Anything else
+     # is read through a `load` binding, typed like any foreign function: element
+     # `i` of a C array of `T` at `p`, for a sized number, `@Int`, `@Ptr`, a `char*`
+     # as `@Str`, or a `@struct @extern "C"` type.
+     #     $ Point : @struct @extern "C" = x: @Int32, y: @Int32,
+     #     $ point_at : { p: @Ptr, i: @Int } -> Point = @extern "load"
+     # `VEC.from_c point_at p n` is then the array's first `n` elements as a vector.

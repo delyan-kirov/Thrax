@@ -441,8 +441,9 @@ array_lit
  * the interpreter, link line in the native backend). */
 extern_lit : AT_EXTERN STR STR STR | builtin_lit ;
 
-/* `@extern "thrax"`: the definition is the runtime builtin of its own name. The
- * one STR must be "thrax"; only CORE may write it. */
+/* `@extern "thrax"`: the definition is the runtime builtin of its own name, and
+ * only CORE may write it. `@extern "load"`: a load from C memory, typed by the
+ * binding (`{ p: @Ptr, i: @Int } -> T`). The one STR must be one of the two. */
 builtin_lit : AT_EXTERN STR ;
 
 handle

@@ -101,6 +101,22 @@ $ @array_push : t -> @Int -> t = @extern "thrax"
 $ @array_set : t -> @Int -> @Int -> t = @extern "thrax"
 $ @array_slice : t -> @Int -> @Int -> t = @extern "thrax"
 
+# `@array_scan s from mask` is the index of the first byte at or after `from`
+# whose entry in the 256-byte `mask` is not 0, or `@array_len s` if none is: a
+# bounded strcspn, or strspn with the mask inverted. The byte loop runs in the
+# engine, so a scanner steps from one interesting byte to the next.
+$ @array_scan : t -> @Int -> t -> @Int = @extern "thrax"
+
+# `@array_match s at needle`: whether `needle` occurs in `s` at byte `at` (false
+# when it would run past the end). One comparison, no slice.
+$ @array_match : t -> @Int -> t -> @Bool = @extern "thrax"
+
+# `@ptr_bytes p n`: the `n` bytes of C memory at `p`, copied into a fresh string
+# (NUL bytes and all, unlike a `char*` result, which ends at its first NUL). The
+# memory must be readable for `n` bytes; `C.malloc` memory filled by `C.read` is
+# the usual source.
+$ @ptr_bytes : @Ptr -> @Int -> @Str = @extern "thrax"
+
 # Vectors. `@vec_slice v lo hi` is the half-open `[lo, hi)`. An update of a vector
 # nothing else references happens in place.
 $ @vec_new : {} -> @Vec a = @extern "thrax"

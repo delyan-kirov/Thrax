@@ -1267,8 +1267,9 @@ $ draw : {@Vec Vector2, @Int} -> {} = @extern "C" "DrawLineStrip" "lib"
 `library/C.thx` binds libc/libm as the auto-injected `C` namespace (used
 qualified, `C.sqrt`, no import). It also holds a few conversions the language
 cannot express with `@cast` (which is integer widths only): `C.i2f`/`C.f2i`
-(@Int and @Float32), `C.i2d`/`C.d2i` (@Int and Real), `C.i2p` (@Int to @Ptr), and
-`C.null` (the null pointer). These are provided by the engines' runtimes (an
+(@Int and @Float32), `C.i2d`/`C.d2i` (@Int and Real), `C.i2p`/`C.p2i` (@Int to
+@Ptr and back), `C.ptr_add` (an address `n` bytes on), and `C.null` (the null
+pointer). These are provided by the engines' runtimes (an
 empty `lib`); see `documentation/native-backend.md`.
 
 ```thrax
@@ -1280,7 +1281,33 @@ Limitation: variadic C functions (`printf(fmt, ...)`) have no single binding.
 Declare a fixed-arity binding per argument shape you use; there is no `...`
 marker.
 
-## 10.6 Builtins: `@extern "thrax"`
+## 10.6 Reading C memory
+C memory reaches Thrax two ways, both copies:
+
+- **Bytes**: `@ptr_bytes p n` (CORE) is a fresh `@Str` of the `n` bytes at `p`,
+  NUL bytes and all. (A `@Str` *result* of a C function is a `char*` and ends at
+  its first NUL.) This is how `IO.read_file` reads: `C.read` into `C.malloc`
+  memory, then `@ptr_bytes`.
+- **Typed elements**: a binding with `@extern "load"` (no symbol, no library)
+  reads element `i` of a C array of `T` at `p`. Its type must be
+  `{ p: @Ptr, i: @Int } -> T`, where `T` is a sized number, `@Int`/`@Nat`, `@Ptr`,
+  `@Str` (a `char*`, copied up to its NUL; NULL reads as `""`), or a
+  `@struct @extern "C"` type. A C `bool` loads as `@Nat8`. `VEC.from_c at p n`
+  collects the first `n` elements as a vector.
+
+```thrax
+$ Point : @struct @extern "C" = x: @Int32, y: @Int32,
+$ point_at : { p: @Ptr, i: @Int } -> Point = @extern "load"
+$ arg_at : { p: @Ptr, i: @Int } -> @Str = @extern "load"      # a `char**`
+
+$ points : @Ptr -> @Int -> @Vec Point = \p n = VEC.from_c point_at p n
+```
+
+Like a C dereference, a load trusts the program: the memory must hold `n`
+valid elements (a load from NULL faults; anything else out of bounds is
+undefined).
+
+## 10.7 Builtins: `@extern "thrax"`
 The primitives the compiler and runtime implement (`@iadd`, `@vec_push`,
 `@chan_send`, `@lex`, ...) are declared in `library/CORE.thx`, each with its
 signature and a comment:

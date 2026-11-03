@@ -199,7 +199,7 @@ fn reads_operand(prim: Prim, i: usize) -> bool {
         Not | Neg | Iadd | Isub | Imul | Idiv | Imod | Udiv | Umod | Fadd | Fsub | Fmul | Fdiv | Fmod | Fpow
         | F32add | F32sub | F32mul | F32div | F32mod | F32pow | Ieq | Ilt | Ult | Feq | Flt | Seq | Slt
         | Swrap | Uwrap | Eq | Lt | Gt | Le | Ge | Concat | Acat | ArrayAlloc | ArrayLen | ArrayGet
-        | ArraySlice | RecordWithout | VecNew | VecLen | VecGet | VecSlice | TensorLength | TensorStack
+        | ArraySlice | ArrayScan | ArrayMatch | PtrBytes | RecordWithout | VecNew | VecLen | VecGet | VecSlice | TensorLength | TensorStack
         | TensorTranspose | TensorConcat | TensorIndex | TensorSlice | TensorIndexAxis | TensorSliceAxis
         | Lex | TokenKind | TokenText | Parse | ParseStr | ParseItems | Format | TypeKind | TypeFields
         | TypeVariants | TypeParams | Iand | Ior | Ixor | Inot | Ishl | Ishr | Ushr | F64Bits | BitsF64

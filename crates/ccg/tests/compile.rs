@@ -550,6 +550,36 @@ fn ffi_struct_by_value_return() {
 }
 
 #[test]
+fn ffi_loads_from_c_memory() {
+    // Known bytes are copied into `malloc` memory, then read back through
+    // `@extern "load"` bindings (a C-repr struct, sized numbers, a `char*`
+    // table) and `@ptr_bytes`; both engines must agree.
+    let src = "$ @mod M\n\
+        $ malloc : @Int -> @Ptr = @extern \"C\" \"malloc\" \"libc\"\n\
+        $ p2i : @Ptr -> @Int = @extern \"C\" \"thx_p2i\" \"\"\n\
+        $ Pt : @struct @extern \"C\" = x: @Int32, y: @Int32,\n\
+        $ fill : { dst: @Ptr, src: @Str, n: @Int } -> @Ptr = @extern \"C\" \"memcpy\" \"libc\"\n\
+        $ pt_at : { p: @Ptr, i: @Int } -> Pt = @extern \"load\"\n\
+        $ i32_at : { p: @Ptr, i: @Int } -> @Int32 = @extern \"load\"\n\
+        $ u8_at : { p: @Ptr, i: @Int } -> @Nat8 = @extern \"load\"\n\
+        $ str_at : { p: @Ptr, i: @Int } -> @Str = @extern \"load\"\n\
+        $ le8 : @Int -> @Int -> @Str -> @Str = \\n k acc = if k == 8 => acc else le8 (n / 256) (k + 1) (@array_push acc (n % 256))\n\
+        $ test : @Str =\n\
+        \x20   let buf = malloc 16, a = malloc 4, table = malloc 16 in\n\
+        \x20   fill { buf, \"\\x01\\x00\\x00\\x00\\x02\\x00\\x00\\x00\\x03\\x00\\x00\\x00\\xfe\\xff\\xff\\xff\", 16 };\n\
+        \x20   fill { a, \"hi\\x00\", 3 };\n\
+        \x20   fill { table, le8 (p2i a) 0 \"\" ++ le8 0 0 \"\", 16 };\n\
+        \x20   let p = pt_at { buf, 1 }, bytes = @ptr_bytes buf 16 in\n\
+        \x20   to_string ((@cast p.x : @Int) * 100 + (@cast p.y : @Int)) ++ \" \"\n\
+        \x20       ++ to_string (@cast (i32_at { buf, 3 }) : @Int) ++ \" \"\n\
+        \x20       ++ to_string (@cast (u8_at { buf, 12 }) : @Int) ++ \" \"\n\
+        \x20       ++ str_at { table, 0 } ++ \"|\" ++ str_at { table, 1 } ++ \" \"\n\
+        \x20       ++ to_string (@array_len bytes) ++ \" \" ++ to_string (@array_get bytes 12)";
+    assert_eq!(interp_show(src, "test"), "\"298 -2 254 hi| 16 254\"");
+    assert_matches(src, "test");
+}
+
+#[test]
 fn ffi_struct_by_value_argument() {
     // A struct passed BY VALUE to a C function. Compile a helper `.so`, then check
     // the C backend builds the C struct from the Thrax value and matches the

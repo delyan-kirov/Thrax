@@ -16,6 +16,13 @@
 //! the primitive to exactly its own parameters, in order, and the use must be
 //! saturated. Nothing is duplicated and no evaluation order changes.
 //!
+//! A global that applies a primitive to its parameters REORDERED, or negates
+//! the result with `not`, folds too: that is the shape of the derived
+//! comparisons (`$ (>=) ... = \d a b = not (d.lt a b)`, once specialized to a
+//! known instance). A use becomes `not (@ilt x y)` in place of a call. Reordered
+//! arguments fold only when at most one of them takes an evaluation step, so
+//! the order of effects is still the source order.
+//!
 //! Input: the merged Core program. Output: the same program, with each such
 //! use calling the primitive directly, and each such method reduced to the
 //! bare primitive.
@@ -35,11 +42,29 @@ pub struct Prims {
     methods: HashMap<(StrId, StrId), (StrId, usize)>,
     /// By global name: globals that are themselves eta-expanded primitives.
     globals: HashMap<StrId, (StrId, usize)>,
+    /// By global name: globals that apply a primitive to their parameters
+    /// reordered, or negate it.
+    wrappers: HashMap<StrId, Wrapper>,
+}
+
+/// `\p0 .. pn = [not] (@prim p_order[0] .. p_order[n])`.
+#[derive(Clone, Debug, PartialEq)]
+struct Wrapper {
+    prim: StrId,
+    /// For each operand of the primitive, the parameter it is.
+    order: Vec<usize>,
+    negate: bool,
+}
+
+impl Wrapper {
+    fn reorders(&self) -> bool {
+        self.order.iter().enumerate().any(|(k, p)| k != *p)
+    }
 }
 
 impl Prims {
     fn is_empty(&self) -> bool {
-        self.methods.is_empty() && self.globals.is_empty()
+        self.methods.is_empty() && self.globals.is_empty() && self.wrappers.is_empty()
     }
 
     /// Add `other`'s entries, keeping this table's where both have one.
@@ -49,6 +74,9 @@ impl Prims {
         }
         for (k, v) in &other.globals {
             self.globals.entry(*k).or_insert(*v);
+        }
+        for (k, v) in &other.wrappers {
+            self.wrappers.entry(*k).or_insert_with(|| v.clone());
         }
     }
 }
@@ -120,7 +148,71 @@ pub fn primitive_methods(program: &CoreProgram) -> Prims {
             }
         }
     }
+    // Second, the wrappers: their head may be a projection the first table folds.
+    for &(name, term) in &program.globals {
+        if out.globals.contains_key(&name) {
+            continue;
+        }
+        if let Some(w) = wrapped_primitive(terms, term, &out) {
+            out.wrappers.insert(name, w);
+        }
+    }
     out
+}
+
+/// The [`Wrapper`] `term` is, if it is one: a lambda over distinct parameters
+/// whose body is, under an optional `not`, a primitive (or a head `prims` folds
+/// to one) applied to each parameter exactly once.
+fn wrapped_primitive(terms: &Terms, term: Aol<Term>, prims: &Prims) -> Option<Wrapper> {
+    let not = StrId::intern("not");
+    let mut params: Vec<StrId> = Vec::new();
+    let mut cur = term;
+    while let Term::Lam { param, body } = terms.get(cur) {
+        if params.contains(param) || *param == not {
+            return None;
+        }
+        params.push(*param);
+        cur = *body;
+    }
+    if params.is_empty() {
+        return None;
+    }
+    let mut negate = false;
+    if let Term::App(f, x) = terms.get(cur) {
+        if matches!(terms.get(*f), Term::Var { module: None, name } if *name == not) {
+            negate = true;
+            cur = *x;
+        }
+    }
+    let mut args: Vec<Aol<Term>> = Vec::new();
+    while let Term::App(f, x) = terms.get(cur) {
+        args.push(*x);
+        cur = *f;
+    }
+    args.reverse();
+    if args.len() != params.len() {
+        return None;
+    }
+    let prim = match terms.get(cur) {
+        Term::Var { module: None, name } if name.as_str().starts_with('@') => *name,
+        _ => folded_head(terms, cur, args.len(), prims)?,
+    };
+    if crate::ir::data::builtin_arity(prim.as_str()) != Some(args.len()) {
+        return None;
+    }
+    let mut order = Vec::with_capacity(args.len());
+    for arg in &args {
+        let Term::Var { module: None, name } = terms.get(*arg) else {
+            return None;
+        };
+        let p = params.iter().position(|q| q == name)?;
+        if order.contains(&p) {
+            return None;
+        }
+        order.push(p);
+    }
+    let w = Wrapper { prim, order, negate };
+    (w.negate || w.reorders()).then_some(w)
 }
 
 /// The primitive and arity of `\p1 .. pn = @prim p1 .. pn`, else `None`. The
@@ -197,6 +289,9 @@ fn rewrite(
             head = *f;
         }
         args.reverse();
+        if let Some(out) = unwrap(terms, head, &args, prims) {
+            return out;
+        }
         let mut out = match folded_head(terms, head, args.len(), prims) {
             Some(prim) => terms.var(prim),
             None => rewrite(terms, head, prims),
@@ -208,6 +303,37 @@ fn rewrite(
         return out;
     }
     terms.map_children(term, &mut |terms, child, _| rewrite(terms, child, prims))
+}
+
+/// A saturated use of a [`Wrapper`] global, as the primitive applied to the
+/// (rewritten) arguments in the wrapper's order, under `not` if it negates.
+/// `None` when `head` is no wrapper, the use is under-applied, or reordering
+/// would move one argument's evaluation step past another's.
+fn unwrap(terms: &mut Terms, head: Aol<Term>, args: &[Aol<Term>], prims: &Prims) -> Option<Aol<Term>> {
+    let Term::Var { module: Some(m), name } = terms.get(head) else {
+        return None;
+    };
+    let w = prims.wrappers.get(&StrId::intern(&format!("{m}.{name}")))?;
+    let n = w.order.len();
+    if args.len() < n {
+        return None;
+    }
+    let args: Vec<Aol<Term>> = args.iter().map(|a| rewrite(terms, *a, prims)).collect();
+    if w.reorders() && args[..n].iter().filter(|a| !terms.is_atom(**a)).count() > 1 {
+        return None;
+    }
+    let mut out = terms.var(w.prim);
+    for &p in &w.order {
+        out = terms.app(out, args[p]);
+    }
+    if w.negate {
+        let not = terms.var("not");
+        out = terms.app(not, out);
+    }
+    for a in &args[n..] {
+        out = terms.app(out, *a);
+    }
+    Some(out)
 }
 
 #[cfg(test)]

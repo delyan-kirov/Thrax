@@ -571,6 +571,51 @@ fn site(symbol: StrId, lib: StrId, arg_types: &[StrId], ret_type: StrId) -> Rc<S
     s
 }
 
+/// An `@extern "load"`: element `i` of the C array of `ret_type` at `p` (the
+/// two arguments), read from memory and wrapped as a C call's result would be.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load<'p>(ret_type: StrId, args: &[PVal<'p>]) -> Result<Value<'p>> {
+    let (p, i) = (read_word(&args[0])?, read_word(&args[1])?);
+    if p == 0 {
+        return Err(fault("load from a null pointer"));
+    }
+    let ty = ret_type.as_str();
+    let size = match layout_of(ty) {
+        Some(layout) => layout.size,
+        None => match ty {
+            "@Int8" | "@Nat8" => 1,
+            "@Int16" | "@Nat16" => 2,
+            "@Int32" | "@Nat32" | "@Float32" => 4,
+            _ => 8,
+        },
+    };
+    let at = (p as usize).wrapping_add((i as usize).wrapping_mul(size));
+    // The program vouches for the array, as C code would.
+    let bytes = unsafe { std::slice::from_raw_parts(at as *const u8, size) };
+    if let Some(layout) = layout_of(ty) {
+        return Ok(unpack_struct(ty, &layout, bytes));
+    }
+    let word = |n: usize| {
+        let mut b = [0u8; 8];
+        b[..n].copy_from_slice(&bytes[..n]);
+        u64::from_ne_bytes(b)
+    };
+    Ok(match ty {
+        "@Int8" => Value::Int(bytes[0] as i8 as i64),
+        "@Int16" => Value::Int(i16::from_ne_bytes([bytes[0], bytes[1]]) as i64),
+        "@Int32" => Value::Int(i32::from_ne_bytes(bytes[..4].try_into().unwrap()) as i64),
+        "@Nat8" | "@Nat16" | "@Nat32" => Value::Int(word(size) as i64),
+        "@Float32" => Value::Real32(f32::from_ne_bytes(bytes[..4].try_into().unwrap())),
+        "@Float64" => Value::Real(f64::from_ne_bytes(bytes[..8].try_into().unwrap())),
+        "@Str" | "@Array" => {
+            let s = word(8) as usize as *const std::os::raw::c_char;
+            let text = if s.is_null() { Vec::new() } else { unsafe { std::ffi::CStr::from_ptr(s) }.to_bytes().to_vec() };
+            Value::Str(Rc::new(text))
+        }
+        _ => Value::Int(word(8) as i64),
+    })
+}
+
 /// Classify, dispatch to the host backend, and wrap the result. This is the one
 /// entry point the machine's `run_extern` uses for a symbol outside the native
 /// fast-path table (and for every wasm host call).

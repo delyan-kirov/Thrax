@@ -16,6 +16,10 @@ use utilities::{Aol, SecondaryMap, Slice, Span, Store, StrId};
 /// The `@extern` ABI that names a runtime builtin rather than a foreign symbol.
 pub const BUILTIN_ABI: &str = "thrax";
 
+/// The `@extern` ABI of a load from C memory: `{ p: @Ptr, i: @Int } -> T` reads
+/// element `i` of a C array of `T` at `p`. It names no symbol or library.
+pub const LOAD_ABI: &str = "load";
+
 /// The stores that back a parsed tree. Every handle in the tree indexes into one
 /// of these; reads go through [`Store::lookup`]. Names are [`StrId`]s into the
 /// process-wide interner.
@@ -569,7 +573,8 @@ pub enum Expr {
         cleanup: Aol<Expr>,
         body: Aol<Expr>,
     },
-    /// `@extern "abi" "symbol" "lib"`.
+    /// `@extern "abi" "symbol" "lib"`, or `@extern "load"` (no symbol or
+    /// library: both are empty).
     Extern {
         abi: StrId,
         symbol: StrId,

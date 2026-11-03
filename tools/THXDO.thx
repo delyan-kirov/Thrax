@@ -138,7 +138,7 @@ $ spec : Command -> Spec = \c =
     | .Stats       => Spec.{
         .name = "stats",
         .usage = "",
-        .info = "line counts (tokei, excluding external/ and applications/)",
+        .info = "line counts (zalmoxis, excluding external/ and applications/)",
     }
     | .All         =>
         Spec.{ .name = "all", .usage = "", .info = "build, then regenerate README.md" }
@@ -188,7 +188,7 @@ $ native_path : @Str -> @Str = \p = if TARGET.os == "windows" => STR.replace p "
 # runs it under node instead.
 $ corpus_task : @Bool -> <@IO, Fail> {} = \wasm =
     let
-        bin    = native_path (if STR.is_empty (env "THRAX_BIN") => "thrax" else env "THRAX_BIN"),
+        bin    = thrax_bin {},
         interp = "target/corpus-interp.txt",
         native = "target/corpus-native.txt",
         build  =
@@ -211,6 +211,62 @@ $ corpus_task : @Bool -> <@IO, Fail> {} = \wasm =
                 else
                     Fail.fail "the engines disagree (target/corpus-*.txt)"
         | _ => Fail.fail "corpus output missing"
+
+# The compiler the tasks run: $THRAX_BIN (thxdo's dev-shell wrapper points it
+# at the workspace build), else `thrax` on the PATH.
+$ thrax_bin : {} -> <@IO> @Str = \_ =
+    native_path (if STR.is_empty (env "THRAX_BIN") => "thrax" else env "THRAX_BIN")
+
+# ---- stats ----
+
+# The line counter, applications/zalmoxis, run natively.
+$ zalmoxis_dir : @Str = "applications/zalmoxis"
+
+# The repository's line counts, without external/ and applications/. The
+# applications submodule is checked out first if it is not, and the counter
+# built when it has no binary or a source is newer than it.
+$ stats_task : {} -> <@IO, Fail> {} = \_ =
+    let
+        main = zalmoxis_dir ++ "/MAIN.thx",
+        exe  = native_path (zalmoxis_dir ++ "/thrax-out/MAIN"),
+    in
+        (
+            when
+                (VEC.is_empty (read_dir "applications")) <| \_ =
+                    println "thxdo: checking out the applications submodule ...";
+                    step "submodule checkout" "git submodule update --init applications"
+        );
+        (
+            when
+                (OPT.is_none (mtime main)) <| \_ =
+                    Fail.fail
+                        (
+                            main
+                                ++ " is missing: the applications submodule predates it (git submodule update applications)"
+                        )
+        );
+        (
+            when
+                (stale exe zalmoxis_dir) <| \_ =
+                    println "thxdo: building zalmoxis ...";
+                    step "zalmoxis build" (thrax_bin {} ++ " build " ++ main)
+        );
+        step "stats" (exe ++ " -e external -e applications")
+
+# Whether `exe` is missing or older than one of the .thx sources in `dir`.
+$ stale : @Str -> @Str -> <@IO> @Bool = \exe dir =
+    is mtime exe | Option.Some.{ built } => newer_than built dir (read_dir dir) 0 | _ => @true
+
+$ newer_than : @Int -> @Str -> @Vec @Str -> @Int -> <@IO> @Bool = \built dir names i =
+    if
+        i >= @vec_len names =>
+            @false,
+        !(STR.ends_with (@vec_get names i) ".thx") =>
+            newer_than built dir names (i + 1),
+        else
+            is mtime (dir ++ "/" ++ @vec_get names i)
+            | Option.Some.{ t } if t > built => @true
+            | _                              => newer_than built dir names (i + 1)
 
 # The module named on a corpus line (`OK NAME`, `ERR NAME`, `SKIP NAME (why)`).
 $ line_module : @Str -> @Str = \l =
@@ -533,7 +589,7 @@ $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =
         C.system site_serve_cmd;
         {}
     | .SdkPath     => println (env "THRAX_ROOT")
-    | .Stats       => step "stats" "tokei --exclude external --exclude applications"
+    | .Stats       => stats_task {}
     | .All =>
         step "cargo clean" "cargo clean";
         step "cargo build" "cargo build";

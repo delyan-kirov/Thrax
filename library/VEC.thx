@@ -172,7 +172,16 @@ $ merge_by : (t -> t -> @Int) -> @Vec t -> @Vec t -> @Vec t = \c xs ys =
 
 # ---- internal index loops (the recursion workers the API above drives) ----
 
+# The first `n` elements of the C array at `p`, read by a `load` binding (see
+# library/C.thx): `from_c point_at p n`.
+$ from_c : ({ p: @Ptr, i: @Int } -> <e> t) -> @Ptr -> @Int -> <e> @Vec t = \at p n =
+    from_c_onto at p n 0 (@vec_new {})
+
 $ @private
+
+$ from_c_onto : ({ p: @Ptr, i: @Int } -> <e> t) -> @Ptr -> @Int -> @Int -> @Vec t
+    -> <e> @Vec t = \at p n i acc =
+    if i >= n => acc else from_c_onto at p n (i + 1) (@vec_push acc (at { p, i }))
 
 $ foldl_from : (a -> t -> a) -> a -> @Vec t -> @Int -> a = \f acc v i =
     if i >= @vec_len v => acc else foldl_from f (f acc (@vec_get v i)) v (i + 1)

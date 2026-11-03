@@ -66,7 +66,29 @@ fn merge(modules: &[CoreProgram]) -> CoreProgram {
 }
 
 /// The passes after the eta fold, each of which rewrites one global at a time.
+/// They recurse on a term's size, not only its depth (A-normal form names
+/// every operand of one expression through a chain of continuations), so a
+/// long literal runs deep; they get a thread whose reserved stack fits any
+/// program, which costs memory only as far as it is used.
 fn run_passes(merged: &mut CoreProgram) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        const PASS_STACK: usize = 1 << 30;
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("lowering".into())
+                .stack_size(PASS_STACK)
+                .spawn_scoped(scope, || passes_on(merged))
+                .expect("spawn the lowering thread")
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    passes_on(merged);
+}
+
+fn passes_on(merged: &mut CoreProgram) {
     passes::match_compilation::compile_matches(merged);
     passes::a_normal_form::to_a_normal_form(merged);
     passes::de_bruijn::assign_de_bruijn_indices(merged);

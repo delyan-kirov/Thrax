@@ -1,0 +1,3 @@
+$ @mod LOAD_RESULT
+
+$ flag_at : { p: @Ptr, i: @Int } -> @Bool = @extern "load"  #~ error[TYPE_MISMATCH]: cannot read a `@Bool` from C memory

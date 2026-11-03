@@ -1,0 +1,3 @@
+$ @mod LOAD_SHAPE
+
+$ bad_at : @Ptr -> @Int32 = @extern "load"  #~ error[TYPE_MISMATCH]: an `@extern "load"` takes a pointer and an index
