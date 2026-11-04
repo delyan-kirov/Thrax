@@ -173,3 +173,34 @@ THX_EXPORT long long thx_mtime(const char *path) {
   return (long long)st.st_mtime * 1000000000LL;
 #endif
 }
+
+/* Raw file descriptors, behind shims rather than direct libc bindings: `open`
+   is variadic, which wasm passes differently from a fixed prototype; `off_t`
+   is 64 bits on wasm32 where `long` is not; Windows' `_read` counts in an
+   `unsigned int`, and its text mode would rewrite "\r\n". Every width here is
+   an `@Int`. */
+#include <fcntl.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+THX_EXPORT long long thx_open(const char *path, long long flags) {
+#ifdef _WIN32
+  return _open(path, (int)flags | _O_BINARY);
+#else
+  return open(path, (int)flags);
+#endif
+}
+THX_EXPORT long long thx_read(long long fd, void *buf, long long n) {
+#ifdef _WIN32
+  return _read((int)fd, buf, (unsigned)(n > 0x7fffffff ? 0x7fffffff : n));
+#else
+  return (long long)read((int)fd, buf, (size_t)n);
+#endif
+}
+THX_EXPORT long long thx_lseek(long long fd, long long off, long long whence) {
+#ifdef _WIN32
+  return _lseeki64((int)fd, off, (int)whence);
+#else
+  return (long long)lseek((int)fd, (off_t)off, (int)whence);
+#endif
+}

@@ -65,8 +65,11 @@
           export CARGO_TARGET_DIR=$root/target/windows
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-cc
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine
-          # Rust's std links winpthreads statically.
-          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="-L native=${win.windows.pthreads}/lib"
+          # Rust's std links winpthreads statically. This gcc's libgcc_eh
+          # implements `_Thread_local` (emutls) over mcfgthread, which rustc's
+          # `-nodefaultlibs` link line leaves out; a trailing link-arg adds it
+          # after libgcc_eh.
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="-L native=${win.windows.pthreads}/lib -L native=${win.windows.mcfgthreads}/lib -C link-arg=-lmcfgthread"
           # Native programs with `@par` include <pthread.h>, which the MinGW gcc
           # in nixpkgs does not carry on its own search path.
           export NIX_CFLAGS_COMPILE_x86_64_w64_mingw32="-isystem ${win.windows.pthreads}/include"

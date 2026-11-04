@@ -99,10 +99,7 @@ const PROTOTYPES: &[(&str, C, &[C])] = &[
     ("fileno", Int, &[Ptr]),
     // unistd.h, time.h, poll.h
     ("write", SSize, &[Int, Ptr, Size]),
-    ("open", Int, &[Other, Int]),
-    ("read", SSize, &[Int, Ptr, Size]),
     ("close", Int, &[Int]),
-    ("lseek", Long, &[Int, Long, Int]),
     ("poll", Int, &[Ptr, ULong, Int]),
     ("time", Time, &[Ptr]),
     ("clock", Clock, &[]),

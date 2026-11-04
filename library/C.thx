@@ -122,11 +122,13 @@ $ write : { fd: @Int, buf: @Str, n: @Int } -> <@IO> @Int = @extern "C" "write" "
 # Raw file descriptors, the unbuffered path for whole-file reads. `open`
 # returns -1 on failure; flags 0 is O_RDONLY everywhere. `lseek` with whence 2
 # (SEEK_END) and offset 0 is the file's size. `read` fills C memory (from
-# `malloc`), which `@ptr_bytes` copies into a string.
-$ open : { path: @Str, flags: @Int } -> <@IO> @Int = @extern "C" "open" "libc"
-$ read : { fd: @Int, buf: @Ptr, n: @Int } -> <@IO> @Int = @extern "C" "read" "libc"
+# `malloc`), which `@ptr_bytes` copies into a string. `open`, `read` and
+# `lseek` go through shims (crates/ccg/src/thraxstd.c) that fix their widths
+# per platform and open in binary mode on Windows.
+$ open : { path: @Str, flags: @Int } -> <@IO> @Int = @extern "C" "thx_open" ""
+$ read : { fd: @Int, buf: @Ptr, n: @Int } -> <@IO> @Int = @extern "C" "thx_read" ""
 $ close : @Int -> <@IO> @Int = @extern "C" "close" "libc"
-$ lseek : { fd: @Int, off: @Int, whence: @Int } -> <@IO> @Int = @extern "C" "lseek" "libc"
+$ lseek : { fd: @Int, off: @Int, whence: @Int } -> <@IO> @Int = @extern "C" "thx_lseek" ""
 $ getenv : @Str -> <@IO> @Str = @extern "C" "getenv" "libc"
 $ time : @Int -> <@IO> @Int = @extern "C" "time" "libc"
 $ clock : {} -> <@IO> @Int = @extern "C" "clock" "libc"
