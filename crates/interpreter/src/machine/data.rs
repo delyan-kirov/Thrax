@@ -510,6 +510,24 @@ fn as_byte(v: &PVal) -> Result<u8> {
     }
 }
 
+/// `n` bytes copied from the C memory at address `p` (`@ptr_bytes`).
+#[cfg(not(target_arch = "wasm32"))]
+fn ptr_bytes(p: i64, n: usize) -> Result<Vec<u8>> {
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if p == 0 {
+        return Err(fault("`@ptr_bytes` from a null pointer"));
+    }
+    // The program vouches for `n` readable bytes at `p`, as C code would.
+    Ok(unsafe { std::slice::from_raw_parts(p as usize as *const u8, n) }.to_vec())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn ptr_bytes(_p: i64, _n: usize) -> Result<Vec<u8>> {
+    Err(fault("`@ptr_bytes` has no C memory on this target"))
+}
+
 // -- built-ins --------------------------------------------------------------
 
 /// Run a saturated built-in. `a` is already deref'd (the machine derefs an
@@ -609,6 +627,27 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             beg = beg.min(bytes.len());
             end = end.clamp(beg, bytes.len());
             Ok(Value::Str(Rc::new(bytes[beg..end].to_vec())))
+        }
+        Prim::ArrayScan => {
+            let bytes = as_bytes(&a[0])?;
+            let from = as_index(&a[1])?.min(bytes.len());
+            let mask = as_bytes(&a[2])?;
+            if mask.len() < 256 {
+                return Err(fault("`@array_scan` mask must hold 256 bytes"));
+            }
+            let hit = bytes[from..].iter().position(|&b| mask[b as usize] != 0);
+            Ok(Value::Int(hit.map_or(bytes.len(), |k| from + k) as i64))
+        }
+        Prim::ArrayMatch => {
+            let bytes = as_bytes(&a[0])?;
+            let at = as_index(&a[1])?;
+            let needle = as_bytes(&a[2])?;
+            Ok(Value::Bool(bytes.get(at..).is_some_and(|rest| rest.starts_with(&needle))))
+        }
+        Prim::PtrBytes => {
+            let p = as_int(&a[0])?;
+            let n = as_len(&a[1])?;
+            Ok(Value::Str(Rc::new(ptr_bytes(p, n)?)))
         }
         Prim::RecordWithout => {
             let label = as_bytes(&a[1])?;
@@ -1266,6 +1305,9 @@ pub(crate) fn run_extern<'p>(
             "FFI: `{symbol}` is an `@extern \"WASM\"` host import, available only in \
              the wasm playground, not in a native run"
         )));
+    }
+    if abi == "load" {
+        return crate::machine::ffi::load(ret_type, args);
     }
     if writes_terminal(symbol.as_str(), args) {
         utilities::progress::seal();

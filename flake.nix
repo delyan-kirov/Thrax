@@ -37,6 +37,27 @@
         exec "$bin" "$@"
       '';
 
+      # The line counter in applications/zalmoxis, built natively when one of its
+      # sources is newer than the binary. Like thraxDev it leaves the cwd alone,
+      # so it counts where it is run.
+      zalmoxisDev = pkgs.writeShellScriptBin "zalmoxis" ''
+        root="''${THRAX_ROOT:-$PWD}"
+        thrax="$root/target/debug/thrax"
+        dir="$root/applications/zalmoxis"
+        bin="$dir/thrax-out/MAIN"
+        if [ ! -f "$dir/MAIN.thx" ]; then
+          echo "zalmoxis: $dir is missing (git submodule update --init applications)" 1>&2
+          exit 1
+        fi
+        stale=
+        for f in "$dir"/*.thx; do [ "$f" -nt "$bin" ] && stale=1; done
+        if [ ! -x "$bin" ] || [ -n "$stale" ] || [ ! -x "$thrax" ]; then
+          cargo build --quiet --manifest-path "$root/Cargo.toml" -p thrax 1>&2 || exit
+          "$thrax" build "$dir/MAIN.thx" 1>&2 || exit
+        fi
+        exec "$bin" "$@"
+      '';
+
       # `--offline` holds because the workspace has no external crates.
       thrax = pkgs.stdenv.mkDerivation {
         pname = "thrax";
@@ -100,6 +121,7 @@
         buildInputs = [
           thraxDev
           thxdoDev
+          zalmoxisDev
 
           # gcc compiles the C in the interpreter's build.rs and the native
           # backend's output; valgrind hunts leaks in that output.
@@ -119,7 +141,6 @@
           pkgs.emscripten
           pkgs.nodejs
 
-          pkgs.tokei
           pkgs.xdg-utils
           pkgs.bison
         ];

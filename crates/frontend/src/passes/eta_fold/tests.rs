@@ -131,20 +131,72 @@ fn an_over_applied_eta_primitive_global_folds() {
 }
 
 #[test]
-fn an_under_applied_or_reordering_global_is_left_alone() {
+fn an_under_applied_global_is_left_alone() {
     let mut p = prog(vec![
         ("STR.at", |t| eta(t, "@array_get", "a", "b")),
         ("M.partial", |t| global_call(t, 1)),
     ]);
     fold_primitive_methods(&mut p);
     assert!(rendered(&p, 1).contains("Var STR.at"));
+}
 
+/// `STR.at` applied to `args`, each argument a call `M.f n` that takes an
+/// evaluation step.
+fn global_call_of_calls(t: &mut Terms, args: i64) -> Aol<Term> {
+    let mut out = t.add(Term::Var { module: Some(StrId::intern("STR")), name: StrId::intern("at") });
+    for n in 1..=args {
+        let f = t.add(Term::Var { module: Some(StrId::intern("M")), name: StrId::intern("f") });
+        let n = t.add(Term::Int(n));
+        let arg = t.app(f, n);
+        out = t.app(out, arg);
+    }
+    out
+}
+
+/// A global that reorders its parameters folds with the operands swapped when
+/// at most one argument takes an evaluation step.
+#[test]
+fn a_reordering_global_folds_over_atoms() {
     let mut p = prog(vec![
         ("STR.at", |t| eta(t, "@array_get", "b", "a")),
         ("M.byte", |t| global_call(t, 2)),
     ]);
     fold_primitive_methods(&mut p);
+    assert_eq!(rendered(&p, 1), "(App (App (Var @array_get) (Int 2)) (Int 1))");
+}
+
+/// Swapping two calls would run them in the other order, so that use stays a call.
+#[test]
+fn a_reordering_global_over_two_calls_is_left_alone() {
+    let mut p = prog(vec![
+        ("STR.at", |t| eta(t, "@array_get", "b", "a")),
+        ("M.byte", |t| global_call_of_calls(t, 2)),
+    ]);
+    fold_primitive_methods(&mut p);
     assert!(rendered(&p, 1).contains("Var STR.at"));
+}
+
+/// `\a b = not (@ilt a b)`, the shape `>=` specializes to, folds at any
+/// argument: negation reorders nothing.
+#[test]
+fn a_negating_global_folds() {
+    let mut p = prog(vec![
+        ("STR.at", |t| {
+            let inner = eta(t, "@ilt", "a", "b");
+            let Term::Lam { body: lam_b, .. } = t.get(inner).clone() else { unreachable!() };
+            let Term::Lam { body, .. } = t.get(lam_b).clone() else { unreachable!() };
+            let not = t.var("not");
+            let body = t.app(not, body);
+            let inner = t.lam(StrId::intern("b"), body);
+            t.lam(StrId::intern("a"), inner)
+        }),
+        ("M.byte", |t| global_call_of_calls(t, 2)),
+    ]);
+    fold_primitive_methods(&mut p);
+    assert_eq!(
+        rendered(&p, 1),
+        "(App (Var not) (App (App (Var @ilt) (App (Var M.f) (Int 1))) (App (Var M.f) (Int 2))))"
+    );
 }
 
 /// A saturated call of a GLOBAL that is an eta-expanded primitive folds too,

@@ -2077,12 +2077,17 @@ impl<'a> Parser<'a> {
         Ok(self.expr(Expr::Array { size }))
     }
 
-    /// `@extern "abi" "symbol" "lib"`, or `@extern "thrax"` for a runtime builtin.
+    /// `@extern "abi" "symbol" "lib"`, `@extern "thrax"` for a runtime builtin, or
+    /// `@extern "load"` for a load from C memory.
     fn parse_extern(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '@extern'
         let abi = self.expect_string("expected an ABI string after '@extern'")?;
         if self.ast.bytes(abi) == BUILTIN_ABI.as_bytes() {
             return Ok(self.expr(Expr::Builtin));
+        }
+        if self.ast.bytes(abi) == LOAD_ABI.as_bytes() {
+            let none = StrId::intern("");
+            return Ok(self.expr(Expr::Extern { abi, symbol: none, lib: none }));
         }
         let symbol = self.expect_string("expected a symbol string")?;
         let lib = self.expect_string("expected a library string")?;

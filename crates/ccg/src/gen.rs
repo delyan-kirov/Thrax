@@ -30,6 +30,10 @@ enum Callee {
     Prim,
     /// A known global function (see [`KnownFn`]), by the code of its CAF.
     Known(usize),
+    /// A global bound to a foreign function (`@extern`), by its index in the
+    /// extern table: saturated, it is one synchronous call of its C wrapper,
+    /// as a built-in is.
+    Extern(usize),
 }
 
 /// A function applied to all its operands, found by `call_chain`.
@@ -124,6 +128,10 @@ enum Sink {
     /// `Some`, control jumps to that continuation block. `None` is the pure-into
     /// sink (back-patch and fall through, used by a pure Case's branches).
     Slot { slot: usize, cont: Option<usize> },
+    /// Assigned to the C `int64_t` named `sv<var>`: the branches of a pure
+    /// Case whose `let` binds an integer every use reads unboxed.
+    /// See Note [Unboxed integers].
+    Int { var: usize },
 }
 
 // Note [Direct functions]
@@ -133,9 +141,16 @@ enum Sink {
 // continuation as heap data. A call that cannot perform an effect needs none of
 // it, so a known global function whose body provably never suspends also gets
 // a plain C function `d_<code>` with its activation on the C stack: arguments
-// borrowed, result owned, the frame's slots in a C array behind a stack
-// `Frame` so the ordinary slot helpers work unchanged. Saturated calls to it
-// from anywhere become C calls, and its self tail calls a loop.
+// owned, result owned, the frame's slots in a C array behind a stack `Frame`
+// so the ordinary slot helpers work unchanged. Saturated calls to it from
+// anywhere become C calls, and its self tail calls a loop.
+//
+// The callee owns its arguments so that a move survives the call: a caller's
+// last use of a value gives its reference away (`THxVALUE_give`) instead of
+// parking it in the caller's temporary pool, and the callee's parameter row is
+// its frame's env, from which a last use moves out again. A vector threaded
+// through a chain of direct calls is then held once and `@vec_set` /
+// `@vec_push` update it in place; any other argument is lent a new reference.
 //
 // "Never suspends" is decided on the IR alone (`direct_safe`): no handler, no
 // `defer`, and every call either a built-in, a partial application of a known
@@ -358,10 +373,49 @@ fn emit_let_slot(rhs: &IrExpr, slot: usize, out: &mut String) {
     }
 }
 
-/// The C of an integer intrinsic on `int64_t` operands, and whether its result
-/// is a boolean (else an integer). Arithmetic wraps, as the boxed runtime's
-/// does in practice, without C's signed-overflow undefined behaviour.
-fn int_intrinsic(name: &str, a: &str, b: &str) -> Option<(String, bool)> {
+/// How generated code passes one operand of an inline intrinsic.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Opnd {
+    /// An unboxed `int64_t`.
+    Int,
+    /// An unboxed truth value (a C `int`).
+    Bool,
+    /// A boxed `Value*` the intrinsic only reads.
+    Boxed,
+}
+
+/// The operands of a builtin generated code computes inline; `None` for one
+/// that goes through `THxK_prim`. See Note [Unboxed integers].
+fn intrinsic_operands(name: &str) -> Option<&'static [Opnd]> {
+    use Opnd::*;
+    Some(match name {
+        "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@ieq" | "@ilt" | "@ult" => {
+            &[Int, Int]
+        }
+        "not" => &[Bool],
+        "@array_len" => &[Boxed],
+        "@array_get" => &[Boxed, Int],
+        "@array_scan" | "@array_match" => &[Boxed, Int, Boxed],
+        _ => return None,
+    })
+}
+
+/// Whether operand `k` of an inline intrinsic is unboxed (an integer or a
+/// truth value), so a scalar may feed it as is.
+fn int_operand(name: &str, k: usize) -> bool {
+    intrinsic_operands(name).is_some_and(|ops| matches!(ops.get(k), Some(Opnd::Int | Opnd::Bool)))
+}
+
+/// The C of an inline intrinsic on its operands (each as
+/// [`intrinsic_operands`] says), and whether its result is a boolean (else an
+/// integer). Arithmetic wraps, as the boxed runtime's does in practice,
+/// without C's signed-overflow undefined behaviour.
+fn int_intrinsic(name: &str, args: &[String]) -> Option<(String, bool)> {
+    if intrinsic_operands(name)?.len() != args.len() {
+        return None;
+    }
+    let a = &args[0];
+    let b = args.get(1).map_or("", |b| b.as_str());
     let wrap = |op: &str| format!("(int64_t)((uint64_t)({a}) {op} (uint64_t)({b}))");
     Some(match name {
         "@iadd" => (wrap("+"), false),
@@ -374,6 +428,11 @@ fn int_intrinsic(name: &str, a: &str, b: &str) -> Option<(String, bool)> {
         "@ieq" => (format!("(({a}) == ({b}))"), true),
         "@ilt" => (format!("(({a}) < ({b}))"), true),
         "@ult" => (format!("((uint64_t)({a}) < (uint64_t)({b}))"), true),
+        "not" => (format!("(!({a}))"), true),
+        "@array_len" => (format!("THxA_len({a})"), false),
+        "@array_get" => (format!("THxA_get({a}, {b})"), false),
+        "@array_scan" => (format!("THxA_scan({a}, {b}, {})", args[2]), false),
+        "@array_match" => (format!("THxA_match({a}, {b}, {})", args[2]), true),
         _ => return None,
     })
 }
@@ -873,7 +932,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
     let libs: Vec<&str> = {
         let mut ls: Vec<&str> = externs
             .iter()
-            .filter(|e| e.abi != "WASM")
+            .filter(|e| e.abi != "WASM" && e.abi != "load")
             .map(|e| e.lib.as_str())
             .collect();
         ls.sort_unstable();
@@ -902,6 +961,32 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
             Some(_) => cstruct_name(e.ret_type.as_str()),
             None => c_ret(e.ret_type.as_str()).0.to_string(),
         };
+
+        // A `"load"` extern reads element `i` of the C array at `p` (its two
+        // arguments) and wraps it as a C call's result would be.
+        if e.abi == "load" {
+            out.push_str(&format!(
+                "static Value* THx_extern_{n}(Value** args) {{\n  \
+                 const char* _p = (const char*)(intptr_t)THxVALUE_as_int(args[0]);\n  \
+                 int64_t _i = THxVALUE_as_int(args[1]);\n  \
+                 if (!_p) thrax_fault(\"load from a null pointer\");\n  \
+                 {ret_ty} _r;\n  \
+                 memcpy(&_r, _p + _i * (int64_t)sizeof(_r), sizeof(_r));\n"
+            ));
+            match ret_layout {
+                Some(layout) => {
+                    let mut ctr = 0usize;
+                    let tmp = emit_build("_r", e.ret_type.as_str(), layout, &mut out, &mut ctr);
+                    out.push_str(&format!("  return {tmp};\n"));
+                }
+                None => {
+                    let wrap = c_ret(e.ret_type.as_str()).1.expect("the checker admits only loadable results");
+                    out.push_str(&format!("  return {wrap};\n"));
+                }
+            }
+            out.push_str("}\n");
+            continue;
+        }
 
         // Each argument's C parameter type and the statements that build `a{i}`.
         // A `{}` parameter carries no C argument (a `void`-taking function like
@@ -1107,7 +1192,7 @@ impl<'p> Emitter<'p> {
     /// Mirrors how a direct function's body is emitted.
     fn never_suspends(&self, e: &IrExpr, safe: &HashSet<usize>) -> bool {
         let callee_ok = |c: Callee| match c {
-            Callee::Prim => true,
+            Callee::Prim | Callee::Extern(_) => true,
             Callee::Known(caf) => safe.contains(&caf),
         };
         match e {
@@ -1199,17 +1284,19 @@ impl<'p> Emitter<'p> {
         // What a call yields, after noting the integer uses of its arguments.
         let call = |c: &Call, st: &mut IntState| -> bool {
             match c.callee {
-                Callee::Prim => match int_intrinsic(c.name, "", "") {
-                    Some((_, boolean)) => {
-                        for a in &c.args {
-                            if let Some(p) = param_of(a, st) {
+                Callee::Prim => match intrinsic_operands(c.name) {
+                    Some(ops) if ops.len() == c.args.len() => {
+                        for (a, op) in c.args.iter().zip(ops) {
+                            if let Some(p) = param_of(a, st).filter(|_| *op == Opnd::Int) {
                                 st.evidence[p] = true;
                             }
                         }
-                        !boolean
+                        let blanks = vec![String::new(); ops.len()];
+                        !int_intrinsic(c.name, &blanks).is_some_and(|(_, boolean)| boolean)
                     }
-                    None => false,
+                    _ => false,
                 },
+                Callee::Extern(_) => false,
                 Callee::Known(caf) => match sigs.get(&caf) {
                     Some(callee) => {
                         for (a, int) in c.args.iter().zip(&callee.int_params) {
@@ -1474,9 +1561,12 @@ impl<'p> Emitter<'p> {
                     }
                 }
             }
-            IrExpr::Field { rec, name } => {
-                format!("THxVALUE_field({}, {})", self.atom(rec), cstr(name.bytes()))
-            }
+            // A GNU statement expression gives each access site its own cache.
+            IrExpr::Field { rec, name } => format!(
+                "({{ static unsigned _fic; THxVALUE_field_ic({}, {}, &_fic); }})",
+                self.atom(rec),
+                cstr(name.bytes())
+            ),
             IrExpr::MkVariant { ty, tag, fields, reuse } => {
                 let vals = if fields.is_empty() {
                     "NULL".to_string()
@@ -1545,6 +1635,7 @@ impl<'p> Emitter<'p> {
                     out.push_str(&format!("  THxK_jump(blk_{cont});\n"));
                 }
             }
+            Sink::Int { var } => out.push_str(&format!("  sv{var} = THxI({val});\n")),
         }
     }
 
@@ -1602,6 +1693,10 @@ impl<'p> Emitter<'p> {
             IrExpr::Ret(a) if matches!(sink, Sink::Ret) && self.direct.is_some_and(|d| d.int_ret) => {
                 self.return_int(&self.int_atom(a), out)
             }
+            IrExpr::Ret(a) if matches!(sink, Sink::Int { .. }) => {
+                let Sink::Int { var } = sink else { unreachable!() };
+                out.push_str(&format!("  sv{var} = {};\n", self.int_atom(a)));
+            }
             IrExpr::Ret(_)
             | IrExpr::MkStruct { .. }
             | IrExpr::Field { .. }
@@ -1615,7 +1710,7 @@ impl<'p> Emitter<'p> {
             }
 
             IrExpr::App { fun, arg, .. } if self.direct.is_some() => match self.lone_call(fun, arg) {
-                Some(call) if call.callee == Callee::Prim => self.emit_prim(call, sink, out),
+                Some(call) if matches!(call.callee, Callee::Prim | Callee::Extern(_)) => self.emit_prim(call, sink, out),
                 Some(call) => self.emit_call(call, sink, out),
                 None => {
                     let r = self.fresh("part");
@@ -1655,6 +1750,7 @@ impl<'p> Emitter<'p> {
                         }
                         _ => out.push_str(&format!("  THxK_tailcall({fn_}, {arg});\n")),
                     },
+                    Sink::Int { .. } => unreachable!("an integer join holds only direct calls (`int_tail`)"),
                     Sink::Slot { slot, cont } => {
                         let cont = cont.expect("a non-tail App needs a continuation block");
                         let lends = *lend
@@ -1689,12 +1785,27 @@ impl<'p> Emitter<'p> {
         self.scalars.remove(slot);
         if let Some(call) = self.call_chain(*slot, rhs, body) {
             match call.callee {
-                Callee::Prim => return self.emit_prim(call, sink, out),
+                Callee::Prim | Callee::Extern(_) => return self.emit_prim(call, sink, out),
                 Callee::Known(caf) if self.direct_fns.contains(&caf) => {
                     return self.emit_call(call, sink, out);
                 }
                 Callee::Known(_) => {}
             }
+        }
+        if self.direct.is_some()
+            && matches!(**rhs, IrExpr::Case { .. })
+            && !rhs.mentions(*slot)
+            && self.int_tail(rhs)
+            && self.scalar_uses(body, *slot)
+        {
+            let var = self.tmp;
+            self.tmp += 1;
+            out.push_str(&format!("  int64_t sv{var};\n"));
+            self.emit_expr(rhs, Sink::Int { var }, out);
+            self.scalars.insert(*slot, (format!("sv{var}"), false));
+            self.emit_expr(body, sink, out);
+            self.scalars.remove(slot);
+            return;
         }
         emit_let_slot(rhs, *slot, out);
         if self.direct.is_some() {
@@ -1727,7 +1838,18 @@ impl<'p> Emitter<'p> {
     /// built-in.
     fn callee(&self, name: &str) -> Option<(Callee, usize)> {
         match self.globals.get(name) {
-            Some(caf) => self.known.get(caf).map(|f| (Callee::Known(*caf), f.arity())),
+            Some(caf) => match self.known.get(caf) {
+                Some(f) => Some((Callee::Known(*caf), f.arity())),
+                None => match &self.prog.codes[*caf].body {
+                    IrExpr::Ret(Atom::Extern { abi, symbol, lib, arg_types, ret_type })
+                        if self.prog.codes[*caf].nparams == 0 =>
+                    {
+                        let idx = self.extern_idx[&extern_key(abi, symbol, lib, arg_types, ret_type)];
+                        Some((Callee::Extern(idx), arg_types.len().max(1)))
+                    }
+                    _ => None,
+                },
+            },
             None => native_builtin(name).map(|b| (Callee::Prim, b.arity)),
         }
     }
@@ -1817,10 +1939,22 @@ impl<'p> Emitter<'p> {
     /// `rest` runs) or, with no `rest`, to `sink`. A drop between the
     /// applications waits until the operands have been read.
     fn emit_prim(&mut self, call: Call, sink: Sink, out: &mut String) {
+        if let Callee::Extern(idx) = call.callee {
+            let args: Vec<String> = call.args.iter().map(|a| self.atom(a)).collect();
+            let val = format!("THxRT_extern_table[{idx}]((Value*[]){{ {} }})", args.join(", "));
+            return self.emit_prim_value(&call, val, sink, out);
+        }
         self.glob_atom(call.name);
-        if let [a, b] = call.args.as_slice() {
-            let (ia, ib) = (self.int_atom(a), self.int_atom(b));
-            if let Some((expr, boolean)) = int_intrinsic(call.name, &ia, &ib) {
+        if intrinsic_operands(call.name).is_some_and(|ops| ops.len() == call.args.len()) {
+            let ops = intrinsic_operands(call.name).unwrap_or(&[]);
+            let args: Vec<String> = (call.args.iter().zip(ops))
+                .map(|(a, op)| match op {
+                    Opnd::Int => self.int_atom(a),
+                    Opnd::Bool => self.bool_atom(a),
+                    Opnd::Boxed => self.atom(a),
+                })
+                .collect();
+            if let Some((expr, boolean)) = int_intrinsic(call.name, &args) {
                 return self.emit_int_prim(&call, expr, boolean, sink, out);
             }
         }
@@ -1857,6 +1991,12 @@ impl<'p> Emitter<'p> {
                 args.join(", ")
             )
         };
+        self.emit_prim_value(&call, val, sink, out);
+    }
+
+    /// The boxed result `val` of a saturated built-in or foreign call, into
+    /// `rest`'s slot (then `rest` runs) or, with no `rest`, to `sink`.
+    fn emit_prim_value(&mut self, call: &Call, val: String, sink: Sink, out: &mut String) {
         match call.rest {
             Some((slot, rest)) => {
                 self.scalars.remove(&slot);
@@ -1894,6 +2034,11 @@ impl<'p> Emitter<'p> {
                 self.emit_drops(&call.drops, out);
                 self.emit_expr(rest, sink, out);
             }
+            None if matches!(sink, Sink::Int { .. }) && !boolean => {
+                let Sink::Int { var } = sink else { unreachable!() };
+                out.push_str(&format!("  sv{var} = {expr};\n"));
+                self.emit_drops(&call.drops, out);
+            }
             None if matches!(sink, Sink::Ret) && !boolean && self.direct.is_some_and(|d| d.int_ret) => {
                 let r = self.fresh("iv");
                 out.push_str(&format!("  int64_t {r} = {expr};\n"));
@@ -1922,14 +2067,16 @@ impl<'p> Emitter<'p> {
             if sig.int_params[k] {
                 out.push_str(&format!("  int64_t {n} = {};\n", self.int_atom(a)));
             } else {
-                out.push_str(&format!("  Value* {n} = {};\n", self.atom(a)));
+                out.push_str(&format!("  Value* {n} = {};\n", self.give_atom(a)));
             }
         }
+        // The machine fallback borrows its operands, so there the references
+        // given above go to the pool, as a temporary's would.
         let boxed = |k: usize| {
             if sig.int_params[k] {
                 format!("THxRT_int({})", names[k])
             } else {
-                names[k].clone()
+                format!("THxK_own({})", names[k])
             }
         };
         let direct = format!("d_{}({})", f.inner(), names.join(", "));
@@ -1942,11 +2089,6 @@ impl<'p> Emitter<'p> {
         let last = boxed(names.len() - 1);
         match self.direct {
             Some(d) if d.inner == f.inner() && call.rest.is_none() && matches!(sink, Sink::Ret) => {
-                for (k, n) in names.iter().enumerate() {
-                    if !sig.int_params[k] {
-                        out.push_str(&format!("  THxMEM_retain({n});\n"));
-                    }
-                }
                 out.push_str(&format!("  THxD_reset(fr, P, {}, mark);\n", d.arity));
                 for (k, n) in names.iter().enumerate() {
                     if sig.int_params[k] {
@@ -1986,6 +2128,10 @@ impl<'p> Emitter<'p> {
                         }
                     }
                     None if sig.int_ret && d.int_ret && matches!(sink, Sink::Ret) => self.return_int(&r, out),
+                    None if sig.int_ret && matches!(sink, Sink::Int { .. }) => {
+                        let Sink::Int { var } = sink else { unreachable!() };
+                        out.push_str(&format!("  sv{var} = {r};\n"));
+                    }
                     None if sig.int_ret => self.deliver(&format!("THxRT_int({r})"), sink, out),
                     None => self.deliver(&r, sink, out),
                 }
@@ -2005,6 +2151,7 @@ impl<'p> Emitter<'p> {
                     (None, Sink::Slot { slot, cont }) => {
                         (Some(slot), Some(cont.expect("a call in a block needs a continuation")))
                     }
+                    (None, Sink::Int { .. }) => unreachable!("an integer join is only emitted in a direct function"),
                 };
                 out.push_str("  if (THxD_room()) {\n");
                 let r = self.fresh("call");
@@ -2040,9 +2187,9 @@ impl<'p> Emitter<'p> {
         }
     }
 
-    /// The C function of a direct known function: `P` owns the arguments, `L`
-    /// is the last code's slot array and `E` its environment, read straight
-    /// from `P`. See Note [Direct functions].
+    /// The C function of a direct known function: `P` owns the arguments and
+    /// is the frame's environment, `L` is the last code's slot array.
+    /// See Note [Direct functions].
     fn emit_direct_fn(&mut self, caf: usize) -> String {
         let prog = self.prog;
         let f = self.known[&caf].clone();
@@ -2079,24 +2226,26 @@ impl<'p> Emitter<'p> {
         for i in (0..n).filter(|&i| sig.int_params[i]) {
             out.push_str(&format!("  int64_t I{i} = a{i};\n"));
         }
+        // The frame's env IS the parameter row, so a last use moves the row's
+        // own reference out (see `THxVALUE_take_env`): a vector threaded
+        // through a loop stays uniquely held and updates in place.
+        assert!(
+            f.env.iter().enumerate().all(|(j, &p)| j == p),
+            "a direct function's env is its leading parameters, in order"
+        );
         out.push_str(&format!("  Value* L[{}];\n", code.nlocals.max(1)));
-        out.push_str(&format!("  Value* E[{}];\n", f.env.len().max(1)));
         out.push_str("  Frame F;\n  Frame* fr = &F;\n");
-        out.push_str(&format!("  for (size_t i = 0; i < {n}; i++) THxMEM_retain(P[i]);\n"));
         out.push_str("  size_t mark = THxMEM_pool_mark();\n");
         if self.looped {
             out.push_str("top:\n");
         }
-        for (j, p) in f.env.iter().enumerate() {
-            out.push_str(&format!("  E[{j}] = P[{p}];\n"));
-        }
         out.push_str(&format!(
-            "  THxD_frame(fr, L, {}, E, {});\n",
+            "  THxD_frame(fr, L, {}, P, {});\n",
             code.nlocals,
             f.env.len()
         ));
         if !sig.int_params[n - 1] {
-            out.push_str(&format!("  THxK_setlocal(fr, 0, P[{}]);\n", n - 1));
+            out.push_str(&format!("  THxD_param0(fr, P, {});\n", n - 1));
         }
         out.push_str(&body);
         out.push_str("}\n\n");
@@ -2109,6 +2258,62 @@ impl<'p> Emitter<'p> {
             if !self.scalars.contains_key(s) {
                 out.push_str(&format!("  THxK_drop(fr, {s});\n"));
             }
+        }
+    }
+
+    /// A boxed argument for a direct function, as a reference the callee
+    /// owns. See Note [Direct functions].
+    fn give_atom(&self, a: &Atom) -> String {
+        match a {
+            Atom::Move(s) if !self.scalars.contains_key(s) => format!("THxVALUE_give(fr, {s})"),
+            Atom::MoveEnv(i) if !self.env_ints.contains_key(i) => format!("THxVALUE_give_env(fr, {i})"),
+            _ => format!("THxD_lend({})", self.atom(a)),
+        }
+    }
+
+    /// A truth-value operand as a C `int`: a boolean scalar as is, else read
+    /// off its box.
+    fn bool_atom(&self, a: &Atom) -> String {
+        match a {
+            Atom::Local(s) | Atom::Move(s) if self.scalars.get(s).is_some_and(|(_, b)| *b) => {
+                self.scalars[s].0.clone()
+            }
+            _ => format!("THxVALUE_as_bool({})", self.atom(a)),
+        }
+    }
+
+    /// Whether every value `e` can end in is an integer the code already holds
+    /// unboxed or computes unboxed (a literal, an integer scalar, an integer
+    /// intrinsic, a direct call with an unboxed result), so `Sink::Int` can
+    /// take it without a box. Conservative: anything else is `false`.
+    fn int_tail(&self, e: &IrExpr) -> bool {
+        let int_call = |c: &Call| match c.callee {
+            Callee::Prim => intrinsic_operands(c.name).is_some_and(|ops| ops.len() == c.args.len())
+                && !int_intrinsic(c.name, &vec![String::new(); c.args.len()]).is_some_and(|(_, b)| b),
+            Callee::Known(caf) => self.direct_fns.contains(&caf) && self.sigs[&caf].int_ret,
+            Callee::Extern(_) => false,
+        };
+        match e {
+            IrExpr::Ret(a) => match a {
+                Atom::LitI(_) => true,
+                Atom::Local(s) | Atom::Move(s) => self.scalars.get(s).is_some_and(|(_, b)| !*b),
+                Atom::Env(j) | Atom::MoveEnv(j) => self.env_ints.contains_key(j),
+                _ => false,
+            },
+            IrExpr::Let { slot, rhs, body } => match self.call_chain(*slot, rhs, body) {
+                Some(c) => match c.rest {
+                    None => int_call(&c),
+                    Some((_, rest)) => self.int_tail(rest),
+                },
+                None => self.int_tail(body),
+            },
+            IrExpr::App { fun, arg, .. } => self.lone_call(fun, arg).is_some_and(|c| int_call(&c)),
+            IrExpr::Case { alts, default, .. } => {
+                alts.iter().all(|a| self.int_tail(&a.body)) && self.int_tail(default)
+            }
+            IrExpr::Drop { body, .. } => self.int_tail(body),
+            IrExpr::Fault(_) => true,
+            _ => false,
         }
     }
 
@@ -2143,7 +2348,7 @@ impl<'p> Emitter<'p> {
                     if r == slot {
                         return true;
                     }
-                    if block && call.callee != Callee::Prim {
+                    if block && !matches!(call.callee, Callee::Prim | Callee::Extern(_)) {
                         return !rest.mentions(slot);
                     }
                     return self.scalar_uses(rest, slot);
@@ -2192,13 +2397,13 @@ impl<'p> Emitter<'p> {
     /// Whether `call` reads `slot` only as integer operands: of an integer
     /// intrinsic, or unboxed arguments of a direct function.
     fn int_args_only(&self, call: &Call, slot: usize) -> bool {
-        let int_op = call.callee == Callee::Prim && int_intrinsic(call.name, "", "").is_some();
+        let prim = call.callee == Callee::Prim;
         let sig = match call.callee {
             Callee::Known(caf) => self.sigs.get(&caf),
-            Callee::Prim => None,
+            Callee::Prim | Callee::Extern(_) => None,
         };
         call.args.iter().enumerate().all(|(k, a)| {
-            !a.mentions(slot) || int_op || sig.is_some_and(|s| s.int_params[k])
+            !a.mentions(slot) || (prim && int_operand(call.name, k)) || sig.is_some_and(|s| s.int_params[k])
         })
     }
 
@@ -2350,6 +2555,7 @@ impl<'p> Emitter<'p> {
         let els = self.atom(els);
         let (cont, slot) = match sink {
             Sink::Ret => ("NULL".to_string(), 0),
+            Sink::Int { .. } => unreachable!("an integer join holds no handler (`int_tail`)"),
             Sink::Slot { slot, cont } => {
                 let cont = cont.expect("a non-tail Handle needs a continuation block");
                 (format!("blk_{cont}"), slot)
@@ -2373,6 +2579,7 @@ impl<'p> Emitter<'p> {
         let cl = self.atom(cleanup);
         let (cont, slot) = match sink {
             Sink::Ret => ("NULL".to_string(), 0),
+            Sink::Int { .. } => unreachable!("an integer join holds no defer (`int_tail`)"),
             Sink::Slot { slot, cont } => {
                 let cont = cont.expect("a non-tail Defer needs a continuation block");
                 (format!("blk_{cont}"), slot)

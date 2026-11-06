@@ -46,7 +46,39 @@ impl<'a> Checker<'a> {
             let param = self.unifier.resolve(param);
             let (params, arg_types) = self.extern_param_spec(param)?;
             let ret_name = StrId::intern(&marshal_name(&self.unifier.types, self.unifier.resolve(ret)));
+            if matches!(self.node(e), Expr::Extern { abi, .. } if *abi == crate::parser::data::LOAD_ABI) {
+                self.check_load(span, &arg_types, ret_name)?;
+            }
             self.extern_specs.insert(e, (params, arg_types, ret_name));
+        }
+        Ok(())
+    }
+
+    /// An `@extern "load"` reads element `i` of a C array at `p`, so it takes
+    /// exactly `{ p: @Ptr, i: @Int }` and yields a value C memory can hold: a
+    /// sized number, `@Int`/`@Nat`, `@Ptr`, a `char*` as `@Str`, or a C-repr
+    /// struct.
+    fn check_load(&self, span: Span, arg_types: &[StrId], ret: StrId) -> Result<()> {
+        if arg_types.len() != 2 || arg_types[0] != ty::PTR || arg_types[1] != ty::INT {
+            return Err(diag!(
+                Code::TypeMismatch, span, 0,
+                "an `@extern \"load\"` takes a pointer and an index";
+                help: "declare it `{{ p: @Ptr, i: @Int }} -> T`: element `i` of a C array of `T` at `p`"
+            ));
+        }
+        let loadable = (scalar_ckind(ret.as_str(), 64).is_some() && ret != ty::BOOL)
+            || ret == ty::STR
+            || self.crepr_layouts.contains_key(&ret)
+            || self.structs.get(&ret).is_some_and(|st| st.crepr);
+        if !loadable {
+            return Err(diag!(
+                Code::TypeMismatch, span, 0,
+                "an `@extern \"load\"` cannot read a `{ret}` from C memory";
+                note: "C memory holds numbers, pointers, `char*` strings and C-repr structs; \
+                       a C `bool` loads as `@Nat8`";
+                help: "load a sized number, `@Int`, `@Ptr`, `@Str` (a `char*`) or a \
+                       `@struct @extern \"C\"` type"
+            ));
         }
         Ok(())
     }
