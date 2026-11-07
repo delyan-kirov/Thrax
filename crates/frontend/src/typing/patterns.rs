@@ -239,7 +239,7 @@ impl<'a> Checker<'a> {
     ) -> Result<()> {
         let union = match ty {
             Some(n) => Some(n),
-            None => self.find_union_by_tag(tag),
+            None => self.find_union_for(tag, expected),
         };
         let resolved = union.and_then(|u| self.variant_sig(u, tag));
         // As in `type_struct_pattern`, an unresolvable tag is an error rather than

@@ -12,7 +12,9 @@ use super::*;
 /// Which slots of a declared type are lazy: keyed by `(type name, variant tag)`
 /// with `None` as the tag for a struct, holding one flag per slot in declaration
 /// order. Only types with at least one lazy slot appear.
-pub type LazySlots = HashMap<(StrId, Option<StrId>), Vec<bool>>;
+/// Keyed by the declaring module, the type, and the variant tag (`None` for a
+/// struct), since two modules may each declare a type of the same name.
+pub type LazySlots = HashMap<(StrId, StrId, Option<StrId>), Vec<bool>>;
 
 /// An `@extern`'s marshalling spec: how the single applied Thrax value maps to
 /// positional C arguments (`params`), the flattened C argument type names
@@ -443,14 +445,34 @@ impl Declarations {
             .or_else(|| table.values().find_map(|m| m.get(&key)))
     }
 
-    /// The payload arity and (union, field names) for a variant tag.
+    /// The module that declares type `name`, as seen from `module`: its own
+    /// declaration first, then an import's, then any module's.
+    pub(crate) fn type_home(&self, module: StrId, imports: &[StrId], name: StrId) -> Option<StrId> {
+        let declares = |m: &StrId| self.type_params.get(m).is_some_and(|t| t.contains_key(&name));
+        std::iter::once(&module)
+            .chain(imports)
+            .find(|m| declares(m))
+            .or_else(|| self.type_params.keys().find(|m| declares(m)))
+            .copied()
+    }
+
+    /// The (union, field names) for a variant tag. When the construction names
+    /// its union (`Token.Op.{ .. }`), only a variant of that union answers, since
+    /// two modules may each have an `Op`; the search order is [`Self::resolve`]'s.
     pub(crate) fn variant(
         &self,
         module: StrId,
         imports: &[StrId],
+        union: Option<StrId>,
         tag: StrId,
     ) -> Option<(StrId, &[Option<StrId>])> {
-        self.resolve(&self.unions, module, imports, tag)
+        let fits = |v: &&VariantLayout| union.is_none_or(|u| v.union == u);
+        let named = std::iter::once(&module)
+            .chain(imports)
+            .find_map(|m| self.unions.get(m).and_then(|t| t.get(&tag)).filter(fits))
+            .or_else(|| self.unions.values().find_map(|t| t.get(&tag).filter(fits)));
+        named
+            .or_else(|| self.resolve(&self.unions, module, imports, tag))
             .map(|v| (v.union, v.fields.as_slice()))
     }
 

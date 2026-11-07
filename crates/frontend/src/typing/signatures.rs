@@ -304,6 +304,13 @@ impl<'a> Checker<'a> {
     ) {
         let ast = self.ast;
         for entry in ast.slice(entries) {
+            // `<@e (X)>`: the labels are unknown until the driver splices them, so
+            // the entry stands as an open tail.
+            if let Some(expr) = entry.meta {
+                self.meta_splice_operand(expr);
+                tails.push(self.unifier.fresh());
+                continue;
+            }
             let name = entry.name;
             let args = ast.slice(entry.args);
             let Some((params, body)) = self.aliases.get(&name).cloned() else {
@@ -344,6 +351,19 @@ impl<'a> Checker<'a> {
                 tails.push(*sub.entry(t).or_insert_with(|| self.unifier.fresh()));
             }
         }
+    }
+
+    /// Infer the operand of a type or row splice `@e X` under the `<@Meta>`
+    /// ambient and require it to build `@Code`. See `Ty::MetaE` in `ty_of_ast`.
+    fn meta_splice_operand(&mut self, expr: Aol<Expr>) {
+        let ambient = self.meta_ambient();
+        let saved = std::mem::replace(&mut self.ambient, ambient);
+        let sites = self.deferred_sites.clone();
+        if let Ok(t) = self.infer(expr) {
+            let _ = self.unifier.unify(t, self.unifier.types.con("@Code"), "in a `@e` type splice");
+        }
+        self.deferred_sites = sites;
+        self.ambient = saved;
     }
 
     /// The labels a parameterless, closed row alias stands for, through any
@@ -514,14 +534,7 @@ impl<'a> Checker<'a> {
             // operand back for them would hold it forever.
             Ty::MetaE(expr) => {
                 let expr = *expr;
-                let ambient = self.meta_ambient();
-                let saved = std::mem::replace(&mut self.ambient, ambient);
-                let sites = self.deferred_sites.clone();
-                if let Ok(t) = self.infer(expr) {
-                    let _ = self.unifier.unify(t, self.unifier.types.con("@Code"), "in a `@e` type splice");
-                }
-                self.deferred_sites = sites;
-                self.ambient = saved;
+                self.meta_splice_operand(expr);
                 self.unifier.fresh()
             }
             Ty::Nat(n) => self.unifier.types.add(TypeNode::Nat(*n)),

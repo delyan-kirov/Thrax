@@ -1030,10 +1030,11 @@ fn a_recursive_slot_is_lazy_and_an_arrow_slot_is_not() {
     checker.import_from(&core_checker);
     checker.check_program(&prog).expect("check");
     let lazy = checker.lazy_slots();
-    assert_eq!(lazy.get(&("L".into(), Some("C".into()))), Some(&vec![false, true]));
-    assert_eq!(lazy.get(&("S".into(), None)), Some(&vec![false, true]));
-    assert_eq!(lazy.get(&("Task".into(), Some("Susp".into()))), None);
-    assert_eq!(lazy.get(&("P".into(), None)), None);
+    let m = checker.module_name;
+    assert_eq!(lazy.get(&(m, "L".into(), Some("C".into()))), Some(&vec![false, true]));
+    assert_eq!(lazy.get(&(m, "S".into(), None)), Some(&vec![false, true]));
+    assert_eq!(lazy.get(&(m, "Task".into(), Some("Susp".into()))), None);
+    assert_eq!(lazy.get(&(m, "P".into(), None)), None);
 }
 
 #[test]

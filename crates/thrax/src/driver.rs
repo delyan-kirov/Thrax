@@ -653,7 +653,11 @@ fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<C
     // `@type_of` answers from every global's rendered type. Rendering them all is
     // only worth it in a round with a compile-time site to ask.
     let has_sites = lowered.iter().any(|p| {
-        !(p.ct_runs.is_empty() && p.ct_evals.is_empty() && p.ct_types.is_empty() && p.ct_patterns.is_empty())
+        !(p.ct_runs.is_empty()
+            && p.ct_evals.is_empty()
+            && p.ct_types.is_empty()
+            && p.ct_patterns.is_empty()
+            && p.ct_rows.is_empty())
             || p.ct_build.is_some()
     });
     if has_sites {
@@ -933,6 +937,7 @@ fn expand_all(
                     (&p.ct_evals, Splice::Parenthesized),
                     (&p.ct_types, Splice::Parenthesized),
                     (&p.ct_patterns, Splice::Bare),
+                    (&p.ct_rows, Splice::Bare),
                 ];
                 kinds.into_iter().flat_map(move |(list, how)| {
                     list.iter()
@@ -996,6 +1001,7 @@ fn expand_all(
         );
         let enter = |module: &str| {
             interpreter::machine::set_meta_eval(Some(round_eval_host(&round_sources, module, &root_dir)));
+            interpreter::machine::set_meta_check(Some(round_check_host(&round_sources, module, &root_dir)));
             interpreter::machine::set_type_host(Some(reflect_host(Rc::clone(&reflect), module.to_string())));
         };
         // `@build` first, and alone in its round: it contributes the definitions
@@ -1010,11 +1016,13 @@ fn expand_all(
         let ran_builds = !build_sites.is_empty();
         for (module, qualified) in build_sites {
             enter(&module);
+            interpreter::machine::set_meta_site(Some(site_of(&loaded.sources, &module, utilities::Span::at(0))));
             let script = module == BUILD_SCRIPT;
             if script {
                 interpreter::machine::open_build_record();
             }
             let v = interpreter::machine::eval_value(&ir, &qualified);
+            report_meta_warnings(&module, utilities::Span::at(0), &loaded.sources);
             if script {
                 let record = interpreter::machine::take_build_record();
                 BUILT.with(|c| *c.borrow_mut() = Some(record));
@@ -1091,7 +1099,10 @@ fn expand_all(
                 continue;
             }
             enter(&module);
-            let v = match interpreter::machine::eval_value(&ir, &qualified) {
+            interpreter::machine::set_meta_site(Some(site_of(&loaded.sources, &module, span)));
+            let v = interpreter::machine::eval_value(&ir, &qualified);
+            report_meta_warnings(&module, span, &loaded.sources);
+            let v = match v {
                 Ok(v) => v,
                 Err(d) => {
                     faults.push((d, module, span));
@@ -1194,7 +1205,30 @@ fn reaches_any(
 /// expansion round, so a stray meta op at runtime faults cleanly.
 fn clear_meta_hosts() {
     interpreter::machine::set_meta_eval(None);
+    interpreter::machine::set_meta_check(None);
+    interpreter::machine::set_meta_site(None);
     interpreter::machine::set_type_host(None);
+}
+
+/// The `(file, line, column)` `@here` reports for a site at `span` of `module`,
+/// in this round's text. The sentinel span (a `@build`) is the file's start.
+fn site_of(sources: &[(String, String, String)], module: &str, span: utilities::Span) -> (String, i64, i64) {
+    let Some((_, path, src)) = sources.iter().find(|(n, _, _)| n == module) else {
+        return (module.to_string(), 1, 1);
+    };
+    let at = span.start.min(src.len());
+    let before = &src[..at];
+    let line = before.matches('\n').count() + 1;
+    let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
+    (path.clone(), line as i64, column as i64)
+}
+
+/// Render what `@warn` reported while the site at `span` of `module` ran.
+fn report_meta_warnings(module: &str, span: utilities::Span, sources: &[(String, String, String)]) {
+    for w in interpreter::machine::take_meta_warnings() {
+        let w = w.with_note("raised while running this compile-time `@e`");
+        eprint!("{}", render_e_fault(w, module, span, sources));
+    }
 }
 
 /// Every declared type shape a round can reflect on, keyed for both lookup
@@ -1444,6 +1478,20 @@ fn eval_wrapped(
     imports: &[String],
     fetch: &dyn Fn(&str) -> Result<(String, String), String>,
 ) -> std::result::Result<interpreter::machine::OwnedValue, String> {
+    let session = compile_wrapped(src, imports, fetch)?;
+    let ir = session.ir();
+    let v = interpreter::machine::eval_value(&ir, &format!("REPL.{PROBE}"))
+        .map_err(|d| d.render("", "@eval"))?;
+    interpreter::machine::reify(&v)
+}
+
+/// Compile `src` as the body of a definition in an in-memory module that opens
+/// with the `$ with` lines `imports`.
+fn compile_wrapped(
+    src: &str,
+    imports: &[String],
+    fetch: &dyn Fn(&str) -> Result<(String, String), String>,
+) -> Result<Session, String> {
     let mut module = String::from("$ @mod REPL\n");
     for line in imports {
         module.push_str(line);
@@ -1451,11 +1499,7 @@ fn eval_wrapped(
     }
     module.push_str(&format!("$ {PROBE} =\n"));
     module.push_str(src);
-    let session = compile_in_memory("REPL", &module, fetch, InMemory::Session { open_effects: false, query: None })?;
-    let ir = session.ir();
-    let v = interpreter::machine::eval_value(&ir, &format!("REPL.{PROBE}"))
-        .map_err(|d| d.render("", "@eval"))?;
-    interpreter::machine::reify(&v)
+    compile_in_memory("REPL", &module, fetch, InMemory::Session { open_effects: false, query: None })
 }
 
 /// The expansion-time `@eval` host for a directive in `module`. A fragment sees
@@ -1477,6 +1521,30 @@ fn round_eval_host(
             Some((path, text)) => Ok((path.clone(), text.clone())),
             None => load_module(name, &root_dir),
         })
+    })
+}
+
+/// The expansion-time `@check` host for a directive in `module`: like
+/// [`round_eval_host`], but the fragment is only checked, and its type returned.
+fn round_check_host(
+    sources: &Rc<HashMap<String, (String, String)>>,
+    module: &str,
+    root_dir: &Path,
+) -> Box<dyn Fn(&str) -> std::result::Result<String, String>> {
+    let mut imports = sources
+        .get(module)
+        .map(|(_, src)| import_lines(src))
+        .unwrap_or_default();
+    imports.push(format!("$ with {module}"));
+    let sources = Rc::clone(sources);
+    let root_dir = root_dir.to_path_buf();
+    Box::new(move |src| {
+        let session = compile_wrapped(src, &imports, &|name| match sources.get(name) {
+            Some((path, text)) => Ok((path.clone(), text.clone())),
+            None => load_module(name, &root_dir),
+        })?;
+        let ty = session.decls.iter().find(|(n, _)| n == PROBE).map(|(_, t)| t.clone());
+        Ok(ty.expect("the probe of a checked fragment has a type"))
     })
 }
 

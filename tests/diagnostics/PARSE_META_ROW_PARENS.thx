@@ -1,0 +1,4 @@
+$ @mod PARSE_META_ROW_PARENS
+
+# A row splice is parenthesized, so its operand stops before `,` or `>`.
+$ f : {} -> <@e @parse_row "Log"> {} = \_ => {} #~ error[UNEXPECTED_TOKEN]: expected '(' after '@e' in an effect row

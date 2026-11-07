@@ -600,7 +600,7 @@ pub fn is_build_type(types: &Types, ty: Type) -> bool {
 /// The built-in types, by their `@` names.
 pub const BASE_TYPES: &[&str] = &[
     "@Int", "@Nat", "@Int8", "@Int16", "@Int32", "@Int64", "@Nat8", "@Nat16", "@Nat32", "@Nat64",
-    "@Float32", "@Float64", "@Str", "@Ptr", "@Bool", "@Array", "@Vec", "@Token", "@Code", "@Future",
+    "@Float32", "@Float64", "@Str", "@Ptr", "@Bool", "@Array", "@Vec", "@Code", "@Future",
     "@Chan", "@TVar",
 ];
 

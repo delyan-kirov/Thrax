@@ -55,6 +55,9 @@ pub struct CoreProgram {
     /// the `@e (X)`)`. The driver forces the global at compile time and splices
     /// the resulting `@Code`'s pattern source at the span.
     pub ct_patterns: Vec<(StrId, Span)>,
+    /// Effect-row `<@e (X)>` sites, `(synthetic global name, source span of the
+    /// entry)`. The driver splices the resulting `@Code`'s entries at the span.
+    pub ct_rows: Vec<(StrId, Span)>,
     /// The synthetic global holding the call `@build {}`, present when this module
     /// defines `$ @build`. The driver forces it once per module at compile time and
     /// appends the items of the `@Code` it returns to the module's source. Unlike
@@ -88,6 +91,7 @@ impl CoreProgram {
             ct_evals: Vec::new(),
             ct_types: Vec::new(),
             ct_patterns: Vec::new(),
+            ct_rows: Vec::new(),
             ct_build: None,
             deferred: Vec::new(),
             de_bruijn: SecondaryMap::new(),

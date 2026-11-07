@@ -2,7 +2,7 @@ $ @mod META_RUNTIME
 
 # \file META_RUNTIME.thx
 # \info The compiler at run time. `@lex`, `@parse`, `@parse_str`,
-#       `@parse_items`, `@format` and `@eval` are pure, so they work in ordinary
+#       `@parse_items`, `@unparse`, `@format` and `@eval` are pure, so they work in ordinary
 #       code as well as inside `@e`. The interpreter runs them in-process; a
 #       native build links the compiler as a library (`libthrax`) and calls into
 #       it. `@eval` compiles its fragment against the standard library and
@@ -10,14 +10,25 @@ $ @mod META_RUNTIME
 #       result type is whatever the use site says, so annotate it.
 
 $ with STR
+$ with VEC
 
 # The source is only known when the program runs.
 $ source : @Str = STR.concat ["6", " * ", "7"]
 
 # --- lexing ----------------------------------------------------------------
-$ toks : @Vec @Token = @lex "1 + foo"
+$ toks : @Vec Token = @lex "1 + foo"
 $ third_kind : @Str = @token_kind (@vec_get toks 2)
 $ third_text : @Str = @token_text (@vec_get toks 2)
+
+# A token is a CORE `Token`, so a match reads its kind and lexeme. `let` and
+# `in` are keywords, so this source has three words.
+$ count_words : @Vec Token -> @Int = \ts =>
+    VEC.foldl (\n t => t |> \ | Token.Word.{ _ } => n + 1 | _ => n) 0 ts
+$ words : @Int = count_words <| @lex "let x = y + 1 in x"
+
+# Tokens built by hand parse like lexed ones, and `@unparse` reads code back.
+$ built : @Code = @parse [Token.Int.{ "2" }, Token.Op.{ "*" }, Token.Int.{ "21" }]
+$ built_src : @Str = @unparse built
 
 # --- parsing and evaluating --------------------------------------------------
 $ product : @Int = @eval (@parse_str source)
@@ -37,4 +48,7 @@ $ ck5 : @Int = if STR.eq greeting "hello" => 0 else 16
 $ ck6 : @Int = if pair.0 == 20 && pair.1 => 0 else 32
 $ ck7 : @Int = if STR.eq tidy "$ f : @Int -> @Int = \\x => x + 1\n" => 0 else 64
 
-$ test : @Int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7
+$ ck8 : @Int = if words == 3 => 0 else 128
+$ ck9 : @Int = if @eval built == 42 && STR.eq built_src "2 * 21" => 0 else 256
+
+$ test : @Int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7 + ck8 + ck9

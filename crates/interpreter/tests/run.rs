@@ -140,11 +140,13 @@ fn lower_to_ir(user_sources: &[&str], name: &str) -> frontend::ir::data::IrProgr
 }
 
 #[test]
-fn lex_tokenizes_a_string_into_opaque_tokens() {
-    // `@lex` tokenizes a string into `@Vec @Token`; `@token_kind` / `@token_text`
-    // read a token's tag and lexeme. `foo + 12` is Word "foo", Op "+", Int "12".
+fn lex_tokenizes_a_string_into_tokens() {
+    // `@lex` tokenizes a string into `@Vec Token`; `@token_kind` / `@token_text`
+    // read a token's tag and lexeme, and a match reads them as the variant.
+    // `foo + 12` is Word "foo", Op "+", Int "12".
     let src = "$ @mod T\n\
-               $ toks : @Vec @Token = @lex \"foo + 12\"\n\
+               $ toks : @Vec Token = @lex \"foo + 12\"\n\
+               $ word : @Str = @vec_get toks 0 |> \\ | Token.Word.{ w } => w | _ => \"\"\n\
                $ n : @Int = @vec_len toks\n\
                $ ck : @Bool =\n\
                \t@token_kind (@vec_get toks 0) == \"Word\"\n\
@@ -154,6 +156,7 @@ fn lex_tokenizes_a_string_into_opaque_tokens() {
                \t\t&& @token_text (@vec_get toks 2) == \"12\"";
     assert_eq!(run(src, "T.n"), "3");
     assert_eq!(run(src, "T.ck"), "true");
+    assert_eq!(run(src, "T.word"), "\"foo\"");
 }
 
 #[test]
@@ -168,7 +171,7 @@ fn parse_str_produces_opaque_code() {
 #[test]
 fn parse_consumes_tokens_into_code() {
     // `@parse` consumes a `@lex` token vector into the same opaque `@Code` as
-    // `@parse_str`, closing the `@Str -> @Token -> @Code` pipeline. The lexemes
+    // `@parse_str`, closing the `@Str -> Token -> @Code` pipeline. The lexemes
     // rejoin whitespace-insensitively, so `@parse (@lex s)` yields code equal to
     // `@parse_str` of the normalized source.
     let src = "$ @mod T\n$ c : @Code = @parse (@lex \"1+2\")";
@@ -424,6 +427,29 @@ fn a_name_two_imports_share_is_qualified() {
                 $ r : @Int = unwrap (make 5)";
     let e = errors_modules(&[p, q, bare], "r");
     assert!(e.contains("imported from more than one module"), "{e}");
+}
+
+#[test]
+fn a_prelude_type_is_not_another_modules_namesake() {
+    // P declares its own `Token`, recursive through `Op`, so P's `Op` slots are
+    // lazy. Q does not import P: its `Token.Op` is CORE's, a single strict lexeme,
+    // in both its layout and its laziness.
+    let p = "$ @mod P\n$ Token : @union = Op: { Token, Token }, Leaf: {}";
+    let q = "$ @mod Q\n$ s : @Str = @token_text (Token.Op.{ \"*\" })";
+    let root = "$ @mod M\n$ with Q\n$ r : @Str = Q.s";
+    assert_eq!(run_modules(&[p, q, root], "r"), "\"*\"");
+}
+
+#[test]
+fn an_unqualified_tag_prefers_the_expected_union_over_the_prelude() {
+    // CORE's `Decl` has a `Missing` variant too. A `.Missing` pattern on a value
+    // of P's `Found` is P's.
+    let p = "$ @mod P\n$ Found : @union = Hit: @Int, Missing: {}";
+    let root = "$ @mod M\n\
+                $ with P\n\
+                $ score : Found -> @Int = \\ | .Hit.{ n } => n | .Missing => 0\n\
+                $ r : @Int = score (Found.Hit.{ 5 }) + score Found.Missing";
+    assert_eq!(run_modules(&[p, root], "r"), "5");
 }
 
 #[test]

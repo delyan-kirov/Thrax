@@ -209,10 +209,15 @@ pub unsafe extern "C" fn thrax_lex(src: *const u8, len: usize, err: *mut *mut c_
 pub unsafe extern "C" fn thrax_parse(
     src: *const u8,
     len: usize,
-    items: c_int,
+    kind: c_int,
     err: *mut *mut c_char,
 ) -> c_int {
-    let kind = if items != 0 { Fragment::Items } else { Fragment::Expr };
+    let kind = match kind {
+        0 => Fragment::Expr,
+        1 => Fragment::Items,
+        2 => Fragment::Type,
+        _ => Fragment::Row,
+    };
     let ok = guarded(err, || {
         let src = source(src, len)?;
         check_fragment(src, kind).map_err(|d| d.render(src, "@parse"))
@@ -279,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn lex_returns_token_structs() {
+    fn lex_returns_token_variants() {
         let src = b"1 + foo";
         let v = unsafe { thrax_lex(src.as_ptr(), src.len(), ptr::null_mut()) };
         assert!(!v.is_null());
@@ -287,10 +292,11 @@ mod tests {
         assert_eq!(v.kind, ThraxKind::Vec);
         assert_eq!(v.len, 3);
         let third = unsafe { &*v.items.add(2) };
-        assert_eq!(third.kind, ThraxKind::Struct);
-        assert_eq!(cstr(third.name), "@Token");
-        let text = unsafe { &*third.items.add(1) };
-        assert_eq!(cstr(unsafe { *third.keys.add(1) }), "text");
+        assert_eq!(third.kind, ThraxKind::Variant);
+        assert_eq!(cstr(third.name), "Token");
+        assert_eq!(cstr(third.tag), "Word");
+        assert_eq!(third.len, 1);
+        let text = unsafe { &*third.items };
         assert_eq!(cstr(text.bytes as *const c_char), "foo");
         unsafe { thrax_value_free(v as *const _ as *mut _) };
     }

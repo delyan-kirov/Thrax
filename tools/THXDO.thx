@@ -21,6 +21,8 @@ $ Command : @union =
     Install,
     Readme,
     HelixUpdate,
+    EditorsUpdate,
+    Edit,
     Corpus,
     Grammar,
     TreeSitter,
@@ -45,106 +47,119 @@ $ Spec : @struct =
 
 $ spec : Command -> Spec = \c =>
     c |> \
-        | .Build       => Spec.{
+        | .Build         => Spec.{
             .name = "build",
             .usage = "[release [musl|gnu|windows]]",
             .info = "clean, then build the compiler (debug unless `release`)",
         }
-        | .Rebuild     => Spec.{
+        | .Rebuild       => Spec.{
             .name = "rebuild",
             .usage = "[release [musl|gnu|windows]]",
             .info = "build the compiler without cleaning",
         }
-        | .Clean       => Spec.{
+        | .Clean         => Spec.{
             .name = "clean",
             .usage = "[all]",
             .info = "remove build artifacts (all: also the built libffi and musl)",
         }
-        | .Test        =>
+        | .Test          =>
             Spec.{ .name = "test", .usage = "", .info = "clean, then run `cargo test`" }
-        | .Install     => Spec.{
+        | .Install       => Spec.{
             .name = "install",
             .usage = "",
             .info = "install this checkout into the nix profile, replacing the old one",
         }
-        | .Readme      => Spec.{
+        | .Readme        => Spec.{
             .name = "readme",
             .usage = "",
             .info = "regenerate README.md from tools/README_GEN.thx"
         }
-        | .HelixUpdate => Spec.{
+        | .HelixUpdate   => Spec.{
             .name = "helix-update",
             .usage = "",
             .info = "rebuild the grammars of the Helix editor"
         }
-        | .Corpus      => Spec.{
+        | .Edit          => Spec.{
+            .name = "edit",
+            .usage = "zed|code|hx [ARGS]",
+            .info = "bring the editor up to date, then start it with Thrax support\n"
+                ++ "(ARGS relative to the Thrax root, default the root itself)",
+        }
+        | .EditorsUpdate => Spec.{
+            .name = "editors-update",
+            .usage = "",
+            .info = "bring the editors up to date with the grammar: pin Zed's to its\n"
+                ++ "last commit, check the highlight queries, rebuild what Zed and\n"
+                ++ "Helix compile, reinstall VS Code's extension",
+        }
+        | .Corpus        => Spec.{
             .name = "corpus",
             .usage = "[wasm]",
             .info = "run tests/MAIN.thx on both engines (interpreter + native C,\n"
                 ++ "or with `wasm` the C built for wasm32-wasi, under node)",
         }
-        | .Grammar     => Spec.{
+        | .Grammar       => Spec.{
             .name = "grammar",
             .usage = "",
             .info = "check documentation/thrax.y with bison (-v for counterexamples)",
         }
-        | .TreeSitter  => Spec.{
+        | .TreeSitter    => Spec.{
             .name = "tree-sitter",
             .usage = "",
             .info = "generate the Helix grammar from documentation/thrax.y\n"
                 ++ "(tools/editors/tree-sitter-thrax, for Helix and Zed)",
         }
-        | .Tags        => Spec.{
+        | .Tags          => Spec.{
             .name = "tags",
             .usage = "[-o FILE] [PATH...]",
             .info = "write a ctags `tags` file for Vim (default: the whole repo)",
         }
-        | .Fmt         => Spec.{
+        | .Fmt           => Spec.{
             .name = "fmt",
             .usage = "[check]",
             .info = "format every tracked .thx file in place (submodules too,\n"
                 ++ "not tests/diagnostics/)\n"
                 ++ "(check: only list the files that are not formatted)",
         }
-        | .Hooks       => Spec.{
+        | .Hooks         => Spec.{
             .name = "hooks",
             .usage = "",
             .info = "use tools/hooks as this clone's git hooks (see\n"
                 ++ "documentation/workflow.md)",
         }
-        | .Doc         => Spec.{
+        | .Doc           => Spec.{
             .name = "doc",
             .usage = "",
             .info = "build the rustdoc for the workspace and open it in a browser",
         }
-        | .Site        => Spec.{
+        | .Site          => Spec.{
             .name = "site",
             .usage = "",
             .info = "rebuild the web playground's wasm, then serve it and open it",
         }
-        | .Hook        => Spec.{
+        | .Hook          => Spec.{
             .name = "hook",
             .usage = "NAME ARGS",
             .info = "run the git hook NAME (tools/hooks/* call this)",
         }
-        | .Issue       => Spec.{
+        | .Issue         => Spec.{
             .name = "issue",
             .usage = "TITLE",
             .info = "open an issue titled TITLE and print its number",
         }
-        | .SdkPath     => Spec.{
+        | .SdkPath       => Spec.{
             .name = "sdk_path",
             .usage = "",
             .info = "print the repo root (source tools/thxdo.nu to cd there)",
         }
-        | .Stats       => Spec.{
+        | .Stats         => Spec.{
             .name = "stats",
             .usage = "",
             .info = "line counts (zalmoxis, excluding external/ and applications/)",
         }
-        | .All         =>
+        | .All           =>
             Spec.{ .name = "all", .usage = "", .info = "build, then regenerate README.md" }
-        | .Help        => Spec.{ .name = "help", .usage = "", .info = "show this help" }
+        | .Help          => Spec.{ .name = "help", .usage = "", .info = "show this help" }
 
 # `$ commands : @Vec Command = [Command.Build, ...]`, in declaration order.
 $ @e <| @parse_items
@@ -288,6 +303,16 @@ $ tree_sitter_cmd : @Str =
     "${THRAX_BIN:-thrax} run tools/editors/TREE_SITTER_GEN.thx"
         ++ " && cd tools/editors/tree-sitter-thrax"
         ++ " && nix develop path:.. -c tree-sitter generate"
+
+# Zed starts through the tools/editors flake, whose PATH lets it build the dev
+# extension itself (`zed: install dev extension`, or Rebuild).
+$ edit_cmd : @Vec @Str -> <Fail> @Str = \args =>
+    let rest = if @vec_len args <= 3 => " ." else quoted_from args 3 in
+    arg_or args 2 "" |> \
+        | "zed"  => "nix run path:tools/editors#zed --" ++ rest
+        | "code" => "code" ++ rest
+        | "hx"   => "hx" ++ rest
+        | other  => Fail.fail ("unknown editor `" ++ other ++ "` (zed, code or hx)")
 
 # The tags generator runs natively: interpreted, it takes seconds per file.
 # Built on first use and again when its source changes, as thxdo itself is.
@@ -459,6 +484,7 @@ $ dist_musl_cmd : @Str =
 $ hooks_cmd : @Str =
     "git config core.hooksPath tools/hooks && git config core.commentChar ';' "
         ++ "&& git config push.autoSetupRemote true"
+        ++ " && { [ ! -e tools/editors/.git ] || git -C tools/editors config core.hooksPath hooks; }"
 
 $ new_issue : @Str -> <@IO, Fail> {} = \title =>
     if STR.is_empty (STR.trim title) =>
@@ -554,14 +580,14 @@ $ arg_or : @Vec @Str -> @Int -> @Str -> @Str = \args i d =>
 
 $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =>
     c |> \
-        | .Build       => build_task @true args
-        | .Rebuild     => build_task @false args
-        | .Clean       => clean_task args
-        | .Test        => step "cargo clean" "cargo clean"; step "cargo test" "cargo test"
-        | .Install     =>
+        | .Build         => build_task @true args
+        | .Rebuild       => build_task @false args
+        | .Clean         => clean_task args
+        | .Test          => step "cargo clean" "cargo clean"; step "cargo test" "cargo test"
+        | .Install       =>
             C.system "nix profile remove Thrax"; step "nix profile add" "nix profile add"
-        | .Issue       => new_issue (STR.join " " (VEC.drop 2 args))
-        | .Hook        => with_forge (\u => HOOKS.hook args)
+        | .Issue         => new_issue (STR.join " " (VEC.drop 2 args))
+        | .Hook          => with_forge (\u => HOOKS.hook args)
         | .Readme =>
             println "thxdo: regenerating README.md ...";
             step "readme" readme_cmd;
@@ -570,12 +596,14 @@ $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =>
             println "thxdo: running tests/MAIN.thx on both engines ...";
             corpus_task (arg_or args 2 "" == "wasm");
             println "thxdo: corpus OK (engines agree)"
-        | .TreeSitter  =>
-            step "tree-sitter" tree_sitter_cmd; println "thxdo: tree-sitter grammar OK"
-        | .Tags        => step "tags" (tags_cmd args)
-        | .Fmt         =>
+        | .TreeSitter =>
+            step "tree-sitter" tree_sitter_cmd;
+            println "thxdo: tree-sitter grammar OK";
+            HOOKS.editors_refresh {}
+        | .Tags          => step "tags" (tags_cmd args)
+        | .Fmt           =>
             step "fmt" (fmt_cmd (arg_or args 2 "" == "check")); println "thxdo: fmt OK"
-        | .Hooks       =>
+        | .Hooks         =>
             step "hooks" hooks_cmd; println "thxdo: git hooks installed from tools/hooks"
         | .Grammar =>
             println "thxdo: checking documentation/thrax.y ...";
@@ -589,7 +617,9 @@ $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =>
             println ("thxdo: opening " ++ doc_page);
             C.system doc_open_cmd;
             {}
-        | .HelixUpdate => step "helix-update" "hx --grammar build"
+        | .HelixUpdate   => step "helix-update" "hx --grammar build"
+        | .EditorsUpdate => HOOKS.editors_update {}; println "thxdo: editors up to date"
+        | .Edit          => HOOKS.editors_refresh {}; step "edit" (edit_cmd args)
         | .Site =>
             println "thxdo: rebuilding the playground wasm ...";
             step "site build" site_build_cmd;
@@ -597,14 +627,14 @@ $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =>
             C.system site_open_cmd;
             C.system site_serve_cmd;
             {}
-        | .SdkPath     => println (env "THRAX_ROOT")
-        | .Stats       => stats_task {}
+        | .SdkPath       => println (env "THRAX_ROOT")
+        | .Stats         => stats_task {}
         | .All =>
             step "cargo clean" "cargo clean";
             step "cargo build" "cargo build";
             println "thxdo: regenerating README.md ...";
             step "readme" readme_cmd
-        | .Help        => print help_text
+        | .Help          => print help_text
 
 $ run : @Vec @Str -> <@IO, Fail> {} = \args =>
     let name = arg_or args 1 "help" in

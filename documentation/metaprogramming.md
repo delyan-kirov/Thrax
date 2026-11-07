@@ -22,9 +22,10 @@ The design exposes every stage of the pipeline as a library so an author can
 enter or leave at any level:
 
 ```
-@Str --@lex--> []@Token --@parse--> @Code --@check--> @Code(typed) --@eval--> value
-                                      |
-                                      +--@unparse--> @Str
+@Str --@lex--> @Vec Token --@parse--> @Code --@eval--> value
+                                        |
+                                        +--@check--> its type, as @Str
+                                        +--@unparse--> @Str
 ```
 
 You can build tokens and parse them yourself, build a typed AST directly, or
@@ -44,25 +45,31 @@ Per the base-type convention (no friendly names in the compiler; `@Int`,
 
 **Types**
 
-- `@Token` -- a lexical token. **Opaque** (a distinct builtin type, `is_base_type`);
-  inspected via the `@token_kind`/`@token_text` accessors, not pattern-matched.
-  (A matchable `@union` form was considered and deferred in favour of the smaller
-  opaque surface, consistent with `@Code`.)
-- `@Code` -- an opaque handle to a typed-AST fragment. Opaque so the internal
-  node set can evolve without breaking library code.
-- `@span`, `@diag`, `@name`, `@typeinfo` -- supporting builtins.
+- `Token` -- a lexical token, an ordinary CORE `@union` (#151): the variant is
+  the kind (`Word`, `Op`, `Int`, `LParen`, ...) and every variant carries its
+  lexeme as `@Str`, so a generator matches `Token.Word.{ w }`. The
+  `@token_kind`/`@token_text` accessors remain. A token built by hand parses like
+  a lexed one, since `@parse` only rejoins lexemes.
+- `@Code` -- an opaque handle to a code fragment, carrying its source text, which
+  `@unparse` returns. Opaque so the internal node set can evolve without
+  breaking library code.
+- `Decl`, `Site`, `Diag` -- CORE types the reflection and diagnostic operations
+  speak (section 1, `<@Meta>` operations).
 
 **Pure intrinsics (no effect; usable inside `$ @e` today).** Lexing and
 parsing need no compiler state, so they are ordinary intrinsics, not `<@Meta>`
 operations:
 
 ```
-@lex        : @Str      -> @Vec @Token   -- LANDED. a lex error traps (fails the build)
-@token_kind : @Token    -> @Str          -- LANDED. "Word" | "Op" | "Int" | ...
-@token_text : @Token    -> @Str          -- LANDED. the lexeme
+@lex        : @Str      -> @Vec Token    -- LANDED. a lex error traps (fails the build)
+@token_kind : Token     -> @Str          -- LANDED. "Word" | "Op" | "Int" | ...
+@token_text : Token     -> @Str          -- LANDED. the lexeme
 @parse_str  : @Str      -> @Code         -- LANDED. parses an expr fragment; a syntax error traps
 @parse_items: @Str      -> @Code         -- LANDED. parses top-level item(s), for `$ @e` injection
-@parse      : @Vec @Token -> @Code       -- LANDED. detokenizes + validates like @parse_str
+@parse_type : @Str      -> @Code         -- LANDED. parses a type, for a type-position `@e`
+@parse_row  : @Str      -> @Code         -- LANDED. parses effect-row entries, for `<@e (X)>`
+@parse      : @Vec Token -> @Code        -- LANDED. detokenizes + validates like @parse_str
+@unparse    : @Code     -> @Str          -- LANDED. the fragment's source
 @format     : @Str      -> @Str          -- LANDED. items in `thrax fmt` layout; a refusal traps
 ```
 
@@ -90,9 +97,22 @@ too, see "Runtime use" below; the rest need the handler's compiler state):
 @link      : @Str   -> <@Meta> @Code   -- LANDED. add a library to the link line (empty code)
 @link_path : @Str   -> <@Meta> @Code   -- LANDED. add a search path to the link line (empty code)
 @import_path : @Str -> <@Meta> {}     -- LANDED. add a module directory; `BUILD.thx`'s `@build` only
-@check  : @Code     -> <@Meta> @Code   -- planned
-@here   : ()        -> <@Meta> @span   -- planned
+@check  : @Code     -> <@Meta> @Str    -- LANDED. type-check a fragment at the site; its type
+@here   : {}        -> <@Meta> Site    -- LANDED. the running `@e`'s file, line, column
+@fail   : Diag      -> <@Meta> a       -- LANDED. fail the build with message, notes, helps
+@warn   : Diag      -> <@Meta> {}      -- LANDED. a located warning; the build goes on
 ```
+
+`@check` compiles the fragment as the body of a probe definition in a scratch
+module that imports the site's module and everything it imports, so it sees what
+code written at the `@e` would see. It returns the type as `thrax check` prints
+it; an ill-typed fragment fails the build (`META_ABORT`, the checker's error as a
+note). It answers "what would this be", where `@Code` stays untyped text.
+
+`Diag` is `{ message, notes, helps }` and `diag msg` is one with no asides.
+`@fail` raises `META_ABORT` and `@warn` a `META_WARNING` warning, each at the
+running `@e` with a `note:` line per note and a `help:` line per help. `@abort`
+and `@emit` stay as the one-string shorthands.
 
 **LANDED (the `<@Meta>` effect, first cut).** The ops above carry the `<@Meta>`
 effect in their types, and **`@e` discharges it** (see section 2). Every `@e`
@@ -105,9 +125,10 @@ signature (like `<@IO>`); e.g. CORE's
 `assert : @Bool -> @Str -> <@Meta> @Code`, run by `$ @e <| assert ...`. The
 ambient is closed (only `@Meta`), so `@e` stays hermetic: a generator that
 performs `@IO` is still rejected. Lexing and parsing
-(`@lex`/`@parse`/`@parse_str`/`@parse_items`/`@token_*`) remain PURE. Still to come: a real handler over the live
-`Ast`/interner/type-env/diagnostic sink (replacing the thread-local host),
-`@lookup`/`@here`/`@check`, and a richer `@diag` (spans) for `@abort`/`@emit`.
+(`@lex`/`@parse`/`@parse_*`/`@unparse`/`@token_*`) remain PURE. The compiler
+side of every operation is a driver-installed host (type tables, the `@check`
+compile, the running site), set around each site rather than a handler over
+the live compiler state; nothing a generator can observe depends on which.
 
 `@eval` rides a driver-installed thread-local host rather than a `<@Meta>`
 handler.
@@ -135,8 +156,8 @@ Each engine needs the compiler at run time to serve them:
 
 As at compile time, only first-order data crosses (a function, or a `List` whose
 lazy constructor fields are still unforced, is rejected), and the result type is
-whatever the use site says, so a mismatch is a fault when it runs. `@abort`/`@emit`
-take a plain `@Str` for now (a richer `@diag` with spans comes with the handler).
+whatever the use site says, so a mismatch is a fault when it runs. `@fail`/`@warn`
+are the structured forms of `@abort`/`@emit`.
 A compile-time `@e` fault, or an `@abort` (`error[META_ABORT]`), is reported at the real `@e` call site
 (`file:line:col` + caret), not a synthetic global, since every `@e` site records
 its source span.
@@ -146,7 +167,7 @@ There is no `@assert` builtin: assert is user code,
 Compiler messages, receive (query the accumulated compile state):
 
 ```
-@lookup    : @name  -> <@Meta> @typeinfo
+@lookup    : @Str   -> <@Meta> Decl          -- LANDED
 @modules   : ()     -> <@Meta> []@module     -- what is imported
 @functions : ()     -> <@Meta> []@Code        -- parsed functions
 @types     : ()     -> <@Meta> []@typeinfo
@@ -160,10 +181,20 @@ Compiler messages, send:
 @msg      : @a      -> <@Meta> ()      -- send a message to the build (section 10)
 ```
 
-`@lookup` is total: an unresolved name yields an erroneous `@typeinfo` (a
-sentinel the value carries) rather than a `Maybe`. Callers test it via
-`@typeinfo` predicates; the common case (name resolves) has no wrapper to
-unwrap.
+`@lookup` is total (LANDED, #146): it returns a CORE `Decl`,
+
+```
+$ Decl : @union =
+    Struct: { params: @Vec @Str, fields: @Vec @Str },
+    Union: { params: @Vec @Str, variants: @Vec { @Str, @Int } },
+    Value: @Str,
+    Missing: {},
+```
+
+and a name nobody declared is `Decl.Missing`, a value to match rather than a
+fault or a `Maybe` to unwrap. It is the matchable form of the `@type_*`
+operations below, which remain as shorthands (and fault on a missing name). See
+`examples/META_REFLECT.thx`.
 
 **LANDED (a first cut of reflection).** Ahead of the full `@lookup`, these
 `<@Meta>` operations expose a declared type's shape, or a global value's type, to
@@ -220,12 +251,12 @@ duplicated-dictionary binder naming.
 Plus AST constructors `@code_app`, `@code_var`, `@code_let`, ... for building
 `@Code` by hand.
 
-**`@Token` kind tags.** `@Token` is exposed as a builtin `@union`; its variants
-use ordinary capitalized constructors (`Word`, `Op`, `Int`, `LParen`, ...), so
-matching reads `when t is Word then ...`. The `@` sigil stays on the builtin
-surface (the type and the operations); it is not forced onto every tag. Only a
-curated subset of the internal lexer `Kind` is exposed; internal-only tags
-(`Comment`, `Eof`) stay hidden.
+**`Token` kind tags (LANDED, #151).** `Token` is an ordinary CORE `@union`
+(a CORE type has no `@` in its name, like `List`), one variant per lexer kind
+with ordinary capitalized tags (`Word`, `Op`, `Int`, `LParen`, ...), each
+carrying the lexeme: `t |> \ | Token.Word.{ w } => ... | _ => ...`. `Eof` is not
+a token. Both engines build and read it as a plain variant (the native runtime's
+`libthrax` bridge already crossed `THRAX_VARIANT`).
 
 ---
 
@@ -272,7 +303,7 @@ literal through `@lex` (section 7):
 
 ```
 @e (f x)                -- f sees the value / AST of x   (common case)
-@e (f (@lex "x.y z"))   -- f sees []@Token               (DSL / not-valid-Thrax case)
+@e (f (@lex "x.y z"))   -- f sees @Vec Token               (DSL / not-valid-Thrax case)
 ```
 
 This is more composable than Rust's implicit token slurp: the raw-ness is
@@ -301,7 +332,7 @@ AST node with no residual `<@Meta>` and nothing left unparsed. Elaborating
 
 Two loops are tangled here and separating them makes the recursion precise:
 
-- The **staging pipeline** `[]@Token -> @Code -> value` is a straight line. Each
+- The **staging pipeline** `@Vec Token -> @Code -> value` is a straight line. Each
   artifact has one direction toward being embeddable: tokens want parsing, code
   wants splicing, a value wants reifying.
 - The **recursion** iterates, and comes from two places: a returned `@Code`
@@ -429,11 +460,11 @@ are deferred.
 
 **Decision.** There is **no dedicated quotation syntax**. Source to be
 metaprogrammed is written as an ordinary **string literal** and fed through the
-pipeline that already exists: `@lex : @Str -> []@Token` and
-`@parse : []@Token -> @Code`.
+pipeline that already exists: `@lex : @Str -> @Vec Token` and
+`@parse : @Vec Token -> @Code`.
 
 ```
-@lex   "let x = 1 in x"          : []@Token
+@lex   "let x = 1 in x"          : @Vec Token
 @parse (@lex "let x = 1 in x")   : @Code       -- or a combined @parse_str
 ```
 
@@ -631,7 +662,7 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    fails the build; section 11), and `@link`/`@link_path` builtins steering the
    native link set / search paths (`examples/CT_RUN.thx`). **NEXT:** the typed
    layer below.
-1. **DONE:** `@Token` as an opaque builtin type, and `@lex : @Str -> @Vec @Token`
+1. **DONE:** `@Token` as an opaque builtin type (since #151 the CORE union `Token`), and `@lex : @Str -> @Vec @Token`
    + `@token_kind`/`@token_text` accessors, as pure intrinsics runnable inside
    `@e` (a lex error traps). `@parse_str : @Str -> @Code` also LANDED (opaque
    `@Code` = source text, syntax errors trap), and `@parse : @Vec @Token -> @Code`
@@ -724,10 +755,11 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    (`@IO` inside it is still rejected). A brief `@e`/`@run` split (#159), with
    `@e` pure and `@run` the eliminator, was reverted: computing is not the
    point of `@e`, inserting code is, so one construct does it. See section 2
-   and section 1's "LANDED" note. STILL TO COME: a real handler over the live compiler
-   state (replacing the thread-local host), `@lookup`/`@here`/`@check`, and wiring
-   `@emit`/`@abort` into the `Diagnostic` chain (spans).
-5. `@check` and `@eval` (staging), plus the `@code_*` constructors.
+   and section 1's "LANDED" note. #146 added `@lookup`, `@here`, `@check`,
+   `@fail`/`@warn` and `@type_of`, and moved the `@type_*` reflection under
+   `<@Meta>`.
+5. **DONE:** `@check` and `@eval` (staging). Still open: the `@code_*`
+   constructors.
 6. **DONE: compile-time IO, and the `@build` function that holds it.**
    `$ @build : {} -> <@Meta, @IO> @Code` is a definition whose `@Code` result is
    appended to its module, run first in each expansion round, once per module, in

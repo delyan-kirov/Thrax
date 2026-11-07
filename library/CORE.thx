@@ -162,15 +162,22 @@ $ @stm_rollback : @Int -> <@IO> {} = @extern "thrax"
 # Metaprogramming: the compiler pipeline as a library (see
 # documentation/metaprogramming.md). Lexing, parsing and `@eval` are pure, so they
 # also run in a built program. A lex or syntax error traps (fails the build).
-# `@Token` and `@Code` are opaque: inspect a token through its accessors.
-$ @lex : @Str -> @Vec @Token = @extern "thrax"
-$ @token_kind : @Token -> @Str = @extern "thrax"
-$ @token_text : @Token -> @Str = @extern "thrax"
-$ @parse : @Vec @Token -> @Code = @extern "thrax"
+# A token is a `Token` (below): match on its kind, and every kind carries its
+# lexeme. `@token_kind` is the kind's name, `@token_text` the lexeme. `@Code` is
+# opaque; `@unparse` gives back its source.
+$ @lex : @Str -> @Vec Token = @extern "thrax"
+$ @token_kind : Token -> @Str = @extern "thrax"
+$ @token_text : Token -> @Str = @extern "thrax"
+$ @parse : @Vec Token -> @Code = @extern "thrax"
+$ @unparse : @Code -> @Str = @extern "thrax"
 # An expression fragment.
 $ @parse_str : @Str -> @Code = @extern "thrax"
 # Top-level items, for an `$ @e` that injects definitions.
 $ @parse_items : @Str -> @Code = @extern "thrax"
+# A type, for a type-position `@e` (`{ x: @Int }` is a type but no expression).
+$ @parse_type : @Str -> @Code = @extern "thrax"
+# The entries of an effect row, for `<@e (X)>`: `"Log, State @Int"`.
+$ @parse_row : @Str -> @Code = @extern "thrax"
 # Top-level items in canonical layout, exactly as `thrax fmt` writes them. Text
 # the formatter refuses (it does not lex, or would change meaning) traps.
 $ @format : @Str -> @Str = @extern "thrax"
@@ -178,6 +185,43 @@ $ @format : @Str -> @Str = @extern "thrax"
 # embedded as-is, so a mismatch with the use site is a fault when it runs, not a
 # type error.
 $ @eval : @Code -> a = @extern "thrax"
+
+# One lexical token, as `@lex` produces it: the kind is the variant, the payload
+# its lexeme (`Token.Word.{ "foo" }`, `Token.Int.{ "12" }`). `@parse` rejoins the
+# lexemes, so a token built by hand needs only a lexeme that lexes as its kind.
+$ Token : @union =
+    Int: @Str,
+    Real: @Str,
+    Imaginary: @Str,
+    Str: @Str,
+    Word: @Str,
+    At: @Str,
+    Op: @Str,
+    Eq: @Str,
+    FatArrow: @Str,
+    Arrow: @Str,
+    Lambda: @Str,
+    Colon: @Str,
+    Dollar: @Str,
+    Comma: @Str,
+    Dot: @Str,
+    Ellipsis: @Str,
+    LParen: @Str,
+    RParen: @Str,
+    LBrace: @Str,
+    RBrace: @Str,
+    LBrack: @Str,
+    RBrack: @Str,
+    Let: @Str,
+    In: @Str,
+    If: @Str,
+    Is: @Str,
+    Else: @Str,
+    With: @Str,
+    Do: @Str,
+    Ctl: @Str,
+    Defer: @Str,
+    Comment: @Str,
 
 # The `<@Meta>` operations, usable only where the compiler handles `@Meta`
 # (inside `@e`). `@abort` fails the build with its message, and `@emit` prints one
@@ -203,6 +247,34 @@ $ @type_params : @Str -> <@Meta> @Vec @Str = @extern "thrax"
 $ @type_fields : @Str -> <@Meta> @Vec @Str = @extern "thrax"
 $ @type_variants : @Str -> <@Meta> @Vec { @Str, @Int } = @extern "thrax"
 $ @type_of : @Str -> <@Meta> @Str = @extern "thrax"
+
+# What `@lookup` finds under a name: a struct or union with its declared shape, a
+# global value with its type as source, or nothing. It never faults, so a
+# generator matches `Missing` to handle a name nobody declared.
+$ Decl : @union =
+    Struct: { params: @Vec @Str, fields: @Vec @Str },
+    Union: { params: @Vec @Str, variants: @Vec { @Str, @Int } },
+    Value: @Str,
+    Missing: {},
+$ @lookup : @Str -> <@Meta> Decl = @extern "thrax"
+
+# Where the running `@e` is: its file, line and column (both from 1).
+$ Site : @struct = file: @Str, line: @Int, column: @Int
+$ @here : {} -> <@Meta> Site = @extern "thrax"
+
+# Type-check an expression fragment as if written at the running `@e`, seeing
+# that module's imports, and give its type as source. An ill-typed fragment fails
+# the build with the checker's error.
+$ @check : @Code -> <@Meta> @Str = @extern "thrax"
+
+# A compile-time diagnostic: the message, then a `note:` line per note and a
+# `help:` line per help, shown at the running `@e`. `@fail` is an error that fails
+# the build (`META_ABORT`); `@warn` a warning, after which the build goes on
+# (`META_WARNING`). `diag msg` is one with no notes or helps.
+$ Diag : @struct = message: @Str, notes: @Vec @Str, helps: @Vec @Str
+$ diag : @Str -> Diag = \message => { .message = message, .notes = [], .helps = [] }
+$ @fail : Diag -> <@Meta> a = @extern "thrax"
+$ @warn : Diag -> <@Meta> {} = @extern "thrax"
 
 # Arithmetic. Each operator has its OWN interface, so a type implements exactly the
 # operations it has: `Money` adds but does not divide. An interface is an ordinary

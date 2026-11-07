@@ -506,8 +506,8 @@ impl<'a> Checker<'a> {
                 })
                 .collect();
             if flags.iter().any(|f| *f) {
-                self.lazy_slots
-                    .insert((*owner, *tag), flags);
+                let home = self.type_home.get(owner).copied().unwrap_or(self.module_name);
+                self.lazy_slots.insert((home, *owner, *tag), flags);
             }
         }
     }
@@ -657,10 +657,31 @@ impl<'a> Checker<'a> {
         Some((result, payload))
     }
 
+    /// The union an unqualified tag (`.Missing`) names: this module's own first,
+    /// then an imported module's, then the prelude's, so a library type never
+    /// takes a tag from the code using it. Ties go to the smaller name, so the
+    /// choice does not depend on hash order.
     pub(super) fn find_union_by_tag(&self, tag: StrId) -> Option<StrId> {
+        let prelude = StrId::intern("CORE");
+        let rank = |name: &StrId| match self.type_home.get(name).copied() {
+            Some(m) if m == self.module_name => 0,
+            Some(m) if m == prelude => 2,
+            _ => 1,
+        };
         self.unions
             .iter()
-            .find_map(|(name, info)| info.variants.iter().any(|v| v.tag == tag).then_some(*name))
+            .filter(|(_, info)| info.variants.iter().any(|v| v.tag == tag))
+            .map(|(name, _)| *name)
+            .min_by_key(|name| (rank(name), name.as_str()))
+    }
+
+    /// The union an unqualified tag names where a value of type `expected` is
+    /// wanted: the expected union itself when it has the tag, else as
+    /// [`Self::find_union_by_tag`].
+    pub(super) fn find_union_for(&self, tag: StrId, expected: Type) -> Option<StrId> {
+        let head = self.ctx_head(self.unifier.zonk(expected));
+        head.filter(|h| self.unions.get(h).is_some_and(|u| u.variants.iter().any(|v| v.tag == tag)))
+            .or_else(|| self.find_union_by_tag(tag))
     }
 
     /// The type of field `name` in a record value: through the row for a structural

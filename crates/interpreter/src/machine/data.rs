@@ -807,7 +807,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             v[i] = a[2].clone();
             Ok(Value::Vector(Rc::new(v)))
         }
-        // Metaprogramming: tokenize a string into opaque `@Token` values. A lex
+        // Metaprogramming: tokenize a string into CORE `Token` variants. A lex
         // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
         Prim::Lex => {
             let bytes = as_bytes(&a[0])?;
@@ -815,8 +815,12 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .map_err(|_| fault("@lex: the argument is not valid UTF-8"))?;
             Ok(crate::machine::embed(&lex(src)?))
         }
-        Prim::TokenKind => token_field(&a[0], "kind"),
-        Prim::TokenText => token_field(&a[0], "text"),
+        Prim::TokenKind => match &*a[0].borrow() {
+            Value::Variant { tag, .. } => Ok(Value::Str(Rc::new(tag.as_str().as_bytes().to_vec()))),
+            _ => Err(fault("expected a Token")),
+        },
+        Prim::TokenText => token_text(&a[0]).map(Value::Str),
+        Prim::Unparse => Ok(Value::Str(Rc::new(code_src(&a[0], "@unparse")?.as_ref().clone()))),
         // Parse a token vector (from `@lex`) into opaque `@Code`. `@Code` is
         // text-backed, so this detokenizes (the lexemes rejoined with a space,
         // which whitespace-insensitive expression syntax re-lexes identically) and
@@ -825,10 +829,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let toks = as_vec(&a[0])?;
             let mut lexemes: Vec<Vec<u8>> = Vec::with_capacity(toks.len());
             for t in toks.iter() {
-                match &token_field(t, "text")? {
-                    Value::Str(b) => lexemes.push(b.as_ref().clone()),
-                    _ => return Err(fault("@parse: an @Token has a non-string lexeme")),
-                }
+                lexemes.push(token_text(t)?.as_ref().clone());
             }
             let joined = lexemes.join(&b' ');
             let src = std::str::from_utf8(&joined)
@@ -840,11 +841,16 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
         // The fragment is carried as its source text, which `@eval` and splicing
         // re-enter the driver's pipeline with.
-        Prim::ParseStr | Prim::ParseItems => {
+        Prim::ParseStr | Prim::ParseItems | Prim::ParseType | Prim::ParseRow => {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
                 .map_err(|_| fault(format!("{name}: the argument is not valid UTF-8")))?;
-            let kind = if name == Prim::ParseStr { Fragment::Expr } else { Fragment::Items };
+            let kind = match name {
+                Prim::ParseStr => Fragment::Expr,
+                Prim::ParseItems => Fragment::Items,
+                Prim::ParseType => Fragment::Type,
+                _ => Fragment::Row,
+            };
             check_fragment(src, kind)?;
             Ok(code_value(src))
         }
@@ -860,17 +866,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // driver's pipeline, so it defers to the installed host (see
         // `crate::machine::set_meta_eval`).
         Prim::Eval => {
-            let src = match &*a[0].borrow() {
-                Value::Struct { name, fields } if name == "@Code" => fields
-                    .iter()
-                    .find(|(k, _)| k == "src")
-                    .and_then(|(_, v)| match &*v.borrow() {
-                        Value::Str(b) => Some(b.clone()),
-                        _ => None,
-                    })
-                    .ok_or_else(|| fault("@eval: malformed @Code value"))?,
-                _ => return Err(fault("@eval expects an @Code")),
-            };
+            let src = code_src(&a[0], "@eval")?;
             let s = std::str::from_utf8(&src)
                 .map_err(|_| fault("@eval: the fragment source is not valid UTF-8"))?;
             let owned = crate::machine::meta_eval(s)?;
@@ -981,6 +977,60 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 _ => Err(fault(format!("@type_of: `{name}` is a type, not a value"))),
             }
         }
+        // `@lookup` is the matchable form of the reflection above: a CORE `Decl`,
+        // `Missing` rather than a fault when nothing is declared under the name.
+        Prim::Lookup => {
+            let name = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            let strs = |xs: &[StrId]| -> PVal<'p> {
+                mk(Value::Vector(Rc::new(xs.iter().map(|x| mk(Value::Str(Rc::new(x.as_str().as_bytes().to_vec())))).collect())))
+            };
+            let (tag, fields) = match crate::machine::type_lookup(&name) {
+                Ok(crate::machine::TypeInfo::Struct { params, fields }) => ("Struct", vec![strs(&params), strs(&fields)]),
+                Ok(crate::machine::TypeInfo::Union { params, variants }) => {
+                    let vs = variants
+                        .iter()
+                        .map(|(tag, arity)| {
+                            mk(Value::Tuple(vec![
+                                mk(Value::Str(Rc::new(tag.as_str().as_bytes().to_vec()))),
+                                mk(Value::Int(*arity as i64)),
+                            ]))
+                        })
+                        .collect();
+                    ("Union", vec![strs(&params), mk(Value::Vector(Rc::new(vs)))])
+                }
+                Ok(crate::machine::TypeInfo::Value { ty }) => ("Value", vec![mk(Value::Str(Rc::new(ty.into_bytes())))]),
+                Err(_) => ("Missing", vec![]),
+            };
+            Ok(Value::Variant { ty: "Decl".into(), tag: tag.into(), fields })
+        }
+        // The `@e` site running now, as a CORE `Site`.
+        Prim::Here => {
+            let (file, line, column) = crate::machine::meta_site()?;
+            Ok(Value::Struct {
+                name: "Site".into(),
+                fields: vec![
+                    ("file".into(), mk(Value::Str(Rc::new(file.into_bytes())))),
+                    ("line".into(), mk(Value::Int(line))),
+                    ("column".into(), mk(Value::Int(column))),
+                ],
+            })
+        }
+        // Type-check an expression fragment where the site runs; its type, as source.
+        Prim::Check => {
+            let src = code_src(&a[0], "@check")?;
+            let src = std::str::from_utf8(&src).map_err(|_| fault("@check: the fragment is not valid UTF-8"))?;
+            Ok(Value::Str(Rc::new(crate::machine::meta_check(src)?.into_bytes())))
+        }
+        // A CORE `Diag` as an error that fails the build (`@fail`) or a warning
+        // the driver shows at the site (`@warn`).
+        Prim::Fail | Prim::Warn => {
+            let diag = diag_of(&a[0], if name == Prim::Fail { Code::MetaAbort } else { Code::MetaWarning })?;
+            if name == Prim::Fail {
+                return Err(diag);
+            }
+            crate::machine::push_meta_warning(diag.with_severity(utilities::Severity::Warning));
+            Ok(Value::Unit)
+        }
         Prim::TypeVariants => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let variants = match crate::machine::type_lookup(&ty)? {
@@ -1002,8 +1052,8 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
     }
 }
 
-/// Tokenize `src` as `@lex` does: a vector of `@Token` structs, each holding its
-/// `kind` (the tag `@token_kind` reports) and its lexeme `text`.
+/// Tokenize `src` as `@lex` does: a vector of CORE `Token` variants, the tag the
+/// token's kind (what `@token_kind` reports) and the one field its lexeme.
 pub fn lex(src: &str) -> Result<crate::machine::OwnedValue> {
     use crate::machine::OwnedValue;
     let mut lx = frontend::Lexer::new(src);
@@ -1013,34 +1063,37 @@ pub fn lex(src: &str) -> Result<crate::machine::OwnedValue> {
         if matches!(t.kind, frontend::Kind::Eof) {
             break;
         }
-        toks.push(OwnedValue::Struct {
-            name: "@Token".into(),
-            fields: vec![
-                ("kind".into(), OwnedValue::Str(token_kind_name(t.kind).as_bytes().to_vec())),
-                ("text".into(), OwnedValue::Str(src.as_bytes()[t.span.start..t.span.end].to_vec())),
-            ],
+        toks.push(OwnedValue::Variant {
+            ty: "Token".into(),
+            tag: token_kind_name(t.kind).into(),
+            fields: vec![OwnedValue::Str(src.as_bytes()[t.span.start..t.span.end].to_vec())],
         });
     }
     Ok(OwnedValue::Vector(toks))
 }
 
-/// What a source fragment must parse as: an expression (`@parse_str`) or
-/// top-level items (`@parse_items`).
+/// What a source fragment must parse as: an expression (`@parse_str`),
+/// top-level items (`@parse_items`), a type (`@parse_type`), or the entries of
+/// an effect row (`@parse_row`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fragment {
     Expr,
     Items,
+    Type,
+    Row,
 }
 
 /// Check that `src` parses as `kind`, by wrapping it in a scratch module. A
 /// syntax error carries `src` as its fragment, so the driver can point into the
 /// string the author wrote rather than the wrapper.
 pub fn check_fragment(src: &str, kind: Fragment) -> Result<()> {
-    let prefix = match kind {
-        Fragment::Expr => "$ @mod _META\n$ _e =\n",
-        Fragment::Items => "$ @mod _META\n",
+    let (prefix, suffix) = match kind {
+        Fragment::Expr => ("$ @mod _META\n$ _e =\n", ""),
+        Fragment::Items => ("$ @mod _META\n", ""),
+        Fragment::Type => ("$ @mod _META\n$ _t :\n", "\n= {}"),
+        Fragment::Row => ("$ @mod _META\n$ _r : {} -> <\n", "\n> {} = {}"),
     };
-    frontend::parse(&format!("{prefix}{src}"))
+    frontend::parse(&format!("{prefix}{src}{suffix}"))
         .map(|_| ())
         .map_err(|d| d.with_fragment(src, prefix.len()))
 }
@@ -1095,22 +1148,53 @@ fn token_kind_name(kind: frontend::Kind) -> &'static str {
     }
 }
 
-/// Read a named `@Str` field of an opaque `@Token` struct (`@token_kind` /
-/// `@token_text`).
-fn token_field<'p>(v: &PVal<'p>, field: &str) -> Result<Value<'p>> {
+/// The lexeme a `Token` carries (`@token_text`).
+fn token_text(v: &PVal) -> Result<Rc<Vec<u8>>> {
     match &*v.borrow() {
-        Value::Struct { name, fields } if name == "@Token" => {
-            for (k, val) in fields {
-                if k == field {
-                    return match &*val.borrow() {
-                        Value::Str(b) => Ok(Value::Str(b.clone())),
-                        _ => Err(fault("@Token field is not a string")),
-                    };
-                }
-            }
-            Err(fault(format!("@Token has no `{field}` field")))
+        Value::Variant { fields, .. } if fields.len() == 1 => match &*fields[0].borrow() {
+            Value::Str(b) => Ok(b.clone()),
+            _ => Err(fault("a Token's lexeme is not a string")),
+        },
+        _ => Err(fault("expected a Token")),
+    }
+}
+
+/// A CORE `Diag` (`message`, `notes`, `helps`) as a diagnostic with `code`, its
+/// location left for the driver to fill with the site.
+fn diag_of(v: &PVal, code: Code) -> Result<Diagnostic> {
+    let field = |f: &str| -> Result<PVal> {
+        match &*v.borrow() {
+            Value::Struct { name, fields } if name == "Diag" => fields
+                .iter()
+                .find(|(k, _)| k == f)
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| fault(format!("Diag has no `{f}` field"))),
+            _ => Err(fault("expected a Diag")),
         }
-        _ => Err(fault("expected an @Token")),
+    };
+    let text = |v: &PVal| -> Result<String> { Ok(String::from_utf8_lossy(&as_bytes(v)?).into_owned()) };
+    let mut d = Diagnostic::error(code, Span::at(0), 0, text(&field("message")?)?);
+    for n in as_vec(&field("notes")?)?.iter() {
+        d = d.with_note(text(n)?);
+    }
+    for h in as_vec(&field("helps")?)?.iter() {
+        d = d.with_help(text(h)?);
+    }
+    Ok(d)
+}
+
+/// The source text of an `@Code` value.
+fn code_src(v: &PVal, builtin: &str) -> Result<Rc<Vec<u8>>> {
+    match &*v.borrow() {
+        Value::Struct { name, fields } if name == "@Code" => fields
+            .iter()
+            .find(|(k, _)| k == "src")
+            .and_then(|(_, v)| match &*v.borrow() {
+                Value::Str(b) => Some(b.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| fault(format!("{builtin}: malformed @Code value"))),
+        _ => Err(fault(format!("{builtin} expects an @Code"))),
     }
 }
 

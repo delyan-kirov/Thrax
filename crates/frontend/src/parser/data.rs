@@ -378,12 +378,15 @@ pub struct EffectRow {
 
 /// One comma-separated entry of an effect row: an effect label with its type
 /// arguments (`<Chan @Int e>`), or a row alias applied to its parameters
-/// (`<WithLog e, @IO>`). `args` are type atoms, empty for a bare label.
+/// (`<WithLog e, @IO>`). `args` are type atoms, empty for a bare label. `meta`
+/// holds `X` for a compile-time splice `<@e (X)>`, whose code supplies the
+/// entries; its `name` is `@e` and it has no `args`.
 #[derive(Clone, Copy, Debug)]
 pub struct RowEntry {
     pub name: StrId,
     pub args: Slice<Aol<Ty>>,
     pub span: Span,
+    pub meta: Option<Aol<Expr>>,
 }
 
 // -- patterns ----------------------------------------------------------------

@@ -1373,7 +1373,7 @@ $ is55 : @Int -> @Bool = \ | @e (lit (fib 10)) => @true | _ => @false
 A type splice may stand at any type position: a signature, a struct field, a
 union payload, an alias body, an effect operation, an effect-row argument, a
 `@use` field, or an annotation inside a body (`let x : T`, `\(x : T)`,
-`(e : T)`).
+`(e : T)`). Effect-row entries themselves can be spliced too, as `<@e (X)>`.
 
 ```thrax
 $ Point : @struct = x: @e (pick {}), y: @e (pick {})
@@ -1393,7 +1393,21 @@ round supplies it the error is reported as written.
 `X` may perform the compile-time operations (`@emit`, `@abort`, `@fresh`,
 `@link`, `@link_path`, and the reflection `@type_kind`, `@type_params`,
 `@type_fields`, `@type_variants`, `@type_of`). They carry the `<@Meta>` effect,
-which `@e` discharges. It discharges nothing else, so `@e` is **hermetic**: a generator
+which `@e` discharges. The richer ones speak CORE types:
+
+- `@lookup name` is a `Decl`: `Struct`, `Union` (each with its shape), `Value`
+  (a global's type as source) or `Missing`.
+- `@here {}` is the running `@e`'s `Site` (`file`, `line`, `column`).
+- `@check code` type-checks an expression fragment as if written at the `@e`
+  and gives its type as source; an ill-typed fragment fails the build.
+- `@fail d` and `@warn d` report a `Diag` (`message`, `notes`, `helps`; `diag
+  msg` has none) at the `@e`: `@fail` as `META_ABORT`, ending the build, `@warn`
+  as a `META_WARNING` warning.
+
+A type splice builds its code with `@parse_type`, and an effect-row splice
+`<@e (X)>`, which stands for one or more entries, with `@parse_row`: a type or a
+row is not an expression, so `@parse_str` would reject `{ x: @Int }` or
+`Log, State @Int`. It discharges nothing else, so `@e` is **hermetic**: a generator
 cannot perform `@IO`. Compile-time IO lives in `@build` alone (section 11.3).
 
 Empty code inserts nothing. A site that runs only for its effect returns it, so
