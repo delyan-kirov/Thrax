@@ -43,121 +43,123 @@ $ Spec : @struct =
     usage: @Str,
     info: @Str,
 
-$ spec : Command -> Spec = \c =
-    is c
-    | .Build       => Spec.{
-        .name = "build",
-        .usage = "[release [musl|gnu|windows]]",
-        .info = "clean, then build the compiler (debug unless `release`)",
-    }
-    | .Rebuild     => Spec.{
-        .name = "rebuild",
-        .usage = "[release [musl|gnu|windows]]",
-        .info = "build the compiler without cleaning",
-    }
-    | .Clean       => Spec.{
-        .name = "clean",
-        .usage = "[all]",
-        .info = "remove build artifacts (all: also the built libffi and musl)",
-    }
-    | .Test        => Spec.{ .name = "test", .usage = "", .info = "clean, then run `cargo test`" }
-    | .Install     => Spec.{
-        .name = "install",
-        .usage = "",
-        .info = "install this checkout into the nix profile, replacing the old one",
-    }
-    | .Readme      => Spec.{
-        .name = "readme",
-        .usage = "",
-        .info = "regenerate README.md from tools/README_GEN.thx"
-    }
-    | .HelixUpdate => Spec.{
-        .name = "helix-update",
-        .usage = "",
-        .info = "rebuild the grammars of the Helix editor"
-    }
-    | .Corpus      => Spec.{
-        .name = "corpus",
-        .usage = "[wasm]",
-        .info = "run tests/MAIN.thx on both engines (interpreter + native C,\n"
-            ++ "or with `wasm` the C built for wasm32-wasi, under node)",
-    }
-    | .Grammar     => Spec.{
-        .name = "grammar",
-        .usage = "",
-        .info = "check documentation/thrax.y with bison (-v for counterexamples)",
-    }
-    | .TreeSitter  => Spec.{
-        .name = "tree-sitter",
-        .usage = "",
-        .info = "generate the Helix grammar from documentation/thrax.y\n"
-            ++ "(tools/editors/tree-sitter-thrax, for Helix and Zed)",
-    }
-    | .Tags        => Spec.{
-        .name = "tags",
-        .usage = "[-o FILE] [PATH...]",
-        .info = "write a ctags `tags` file for Vim (default: the whole repo)",
-    }
-    | .Fmt         => Spec.{
-        .name = "fmt",
-        .usage = "[check]",
-        .info = "format every tracked .thx file in place (submodules too,\n"
-            ++ "not tests/diagnostics/)\n"
-            ++ "(check: only list the files that are not formatted)",
-    }
-    | .Hooks       => Spec.{
-        .name = "hooks",
-        .usage = "",
-        .info = "use tools/hooks as this clone's git hooks (see\n" ++ "documentation/workflow.md)",
-    }
-    | .Doc         => Spec.{
-        .name = "doc",
-        .usage = "",
-        .info = "build the rustdoc for the workspace and open it in a browser",
-    }
-    | .Site        => Spec.{
-        .name = "site",
-        .usage = "",
-        .info = "rebuild the web playground's wasm, then serve it and open it",
-    }
-    | .Hook        => Spec.{
-        .name = "hook",
-        .usage = "NAME ARGS",
-        .info = "run the git hook NAME (tools/hooks/* call this)",
-    }
-    | .Issue       => Spec.{
-        .name = "issue",
-        .usage = "TITLE",
-        .info = "open an issue titled TITLE and print its number",
-    }
-    | .SdkPath     => Spec.{
-        .name = "sdk_path",
-        .usage = "",
-        .info = "print the repo root (source tools/thxdo.nu to cd there)",
-    }
-    | .Stats       => Spec.{
-        .name = "stats",
-        .usage = "",
-        .info = "line counts (zalmoxis, excluding external/ and applications/)",
-    }
-    | .All         =>
-        Spec.{ .name = "all", .usage = "", .info = "build, then regenerate README.md" }
-    | .Help        => Spec.{ .name = "help", .usage = "", .info = "show this help" }
+$ spec : Command -> Spec = \c =>
+    c |> \
+        | .Build       => Spec.{
+            .name = "build",
+            .usage = "[release [musl|gnu|windows]]",
+            .info = "clean, then build the compiler (debug unless `release`)",
+        }
+        | .Rebuild     => Spec.{
+            .name = "rebuild",
+            .usage = "[release [musl|gnu|windows]]",
+            .info = "build the compiler without cleaning",
+        }
+        | .Clean       => Spec.{
+            .name = "clean",
+            .usage = "[all]",
+            .info = "remove build artifacts (all: also the built libffi and musl)",
+        }
+        | .Test        =>
+            Spec.{ .name = "test", .usage = "", .info = "clean, then run `cargo test`" }
+        | .Install     => Spec.{
+            .name = "install",
+            .usage = "",
+            .info = "install this checkout into the nix profile, replacing the old one",
+        }
+        | .Readme      => Spec.{
+            .name = "readme",
+            .usage = "",
+            .info = "regenerate README.md from tools/README_GEN.thx"
+        }
+        | .HelixUpdate => Spec.{
+            .name = "helix-update",
+            .usage = "",
+            .info = "rebuild the grammars of the Helix editor"
+        }
+        | .Corpus      => Spec.{
+            .name = "corpus",
+            .usage = "[wasm]",
+            .info = "run tests/MAIN.thx on both engines (interpreter + native C,\n"
+                ++ "or with `wasm` the C built for wasm32-wasi, under node)",
+        }
+        | .Grammar     => Spec.{
+            .name = "grammar",
+            .usage = "",
+            .info = "check documentation/thrax.y with bison (-v for counterexamples)",
+        }
+        | .TreeSitter  => Spec.{
+            .name = "tree-sitter",
+            .usage = "",
+            .info = "generate the Helix grammar from documentation/thrax.y\n"
+                ++ "(tools/editors/tree-sitter-thrax, for Helix and Zed)",
+        }
+        | .Tags        => Spec.{
+            .name = "tags",
+            .usage = "[-o FILE] [PATH...]",
+            .info = "write a ctags `tags` file for Vim (default: the whole repo)",
+        }
+        | .Fmt         => Spec.{
+            .name = "fmt",
+            .usage = "[check]",
+            .info = "format every tracked .thx file in place (submodules too,\n"
+                ++ "not tests/diagnostics/)\n"
+                ++ "(check: only list the files that are not formatted)",
+        }
+        | .Hooks       => Spec.{
+            .name = "hooks",
+            .usage = "",
+            .info = "use tools/hooks as this clone's git hooks (see\n"
+                ++ "documentation/workflow.md)",
+        }
+        | .Doc         => Spec.{
+            .name = "doc",
+            .usage = "",
+            .info = "build the rustdoc for the workspace and open it in a browser",
+        }
+        | .Site        => Spec.{
+            .name = "site",
+            .usage = "",
+            .info = "rebuild the web playground's wasm, then serve it and open it",
+        }
+        | .Hook        => Spec.{
+            .name = "hook",
+            .usage = "NAME ARGS",
+            .info = "run the git hook NAME (tools/hooks/* call this)",
+        }
+        | .Issue       => Spec.{
+            .name = "issue",
+            .usage = "TITLE",
+            .info = "open an issue titled TITLE and print its number",
+        }
+        | .SdkPath     => Spec.{
+            .name = "sdk_path",
+            .usage = "",
+            .info = "print the repo root (source tools/thxdo.nu to cd there)",
+        }
+        | .Stats       => Spec.{
+            .name = "stats",
+            .usage = "",
+            .info = "line counts (zalmoxis, excluding external/ and applications/)",
+        }
+        | .All         =>
+            Spec.{ .name = "all", .usage = "", .info = "build, then regenerate README.md" }
+        | .Help        => Spec.{ .name = "help", .usage = "", .info = "show this help" }
 
 # `$ commands : @Vec Command = [Command.Build, ...]`, in declaration order.
 $ @e <| @parse_items
     (
         "$ commands : @Vec Command = ["
-            ++ STR.join ", " (VEC.map (\v = "Command." ++ v.0) (@type_variants "Command"))
+            ++ STR.join ", " (VEC.map (\v => "Command." ++ v.0) (@type_variants "Command"))
             ++ "]"
     )
 
-$ parse_command : @Str -> Option Command = \s = VEC.find (\c = (spec c).name == s) commands
+$ parse_command : @Str -> Option Command = \s => VEC.find (\c => (spec c).name == s) commands
 
 $ help_column : @Int = 12
 
 # A command's help entry: the description beside a short head, or under a long one.
-$ help_entry : Command -> @Str = \c =
+$ help_entry : Command -> @Str = \c =>
     let s = spec c in
     let head = "  " ++ s.name ++ (if STR.is_empty s.usage => "" else " " ++ s.usage) in
     let indent = STR.repeat " " help_column in
@@ -178,7 +180,7 @@ $ help_text : @Str =
 $ readme_cmd : @Str = "${THRAX_BIN:-thrax} run tools/README_GEN.thx"
 
 # A command path in the platform's shell: `cmd.exe` reads `/` as a switch.
-$ native_path : @Str -> @Str = \p = if TARGET.os == "windows" => STR.replace p "/" "\\" else p
+$ native_path : @Str -> @Str = \p => if TARGET.os == "windows" => STR.replace p "/" "\\" else p
 
 # The combined corpus. `cargo test` does not cover it, so this is the only thing
 # that catches a break in the examples or the standard library. Both engines, and
@@ -186,7 +188,7 @@ $ native_path : @Str -> @Str = \p = if TARGET.os == "windows" => STR.replace p "
 # without shell syntax beyond `>`, so it runs under `cmd.exe` as well as `sh`;
 # CI runs it on every platform. `wasm` builds the native leg for wasm32-wasi and
 # runs it under node instead.
-$ corpus_task : @Bool -> <@IO, Fail> {} = \wasm =
+$ corpus_task : @Bool -> <@IO, Fail> {} = \wasm =>
     let
         bin    = thrax_bin {},
         interp = "target/corpus-interp.txt",
@@ -198,23 +200,25 @@ $ corpus_task : @Bool -> <@IO, Fail> {} = \wasm =
         step "interpreter run" (bin ++ " run tests/MAIN.thx > " ++ interp);
         step "native build" (bin ++ build);
         step "native run" (exe ++ " > " ++ native);
-        is { read_file interp, read_file native }
-        | { Option.Some.{ a }, Option.Some.{ b } } =>
-            print b;
-            let
-                la   = STR.lines a,
-                lb   = STR.lines b,
-                skip = VEC.append (skips la) (skips lb)
-            in
-                if STR.join "\n" (comparable skip la) == STR.join "\n" (comparable skip lb) =>
-                    {}
-                else
-                    Fail.fail "the engines disagree (target/corpus-*.txt)"
-        | _ => Fail.fail "corpus output missing"
+        { read_file interp, read_file native }
+            |> \
+                | { Option.Some.{ a }, Option.Some.{ b } } =>
+                    print b;
+                    let
+                        la   = STR.lines a,
+                        lb   = STR.lines b,
+                        skip = VEC.append (skips la) (skips lb)
+                    in
+                        if STR.join "\n" (comparable skip la) == STR.join "\n"
+                            (comparable skip lb) =>
+                            {}
+                        else
+                            Fail.fail "the engines disagree (target/corpus-*.txt)"
+                | _ => Fail.fail "corpus output missing"
 
 # The compiler the tasks run: $THRAX_BIN (thxdo's dev-shell wrapper points it
 # at the workspace build), else `thrax` on the PATH.
-$ thrax_bin : {} -> <@IO> @Str = \_ =
+$ thrax_bin : {} -> <@IO> @Str = \_ =>
     native_path (if STR.is_empty (env "THRAX_BIN") => "thrax" else env "THRAX_BIN")
 
 # ---- stats ----
@@ -225,20 +229,20 @@ $ zalmoxis_dir : @Str = "applications/zalmoxis"
 # The repository's line counts, without external/ and applications/. The
 # applications submodule is checked out first if it is not, and the counter
 # built when it has no binary or a source is newer than it.
-$ stats_task : {} -> <@IO, Fail> {} = \_ =
+$ stats_task : {} -> <@IO, Fail> {} = \_ =>
     let
         main = zalmoxis_dir ++ "/MAIN.thx",
         exe  = native_path (zalmoxis_dir ++ "/thrax-out/MAIN"),
     in
         (
             when
-                (VEC.is_empty (read_dir "applications")) <| \_ =
+                (VEC.is_empty (read_dir "applications")) <| \_ =>
                     println "thxdo: checking out the applications submodule ...";
                     step "submodule checkout" "git submodule update --init applications"
         );
         (
             when
-                (OPT.is_none (mtime main)) <| \_ =
+                (OPT.is_none (mtime main)) <| \_ =>
                     Fail.fail
                         (
                             main
@@ -247,39 +251,39 @@ $ stats_task : {} -> <@IO, Fail> {} = \_ =
         );
         (
             when
-                (stale exe zalmoxis_dir) <| \_ =
+                (stale exe zalmoxis_dir) <| \_ =>
                     println "thxdo: building zalmoxis ...";
                     step "zalmoxis build" (thrax_bin {} ++ " build " ++ main)
         );
         step "stats" (exe ++ " -e external -e applications")
 
 # Whether `exe` is missing or older than one of the .thx sources in `dir`.
-$ stale : @Str -> @Str -> <@IO> @Bool = \exe dir =
-    is mtime exe | Option.Some.{ built } => newer_than built dir (read_dir dir) 0 | _ => @true
+$ stale : @Str -> @Str -> <@IO> @Bool = \exe dir =>
+    mtime exe |> \ | Option.Some.{ built } => newer_than built dir (read_dir dir) 0 | _ => @true
 
-$ newer_than : @Int -> @Str -> @Vec @Str -> @Int -> <@IO> @Bool = \built dir names i =
+$ newer_than : @Int -> @Str -> @Vec @Str -> @Int -> <@IO> @Bool = \built dir names i =>
     if
         i >= @vec_len names =>
             @false,
         !(STR.ends_with (@vec_get names i) ".thx") =>
             newer_than built dir names (i + 1),
         else
-            is mtime (dir ++ "/" ++ @vec_get names i)
-            | Option.Some.{ t } if t > built => @true
-            | _                              => newer_than built dir names (i + 1)
+            mtime (dir ++ "/" ++ @vec_get names i) |> \
+                | Option.Some.{ t } if t > built => @true
+                | _                              => newer_than built dir names (i + 1)
 
 # The module named on a corpus line (`OK NAME`, `ERR NAME`, `SKIP NAME (why)`).
-$ line_module : @Str -> @Str = \l =
+$ line_module : @Str -> @Str = \l =>
     let ws = STR.split l " " in if @vec_len ws > 1 => @vec_get ws 1 else ""
 
-$ is_skip : @Str -> @Bool = \l = STR.contains l "SKIP"
+$ is_skip : @Str -> @Bool = \l => STR.contains l "SKIP"
 
 # The modules a corpus run skipped (tests/EXCEPTIONS.thx) on its platform.
-$ skips : @Vec @Str -> @Vec @Str = \ls = VEC.map line_module (VEC.filter is_skip ls)
+$ skips : @Vec @Str -> @Vec @Str = \ls => VEC.map line_module (VEC.filter is_skip ls)
 
 # A corpus output without what either run skipped: the part both must agree on.
-$ comparable : @Vec @Str -> @Vec @Str -> @Vec @Str = \skip ls =
-    VEC.filter (\l = !(is_skip l) && !(VEC.contains STR.eq (line_module l) skip)) ls
+$ comparable : @Vec @Str -> @Vec @Str -> @Vec @Str = \skip ls =>
+    VEC.filter (\l => !(is_skip l) && !(VEC.contains STR.eq (line_module l) skip)) ls
 
 # `%expect` in the grammar is a tripwire: bison fails when the conflict count
 # moves, so a syntax change has to be accounted for in the spec.
@@ -295,7 +299,7 @@ $ tree_sitter_cmd : @Str =
 
 # The tags generator runs natively: interpreted, it takes seconds per file.
 # Built on first use and again when its source changes, as thxdo itself is.
-$ tags_cmd : @Vec @Str -> @Str = \args =
+$ tags_cmd : @Vec @Str -> @Str = \args =>
     "bin=tools/editors/thrax-out/TAGS; src=tools/editors/TAGS.thx;"
         ++ " { [ -x \"$bin\" ] && [ ! \"$src\" -nt \"$bin\" ]; }"
         ++ " || ${THRAX_BIN:-thrax} build \"$src\" >/dev/null"
@@ -305,7 +309,7 @@ $ tags_cmd : @Vec @Str -> @Str = \args =
 # Every Thrax source the formatter keeps canonical.
 $ fmt_files : @Str = "$(git ls-files --recurse-submodules -- '*.thx' ':!:tests/diagnostics/*')"
 
-$ fmt_cmd : @Bool -> @Str = \check =
+$ fmt_cmd : @Bool -> @Str = \check =>
     "${THRAX_BIN:-thrax} fmt " ++ (if check => "--check " else "") ++ fmt_files
 
 $ grammar_verbose_cmd : @Str = "bison -Wcounterexamples -o /dev/null documentation/thrax.y"
@@ -340,7 +344,7 @@ $ dist_dir : @Str = "target/dist"
 
 # Exit status 0 when the archive at `stamp` is missing or older than a file
 # under `src` (outside `prune`), the way make decides a target is out of date.
-$ stale_cmd : @Str -> @Str -> @Str -> @Str = \stamp src prune =
+$ stale_cmd : @Str -> @Str -> @Str -> @Str = \stamp src prune =>
     "[ ! -f "
         ++ stamp
         ++ " ] || [ -n \"$(find "
@@ -378,7 +382,7 @@ $ jobs : @Str = "$(getconf _NPROCESSORS_ONLN)"
 
 # autoreconf and libtool are too heavy for the everyday dev shell, so they come
 # from external/flake.nix unless the environment already has them.
-$ ffi_wrap : @Str -> <@IO> @Str = \cmd =
+$ ffi_wrap : @Str -> <@IO> @Str = \cmd =>
     if C.system "command -v autoreconf >/dev/null 2>&1" == 0 =>
         "sh -c " ++ sh_quote cmd
     else
@@ -410,7 +414,7 @@ $ release_cargo_cmd : @Str = "THRAX_LIBFFI=$PWD/" ++ ffi_prefix ++ " cargo build
 # looks for library/, its shared library and lib/musl relative to its own path.
 # `release` is cargo's output directory, `exe` the compiler's file name and
 # `libs` the compiler libraries for lib/.
-$ dist_layout_cmd : @Str -> @Str -> @Str -> @Str = \release exe libs =
+$ dist_layout_cmd : @Str -> @Str -> @Str -> @Str = \release exe libs =>
     "set -e; d="
         ++ dist_dir
         ++ "; r="
@@ -464,25 +468,25 @@ $ hooks_cmd : @Str =
     "git config core.hooksPath tools/hooks && git config core.commentChar ';' "
         ++ "&& git config push.autoSetupRemote true"
 
-$ new_issue : @Str -> <@IO, Fail> {} = \title =
+$ new_issue : @Str -> <@IO, Fail> {} = \title =>
     if STR.is_empty (STR.trim title) =>
         Fail.fail "usage: thxdo issue <title>"
     else
-        is with_forge (\u = Forge.create_issue title)
-        | Option.Some.{ n } => println ("#" ++ int_to_str n)
-        | _                 => Fail.fail "could not open the issue"
+        with_forge (\u => Forge.create_issue title) |> \
+            | Option.Some.{ n } => println ("#" ++ int_to_str n)
+            | _                 => Fail.fail "could not open the issue"
 
-$ step : @Str -> @Str -> <@IO, Fail> {} = \what cmd =
+$ step : @Str -> @Str -> <@IO, Fail> {} = \what cmd =>
     if C.system cmd == 0 => {} else Fail.fail (what ++ " FAILED")
 
-$ refresh_ffi : {} -> <@IO, Fail> {} = \u =
+$ refresh_ffi : {} -> <@IO, Fail> {} = \u =>
     if C.system ffi_stale_cmd == 0 =>
         println "thxdo: building libffi from external/libffi ...";
         step "libffi build (log: target/libffi-build.log)" (ffi_wrap ffi_build_cmd)
     else
         println "thxdo: libffi is up to date"
 
-$ refresh_musl : {} -> <@IO, Fail> {} = \u =
+$ refresh_musl : {} -> <@IO, Fail> {} = \u =>
     step "musl fetch" musl_fetch_cmd;
     if C.system musl_stale_cmd == 0 =>
         println "thxdo: building musl from external/musl ...";
@@ -490,9 +494,9 @@ $ refresh_musl : {} -> <@IO, Fail> {} = \u =
     else
         println "thxdo: musl is up to date"
 
-$ is_linux : {} -> <@IO> @Bool = \u = TARGET.os == "linux"
+$ is_linux : {} -> <@IO> @Bool = \u => TARGET.os == "linux"
 
-$ release_build : @Str -> <@IO, Fail> {} = \libc =
+$ release_build : @Str -> <@IO, Fail> {} = \libc =>
     let musl = libc == "musl" in
     if musl && !(is_linux {}) =>
         Fail.fail "musl is for Linux; this platform links its own C library"
@@ -504,109 +508,122 @@ $ release_build : @Str -> <@IO, Fail> {} = \libc =
         (if musl => step "dist musl" dist_musl_cmd else {});
         println ("thxdo: release compiler in " ++ dist_dir ++ "/bin/thrax")
 
-$ windows_release : {} -> <@IO, Fail> {} = \u =
+$ windows_release : {} -> <@IO, Fail> {} = \u =>
     step "cross build (tools/windows)" windows_cargo_cmd;
     step "dist" windows_dist_cmd;
     println ("thxdo: Windows release in " ++ dist_dir ++ "/bin/thrax.exe")
 
-$ build_task : @Bool -> @Vec @Str -> <@IO, Fail> {} = \clean args =
-    is arg_or args 2 ""
-    | ""    =>
-        (if clean => C.system "cargo clean --profile dev" else 0); step "cargo build" "cargo build"
-    | "release" =>
-        let libc = arg_or args 3 (if is_linux {} => "musl" else "gnu") in
-        (
-            is libc
-            | "musl" | "gnu" =>
-                (if clean => C.system ("cargo clean --release; rm -rf " ++ dist_dir) else 0);
-                release_build libc
-            | "windows" =>
-                (
-                    if clean =>
-                        C.system
-                            ("rm -rf target/windows/x86_64-pc-windows-gnu/release " ++ dist_dir)
-                    else
-                        0
-                );
-                windows_release {}
-            | _ => Fail.fail ("unknown release `" ++ libc ++ "` (musl, gnu or windows)")
-        )
-    | other => Fail.fail ("unknown build mode `" ++ other ++ "` (try `release`)")
+$ build_task : @Bool -> @Vec @Str -> <@IO, Fail> {} = \clean args =>
+    arg_or args 2 "" |> \
+        | ""    =>
+            (if clean => C.system "cargo clean --profile dev" else 0);
+            step "cargo build" "cargo build"
+        | "release" =>
+            let libc = arg_or args 3 (if is_linux {} => "musl" else "gnu") in
+            (
+                libc |> \
+                    | "musl" | "gnu" =>
+                        (
+                            if clean =>
+                                C.system ("cargo clean --release; rm -rf " ++ dist_dir)
+                            else
+                                0
+                        );
+                        release_build libc
+                    | "windows" =>
+                        (
+                            if clean =>
+                                C.system
+                                    (
+                                        "rm -rf target/windows/x86_64-pc-windows-gnu/release "
+                                            ++ dist_dir
+                                    )
+                            else
+                                0
+                        );
+                        windows_release {}
+                    | _ => Fail.fail ("unknown release `" ++ libc ++ "` (musl, gnu or windows)")
+            )
+        | other => Fail.fail ("unknown build mode `" ++ other ++ "` (try `release`)")
 
-$ clean_task : @Vec @Str -> <@IO, Fail> {} = \args =
-    is arg_or args 2 ""
-    | ""    => step "cargo clean" "cargo clean"
-    | "all" => step "cargo clean" "cargo clean"; step "clean" "rm -rf external/artifacts"
-    | other => Fail.fail ("unknown clean mode `" ++ other ++ "` (try `all`)")
+$ clean_task : @Vec @Str -> <@IO, Fail> {} = \args =>
+    arg_or args 2 "" |> \
+        | ""    => step "cargo clean" "cargo clean"
+        | "all" => step "cargo clean" "cargo clean"; step "clean" "rm -rf external/artifacts"
+        | other => Fail.fail ("unknown clean mode `" ++ other ++ "` (try `all`)")
 
-$ sh_quote : @Str -> @Str = \s = "'" ++ STR.replace s "'" "'\\''" ++ "'"
+$ sh_quote : @Str -> @Str = \s => "'" ++ STR.replace s "'" "'\\''" ++ "'"
 
-$ quoted_from : @Vec @Str -> @Int -> @Str = \args i =
+$ quoted_from : @Vec @Str -> @Int -> @Str = \args i =>
     if @vec_len args <= i => "" else " " ++ sh_quote (@vec_get args i) ++ quoted_from args (i + 1)
 
-$ arg_or : @Vec @Str -> @Int -> @Str -> @Str = \args i d =
+$ arg_or : @Vec @Str -> @Int -> @Str -> @Str = \args i d =>
     if @vec_len args <= i => d else @vec_get args i
 
-$ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =
-    is c
-    | .Build       => build_task @true args
-    | .Rebuild     => build_task @false args
-    | .Clean       => clean_task args
-    | .Test        => step "cargo clean" "cargo clean"; step "cargo test" "cargo test"
-    | .Install     => C.system "nix profile remove Thrax"; step "nix profile add" "nix profile add"
-    | .Issue       => new_issue (STR.join " " (VEC.drop 2 args))
-    | .Hook        => with_forge (\u = HOOKS.hook args)
-    | .Readme =>
-        println "thxdo: regenerating README.md ...";
-        step "readme" readme_cmd;
-        println "thxdo: README.md updated"
-    | .Corpus =>
-        println "thxdo: running tests/MAIN.thx on both engines ...";
-        corpus_task (arg_or args 2 "" == "wasm");
-        println "thxdo: corpus OK (engines agree)"
-    | .TreeSitter  => step "tree-sitter" tree_sitter_cmd; println "thxdo: tree-sitter grammar OK"
-    | .Tags        => step "tags" (tags_cmd args)
-    | .Fmt         => step "fmt" (fmt_cmd (arg_or args 2 "" == "check")); println "thxdo: fmt OK"
-    | .Hooks       => step "hooks" hooks_cmd; println "thxdo: git hooks installed from tools/hooks"
-    | .Grammar =>
-        println "thxdo: checking documentation/thrax.y ...";
-        if C.system grammar_cmd == 0 =>
-            println "thxdo: grammar OK"
-        else
-            C.system grammar_verbose_cmd; Fail.fail "grammar FAILED (counterexamples above)"
-    | .Doc =>
-        println "thxdo: building rustdoc ...";
-        step "doc" "cargo doc --workspace --no-deps";
-        println ("thxdo: opening " ++ doc_page);
-        C.system doc_open_cmd;
-        {}
-    | .HelixUpdate => step "helix-update" "hx --grammar build"
-    | .Site =>
-        println "thxdo: rebuilding the playground wasm ...";
-        step "site build" site_build_cmd;
-        println ("thxdo: serving " ++ site_url ++ " (Ctrl-C to stop)");
-        C.system site_open_cmd;
-        C.system site_serve_cmd;
-        {}
-    | .SdkPath     => println (env "THRAX_ROOT")
-    | .Stats       => stats_task {}
-    | .All =>
-        step "cargo clean" "cargo clean";
-        step "cargo build" "cargo build";
-        println "thxdo: regenerating README.md ...";
-        step "readme" readme_cmd
-    | .Help        => print help_text
+$ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =>
+    c |> \
+        | .Build       => build_task @true args
+        | .Rebuild     => build_task @false args
+        | .Clean       => clean_task args
+        | .Test        => step "cargo clean" "cargo clean"; step "cargo test" "cargo test"
+        | .Install     =>
+            C.system "nix profile remove Thrax"; step "nix profile add" "nix profile add"
+        | .Issue       => new_issue (STR.join " " (VEC.drop 2 args))
+        | .Hook        => with_forge (\u => HOOKS.hook args)
+        | .Readme =>
+            println "thxdo: regenerating README.md ...";
+            step "readme" readme_cmd;
+            println "thxdo: README.md updated"
+        | .Corpus =>
+            println "thxdo: running tests/MAIN.thx on both engines ...";
+            corpus_task (arg_or args 2 "" == "wasm");
+            println "thxdo: corpus OK (engines agree)"
+        | .TreeSitter  =>
+            step "tree-sitter" tree_sitter_cmd; println "thxdo: tree-sitter grammar OK"
+        | .Tags        => step "tags" (tags_cmd args)
+        | .Fmt         =>
+            step "fmt" (fmt_cmd (arg_or args 2 "" == "check")); println "thxdo: fmt OK"
+        | .Hooks       =>
+            step "hooks" hooks_cmd; println "thxdo: git hooks installed from tools/hooks"
+        | .Grammar =>
+            println "thxdo: checking documentation/thrax.y ...";
+            if C.system grammar_cmd == 0 =>
+                println "thxdo: grammar OK"
+            else
+                C.system grammar_verbose_cmd; Fail.fail "grammar FAILED (counterexamples above)"
+        | .Doc =>
+            println "thxdo: building rustdoc ...";
+            step "doc" "cargo doc --workspace --no-deps";
+            println ("thxdo: opening " ++ doc_page);
+            C.system doc_open_cmd;
+            {}
+        | .HelixUpdate => step "helix-update" "hx --grammar build"
+        | .Site =>
+            println "thxdo: rebuilding the playground wasm ...";
+            step "site build" site_build_cmd;
+            println ("thxdo: serving " ++ site_url ++ " (Ctrl-C to stop)");
+            C.system site_open_cmd;
+            C.system site_serve_cmd;
+            {}
+        | .SdkPath     => println (env "THRAX_ROOT")
+        | .Stats       => stats_task {}
+        | .All =>
+            step "cargo clean" "cargo clean";
+            step "cargo build" "cargo build";
+            println "thxdo: regenerating README.md ...";
+            step "readme" readme_cmd
+        | .Help        => print help_text
 
-$ run : @Vec @Str -> <@IO, Fail> {} = \args =
+$ run : @Vec @Str -> <@IO, Fail> {} = \args =>
     let name = arg_or args 1 "help" in
-    is parse_command name
-    | Option.Some.{ c } => run_command c args
-    | _                 => print help_text; Fail.fail ("unknown command `" ++ name ++ "`")
+    parse_command name |> \
+        | Option.Some.{ c } => run_command c args
+        | _                 => print help_text; Fail.fail ("unknown command `" ++ name ++ "`")
 
 #-
  - \args(1) : command
  - \note : if no command present, show help msg
  -#
-$ @main : @Vec @Str -> <@IO> @Int = \args =
+$ @main : @Vec @Str -> <@IO> @Int = \args =>
     do run args; 0
     ctl k | Fail.fail msg => println ("thxdo: " ++ msg); 1

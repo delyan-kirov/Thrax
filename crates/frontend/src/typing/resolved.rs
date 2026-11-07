@@ -20,7 +20,7 @@ pub type LazySlots = HashMap<(StrId, Option<StrId>), Vec<bool>>;
 /// three are consumed by lowering to build the extern value both engines call.
 pub type ExternSpec = (Vec<ExternArg>, Vec<StrId>, StrId);
 
-/// One resolved context (`@ctx`) value at a use site, ready for lowering to inject
+/// One resolved context (`@use`) value at a use site, ready for lowering to inject
 /// as a leading argument of the referenced function.
 #[derive(Clone, Debug)]
 pub enum CtxVal {
@@ -38,7 +38,7 @@ pub enum CtxVal {
     /// One component of a bundle already in scope, as `base.index`: a function that
     /// received several contexts as one tuple passes a single one onward.
     Proj(Box<CtxVal>, usize),
-    /// An explicit `(@ctx e)` argument; lowering lowers this AST node in place.
+    /// An explicit `@use {...}` argument; lowering lowers this AST node in place.
     Expr(Aol<Expr>),
 }
 
@@ -91,7 +91,7 @@ pub struct Resolved {
     /// [`Checker::tensor_patterns`]).
     pub tensor_patterns: HashMap<Aol<Pattern>, u64>,
     pub call_modules: HashMap<Aol<Expr>, StrId>,
-    /// Each use site of a `@ctx`-bearing function, mapped to the context value
+    /// Each use site of a `@use`-bearing function, mapped to the context value
     /// lowering injects ahead of the explicit arguments (from
     /// [`Checker::ctx_calls`]).
     pub ctx_args: HashMap<Aol<Expr>, CtxVal>,
@@ -132,7 +132,7 @@ pub struct Resolved {
 
 /// Gather every checker resolution lowering needs into one [`Resolved`]: `[..]`
 /// array/tensor nodes, resolved bare calls, literal/pattern
-/// hooks, context (`@ctx`) values, extern specs, C-repr layouts, ...
+/// hooks, context (`@use`) values, extern specs, C-repr layouts, ...
 ///
 /// Lowering `expect`s several of these to be present (a `::` pattern without its
 /// sequence-view hook panics), so every caller that checks a program and then
@@ -317,7 +317,7 @@ pub struct Declarations {
     /// struct and union. Empty for a monomorphic type. Read by reflection.
     type_params: HashMap<StrId, HashMap<StrId, Vec<StrId>>>,
     /// Interface WRAPPERS: `(module, name) -> field`, for a context-bearing global
-    /// whose body is exactly `\d p1 .. pn = d.field p1 .. pn` (every CORE operator).
+    /// whose body is exactly `\d p1 .. pn => d.field p1 .. pn` (every CORE operator).
     /// A call site then projects the resolved instance's field directly instead of
     /// calling through the wrapper, which is three closure applications per use.
     wrappers: HashMap<(StrId, StrId), StrId>,
@@ -369,7 +369,7 @@ impl Declarations {
     }
 
     /// The field an interface wrapper projects, when `body` is exactly
-    /// `\d p1 .. pn = d.field p1 .. pn` over distinct variable patterns.
+    /// `\d p1 .. pn => d.field p1 .. pn` over distinct variable patterns.
     pub(crate) fn wrapper_field_of(&self, module: StrId, name: StrId) -> Option<StrId> {
         self.wrappers.get(&(module, name)).copied()
     }

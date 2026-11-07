@@ -90,7 +90,7 @@ not even valid syntax since a row needs an arrow) would force it eagerly at its
 definition, where no handler is installed. The handler runs it explicitly, e.g.
 `do action {}` inside `runState`.
 
-The unit parameter is introduced **automatically**, so no `\u =` is needed; write
+The unit parameter is introduced **automatically**, so no `\u =>` is needed; write
 the body directly and it becomes the thunk:
 
 ```
@@ -99,9 +99,9 @@ $ counter : {} -> <State> @Int =
 ```
 
 This is the same leading-parameter sugar as the record-parameter destructuring: a
-`{}` (unit) parameter simply binds nothing. An explicit `\u = ...` still works.
+`{}` (unit) parameter simply binds nothing. An explicit `\u => ...` still works.
 (The one thing the sugar precludes is aliasing an existing thunk directly,
-`f : {} -> T = g`, which now wraps `g`; write `\u = g u` instead.)
+`f : {} -> T = g`, which now wraps `g`; write `\u => g u` instead.)
 
 ---
 
@@ -116,10 +116,10 @@ union; neither needs its own kind.
 
 ```
 $ Stream : @struct t = head : t, tail : Stream t
-$ from : @Int -> Stream @Int = \n = { .head = n, .tail = from (n + 1) }
+$ from : @Int -> Stream @Int = \n => { .head = n, .tail = from (n + 1) }
 
 $ List : @union a = Nil: {}, Cons: {a, List a},
-$ count : @Int -> List @Int = \n = List.Cons.{ n, count (n + 1) }
+$ count : @Int -> List @Int = \n => List.Cons.{ n, count (n + 1) }
 ```
 
 The rule stops at an arrow: a slot typed `{} -> T` is already a suspension
@@ -162,7 +162,7 @@ and eliminated by **observing** them). Observations are **non-memoized**.
 ```
 $ Stream : @codata `T = head : `T, tail : Stream `T,
 
-$ from : @Int -> Stream @Int = \n =
+$ from : @Int -> Stream @Int = \n =>
     .head = n,
     .tail = from (n + 1),     # copattern clauses, one per observation
 ```
@@ -255,7 +255,7 @@ a copy and the original stays resumable for its other owners.
 What this buys over the static per-clause walk it replaced:
 
 - **Escaping continuations move.** Parameter-passing state
-  (`ctl k | get u => \s = (k s) s`, `k` captured by a lambda) and the
+  (`ctl k | get u => \s => (k s) s`, `k` captured by a lambda) and the
   coroutine idiom (`ctl k | yield v => Task.Susp.{ v, k }`, `k` stashed and
   resumed elsewhere) are dynamically one-shot, and the runtime now sees it. The
   walk had to copy both per resume.
@@ -768,7 +768,7 @@ the result is **closest to Flix**.
   the body (no parens, `ctl` delimits it). `ctl k` binds the one continuation,
   shared by all clauses (exactly one `k` per performed op). `| op a => e` handles
   `op`, binding its argument `a`. A value arm `| pat => e` is the value clause
-  (normal completion), matching the body's result like an `is` arm; optional,
+  (normal completion), matching the body's result like a match arm; optional,
   identity by default. An operation clause always juxtaposes two names (`op a`,
   `Eff.op a`), which no pattern does, so the parser tells the two apart without a
   marker (#232 replaced the earlier `else x => e`). Handlers are deep (section 3).

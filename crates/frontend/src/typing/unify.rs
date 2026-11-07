@@ -131,7 +131,7 @@ impl Unifier {
     //
     // Two things lean on this. A failed definition unwinds to the level it
     // started at (`unwind_level`), so the next one starts clean. And a variable
-    // a pending `@ctx` or overload requirement still constrains is held back
+    // a pending `@use` or overload requirement still constrains is held back
     // (`generalize_except`), the monomorphism restriction: it must stay a
     // unification variable until the requirement pins it.
 

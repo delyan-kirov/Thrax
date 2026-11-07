@@ -12,9 +12,9 @@ $ nums : List @Int = [1, 2, 3, 4, 5]
 $ naturals : List @Int = [0 ...]
 
 $ ck_length : @Int = if LIST.length nums == 5 => 0 else 1
-$ ck_map : @Int = if LIST.foldl (\a x = a + x) 0 (LIST.map (\x = x * x) nums) == 55 => 0 else 1
-$ ck_filter : @Int = if LIST.length (LIST.filter (\x = x % 2 == 0) nums) == 2 => 0 else 1
-$ ck_rev : @Int = if LIST.foldl (\a x = a * 10 + x) 0 (LIST.reverse nums) == 54321 => 0 else 1
+$ ck_map : @Int = if LIST.foldl (\a x => a + x) 0 (LIST.map (\x => x * x) nums) == 55 => 0 else 1
+$ ck_filter : @Int = if LIST.length (LIST.filter (\x => x % 2 == 0) nums) == 2 => 0 else 1
+$ ck_rev : @Int = if LIST.foldl (\a x => a * 10 + x) 0 (LIST.reverse nums) == 54321 => 0 else 1
 $ ck_append : @Int = if LIST.length (LIST.append nums nums) == 10 => 0 else 1
 $ ck_nth : @Int = if unwrap_or (LIST.nth nums 3) 0 == 4 => 0 else 1
 $ ck_last : @Int = if unwrap_or (LIST.last nums) 0 == 5 => 0 else 1
@@ -23,12 +23,13 @@ $ ck_back : @Int = if LIST.length (LIST.from_vec [7, 8, 9]) == 3 => 0 else 1
 
 # An unbounded source, transformed and cut: only ten cells are ever built.
 $ ck_stream : @Int =
-    let evens = LIST.filter (\x = x % 2 == 0) naturals in
-    if LIST.foldl (\a x = a + x) 0 (LIST.take 10 (LIST.map (\x = x * 3) evens)) == 270 => 0 else 1
+    let evens = LIST.filter (\x => x % 2 == 0) naturals in
+    if LIST.foldl (\a x => a + x) 0 (LIST.take 10 (LIST.map (\x => x * 3) evens)) == 270 => 0 else 1
 
-$ ck_find : @Int = if unwrap_or (LIST.find (\x = x > 1000) naturals) 0 == 1001 => 0 else 1
+$ ck_find : @Int = if unwrap_or (LIST.find (\x => x > 1000) naturals) 0 == 1001 => 0 else 1
 
 $ test : @Int =
-    ck_length + ck_map + ck_filter + ck_rev + ck_append + ck_nth + ck_last + ck_vec + ck_back + ck_stream + ck_find
+    ck_length + ck_map + ck_filter + ck_rev + ck_append + ck_nth + ck_last + ck_vec + ck_back
+        + ck_stream + ck_find
 
 $ @e <| assert (test == 0) "STDLIB_LAZY_LIST: a check failed"

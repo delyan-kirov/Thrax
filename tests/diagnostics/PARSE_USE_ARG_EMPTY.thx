@@ -1,0 +1,4 @@
+$ @mod PARSE_USE_ARG_EMPTY
+
+$ same : @use {d: IEq t} -> t -> @Bool = \x => d.eq x x
+$ r : @Bool = same @use {} 1  #~ error[UNEXPECTED_TOKEN]: a `@use` argument supplies at least one field

@@ -1,12 +1,12 @@
 //! Fold a saturated interface projection whose method is an eta-expanded
 //! primitive. Every `CORE` arithmetic and comparison instance has that shape
-//! (`$ impl_IAdd_for_int : IAdd @Int = .{ .add = \a b = @iadd a b }`), so `x + y` can cost
+//! (`$ impl_IAdd_for_int : IAdd @Int = .{ .add = \a b => @iadd a b }`), so `x + y` can cost
 //! one builtin call again instead of a global lookup, a field read, and two
 //! closure applications. Runs over the MERGED program, where a global's key is
 //! already `MOD.name`, so a qualified projection matches by name.
 //!
 //! A global that is itself an eta-expanded primitive folds the same way
-//! (`$ at : @Str -> @Int -> @Int = \s i = @array_get s i`), so a byte loop over
+//! (`$ at : @Str -> @Int -> @Int = \s i => @array_get s i`), so a byte loop over
 //! `STR.at s i` reads the byte directly instead of building a closure per call.
 //! That also covers the methods [`super::specialize`] lifts out of an instance
 //! literal (`impl_IAdd_for_int#f_add`), which is what a projection from a known
@@ -18,7 +18,7 @@
 //!
 //! A global that applies a primitive to its parameters REORDERED, or negates
 //! the result with `not`, folds too: that is the shape of the derived
-//! comparisons (`$ (>=) ... = \d a b = not (d.lt a b)`, once specialized to a
+//! comparisons (`$ (>=) ... = \d a b => not (d.lt a b)`, once specialized to a
 //! known instance). A use becomes `not (@ilt x y)` in place of a call. Reordered
 //! arguments fold only when at most one of them takes an evaluation step, so
 //! the order of effects is still the source order.
@@ -47,7 +47,7 @@ pub struct Prims {
     wrappers: HashMap<StrId, Wrapper>,
 }
 
-/// `\p0 .. pn = [not] (@prim p_order[0] .. p_order[n])`.
+/// `\p0 .. pn => [not] (@prim p_order[0] .. p_order[n])`.
 #[derive(Clone, Debug, PartialEq)]
 struct Wrapper {
     prim: StrId,
@@ -215,7 +215,7 @@ fn wrapped_primitive(terms: &Terms, term: Aol<Term>, prims: &Prims) -> Option<Wr
     (w.negate || w.reorders()).then_some(w)
 }
 
-/// The primitive and arity of `\p1 .. pn = @prim p1 .. pn`, else `None`. The
+/// The primitive and arity of `\p1 .. pn => @prim p1 .. pn`, else `None`. The
 /// parameters must be distinct and appear exactly once each, in order.
 fn eta_primitive(terms: &Terms, term: Aol<Term>) -> Option<(StrId, usize)> {
     let mut params: Vec<StrId> = Vec::new();

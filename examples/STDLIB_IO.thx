@@ -19,10 +19,12 @@ $ path : @Str = "thrax_stdlib_io_test.txt"
 # only `ck_fmt` (pure string formatting) stays a plain value.
 $ ck_roundtrip : {} -> <@IO> @Int =
     let w = write_file path "line one\nline two\n" in
-    if !w => 1
+    if !w =>
+        1
     else
         let a = append_file path "line three\n" in
-        if !a => 1
+        if !a =>
+            1
         else
             let body = unwrap_or (read_file path) "<unreadable>" in
             let rm = remove_file path in
@@ -40,10 +42,14 @@ $ ck_missing : {} -> <@IO> @Int =
 # of the corpus.
 $ ck_dir : {} -> <@IO> @Int =
     let names = read_dir "examples" in
-    if !(VEC.contains STR.eq "STDLIB_IO.thx" names) => 1
-    else if VEC.contains STR.eq "." names => 1
-    else if VEC.is_empty names => 1
-    else sorted_from names 1
+    if !(VEC.contains STR.eq "STDLIB_IO.thx" names) =>
+        1
+    else if VEC.contains STR.eq "." names =>
+        1
+    else if VEC.is_empty names =>
+        1
+    else
+        sorted_from names 1
 
 # An unreadable directory is empty, not a fault.
 $ ck_dir_missing : {} -> <@IO> @Int =
@@ -61,15 +67,19 @@ $ ck_fmt : @Int = if (from_int 42) == "42" => 0 else 1
 # Aggregate check for the combined test runner: 0 = all pass. It performs `@IO`,
 # so it too is a unit-taking function; the runner calls it as `test {}`.
 $ test : {} -> <@IO> @Int =
-    ck_roundtrip {} + ck_gone {} + ck_missing {} + ck_dir {} + ck_dir_missing {} + ck_env {} + ck_env_none {} + ck_fmt
+    ck_roundtrip {} + ck_gone {} + ck_missing {} + ck_dir {} + ck_dir_missing {} + ck_env {}
+        + ck_env_none {} + ck_fmt
 
 # Every adjacent pair in order, from index `i`; 0 when the whole vector is.
-$ sorted_from : @Vec @Str -> @Int -> @Int = \names i =
-    if i >= VEC.len names => 0
-    else if STR.cmp_str (VEC.get_or names (i - 1) "") (VEC.get_or names i "") > 0 => 1
-    else sorted_from names (i + 1)
+$ sorted_from : @Vec @Str -> @Int -> @Int = \names i =>
+    if i >= VEC.len names =>
+        0
+    else if STR.cmp_str (VEC.get_or names (i - 1) "") (VEC.get_or names i "") > 0 =>
+        1
+    else
+        sorted_from names (i + 1)
 
 # These checks touch the filesystem, so they run at run time rather than under a
 # `$ @e` compile-time assert like the rest of the corpus: this module is a
 # program, and `$ @main` is what makes it one.
-$ @main : @Vec @Str -> <@IO> @Int = \args = test {}
+$ @main : @Vec @Str -> <@IO> @Int = \args => test {}

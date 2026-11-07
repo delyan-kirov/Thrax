@@ -5,7 +5,7 @@ $ @mod HANOI
 #       moving a stack of n disks takes hanoi(n) = 2 * hanoi(n-1) + 1 moves,
 #       which is 2^n - 1.
 
-$ hanoi : @Int -> @Int = \n = if n == 0 => 0 else 1 + 2 * (hanoi (n - 1))
+$ hanoi : @Int -> @Int = \n => if n == 0 => 0 else 1 + 2 * (hanoi (n - 1))
 
 $ hanoi1 : @Int = hanoi 1
 $ hanoi3 : @Int = hanoi 3

@@ -12,9 +12,9 @@ $ @mod CT_ASSERT
 #       declares `<@Meta>` in its type. `@e` discharges `<@Meta>`; outside an `@e`
 #       a meta op is a clean "effect `@Meta` not handled" error.
 
-$ fib : @Int -> @Int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
+$ fib : @Int -> @Int = \n => if n < 2 => n else fib (n - 1) + fib (n - 2)
 
-$ fact : @Int -> @Int = \n = if n < 2 => 1 else n * fact (n - 1)
+$ fact : @Int -> @Int = \n => if n < 2 => 1 else n * fact (n - 1)
 
 # Checked at compile time: a wrong number here fails the build with the message.
 $ @e <| assert (fib 10 == 55) "fib 10 should be 55"

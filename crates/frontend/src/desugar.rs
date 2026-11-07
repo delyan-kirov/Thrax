@@ -2,7 +2,7 @@
 //!
 //! This is the whole "remove the sugar" pass. Operators become applications of a
 //! built-in variable (or, for `;`/`|>`/`<|`/`::`, a `let`/application/`List`
-//! construction); `if` and `is` become a single [`Term::Case`]; list and cons
+//! construction); `if` and a match become a single [`Term::Case`]; list and cons
 //! sugar become `List.Cons`/`List.Nil`; multi-parameter and pattern lambdas curry
 //! into single-parameter lambdas over `Case`; leading record parameters of a
 //! definition's signature are consumed. Positional struct and variant fields are
@@ -33,7 +33,7 @@ use crate::core::{
 };
 
 /// The built-in that suspends a value. Construction wraps a lazy slot in
-/// `@delay (\_ = e)`; the machine forces it at the point the value is
+/// `@delay (\_ => e)`; the machine forces it at the point the value is
 /// scrutinised and patches the cell with the result.
 pub const DELAY: &str = "@delay";
 
@@ -277,7 +277,7 @@ impl<'a> Desugarer<'a> {
     }
 
     /// Lower a definition, consuming leading record parameters of its signature. A
-    /// `@ctx` parameter needs nothing here: the body binds it like any other first
+    /// `@use` context parameter needs nothing here: the body binds it like any other first
     /// parameter, and each call site injects the resolved value as a leading
     /// argument (see [`Self::apply_ctx`]).
     fn def(&mut self, sig: Option<Aol<Ty>>, body: Aol<Expr>) -> Aol<Term> {
@@ -301,7 +301,7 @@ impl<'a> Desugarer<'a> {
         let (from, to) = (*from, *to);
         // The body's leading lambdas bind the LAST k of the m signature parameters,
         // so a parameter is only auto-bound when the lambdas do not reach it
-        // (`k < m`). This lets `\p = p.x` name a record parameter explicitly, while
+        // (`k < m`). This lets `\p => p.x` name a record parameter explicitly, while
         // still auto-binding a record ahead of a later explicit lambda parameter.
         let m = 1 + self.arrow_arity(to);
         if leading_lams(&self.terms, body) >= m {
@@ -459,10 +459,10 @@ impl<'a> Desugarer<'a> {
 
             Expr::App(f, x) => {
                 let (f, x) = (*f, *x);
-                // An explicit `(@ctx e)` argument is not applied here: the checker
-                // took it off the spine and recorded it as the head's resolved
+                // An explicit `@use {...}` argument is not applied here: the checker
+                // took it off the spine and recorded it in the head's resolved
                 // context, which `apply_ctx` injects at the head reference.
-                if matches!(self.node(x), Expr::CtxArg(_)) {
+                if matches!(self.node(x), Expr::UseArg(_)) {
                     return self.expr(f);
                 }
                 // Integers are one 64-bit value at runtime, so `@cast x` to a narrower
@@ -683,7 +683,7 @@ impl<'a> Desugarer<'a> {
             // as an application (`@if c t e`, or `&&` as a function) would
             // evaluate both branches before choosing one, which breaks every
             // recursive definition and every effect in a branch. So `if` (and
-            // `&&`/`||`, which the parser rewrites to `if`) and `is` each become
+            // `&&`/`||`, which the parser rewrites to `if`) and a match each become
             // one `Term::Case`, a node the engines evaluate lazily: the
             // scrutinee first, then only the chosen arm. No later pass may turn a `Case` back into a call;
             // match compilation keeps the arms behind `Case`s and thunks.
@@ -817,10 +817,10 @@ impl<'a> Desugarer<'a> {
                 }
             }
 
-            // A `(@ctx e)` argument is consumed at the head reference it applies to
-            // (`ctx_args` holds it as the resolved value), so reaching it here means
-            // the checker let a stray one through.
-            Expr::CtxArg(_) => self.fault("a `(@ctx ...)` argument out of place"),
+            // A `@use {...}` argument is consumed at the head reference it applies
+            // to (`ctx_args` holds its values), so reaching it here means the
+            // checker let a stray one through.
+            Expr::UseArg(_) => self.fault("a `@use {...}` argument out of place"),
 
             Expr::Ascribe { expr, .. } => self.expr(*expr),
         }
@@ -904,7 +904,7 @@ impl<'a> Desugarer<'a> {
     }
 
     /// The lowered head term for an `Expr::Var`: the resolved global reference
-    /// with any `@ctx` context applied, but WITHOUT the first-class extern
+    /// with any `@use` context applied, but WITHOUT the first-class extern
     /// eta-wrapper (a call site applies it directly).
     fn var_head(&mut self, site: Aol<Expr>) -> Aol<Term> {
         // A blessed interface in head position is not a global at all: the checker

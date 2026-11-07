@@ -39,7 +39,7 @@ Every module starts with a `//!` header that says, in this order:
 5. The entry point, as an intra-doc link.
 
 ```rust
-//! Exhaustiveness and redundancy checking for `is` matches.
+//! Exhaustiveness and redundancy checking for matches.
 //!
 //! The algorithm is Maranget's usefulness, from "Warnings for pattern
 //! matching" (JFP 2007). Each arm becomes a row of [`DPat`]s over a small

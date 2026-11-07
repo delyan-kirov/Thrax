@@ -1,0 +1,4 @@
+$ @mod USE_UNKNOWN_FIELD
+
+$ same : @use {eq: IEq t} -> t -> @Bool = \x => eq.eq x x
+$ r : @Bool = same @use {.qe = impl_IEq_for_int} 1  #~ error[TYPE_MISMATCH]: `same` has no `@use` field `qe`

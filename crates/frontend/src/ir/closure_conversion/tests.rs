@@ -13,7 +13,7 @@ fn caf(name: &str, build: impl FnOnce(&mut Terms) -> Aol<Term>) -> CoreProgram {
     p
 }
 
-/// `$ id = \x = x` lifts the lambda to its own code; the global is a CAF whose
+/// `$ id = \x => x` lifts the lambda to its own code; the global is a CAF whose
 /// body returns a closure to it; the lifted code returns its `Local 0` parameter,
 /// the parameter's last use, so it moves out.
 #[test]
@@ -34,7 +34,7 @@ fn identity_lifts_a_code() {
     assert!(matches!(lam.body, IrExpr::Ret(Atom::Move(0))));
 }
 
-/// `\x = \y = x` captures `x` into the inner closure's environment: the inner
+/// `\x => \y => x` captures `x` into the inner closure's environment: the inner
 /// code reads `Env 0`, and the outer closure's capture list passes its `Local 0`.
 /// Both are last uses, so both move.
 #[test]

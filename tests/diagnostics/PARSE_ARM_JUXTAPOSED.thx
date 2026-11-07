@@ -1,0 +1,4 @@
+$ @mod PARSE_ARM_JUXTAPOSED
+
+# An arm matches one value; several are matched as a tuple.
+$ f : @Int -> @Int = \ | a b => a  #~ error[UNEXPECTED_TOKEN]: expected '=>' after the match pattern, found 'b'

@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn eval_rejects_a_function_result() {
-        let src = b"\\x = x";
+        let src = b"\\x => x";
         let mut err: *mut c_char = ptr::null_mut();
         let v = unsafe { thrax_eval(src.as_ptr(), src.len(), &mut err) };
         assert!(v.is_null());

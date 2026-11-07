@@ -1,0 +1,4 @@
+$ @mod PARSE_USE_NESTED
+
+# `@use` stands only on the arrows of a definition's own signature.
+$ f : (@use {d: IEq t} -> t -> @Bool) -> @Int = \g => 0  #~ error[UNEXPECTED_TOKEN]: a `@use` parameter stands only on the arrows of a definition's signature

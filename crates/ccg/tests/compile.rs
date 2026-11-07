@@ -144,7 +144,7 @@ fn c_run_entry(src: &str, args: &[&str]) -> (i32, String) {
 /// its own.
 #[test]
 fn entry_exit_code() {
-    let src = "$ @mod MAIN\n$ @main : @Vec @Str -> <@IO> @Int = \\args = 42\n";
+    let src = "$ @mod MAIN\n$ @main : @Vec @Str -> <@IO> @Int = \\args => 42\n";
     let (exit, stdout) = c_run_entry(src, &[]);
     assert_eq!(exit, 42);
     assert_eq!(stdout, "");
@@ -154,7 +154,7 @@ fn entry_exit_code() {
 #[test]
 fn entry_receives_string_vector() {
     let src = "$ @mod MAIN\n\
-               $ @main : @Vec @Str -> <@IO> @Int = \\args = @vec_len args\n";
+               $ @main : @Vec @Str -> <@IO> @Int = \\args => @vec_len args\n";
     let (exit, _stdout) = c_run_entry(src, &["alpha", "beta"]);
     assert_eq!(exit, 3);
 }
@@ -251,7 +251,7 @@ fn comparison_intrinsics_match_interpreter() {
 /// per-type overload for a primitive.
 #[test]
 fn user_comparison_instance_compiles() {
-    let src = "$ @mod M\n$ T : @struct = v: @Int\n               $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n               $ a : @Int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
+    let src = "$ @mod M\n$ T : @struct = v: @Int\n               $ ord_t : IOrd T = .{ .lt = \\a b => a.v < b.v }\n               $ a : @Int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
     assert_matches(src, "a");
 }
 
@@ -337,7 +337,7 @@ fn user_operator_instance_matches_interpreter() {
     // `@Int + @Int` inside finds CORE's instance.
     let src = "$ @mod M\n\
                $ V : @struct = x: @Int, y: @Int\n\
-               $ add_v : IAdd V = .{ .add = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
+               $ add_v : IAdd V = .{ .add = \\a b => V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
                $ r : @Int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
     assert_matches(src, "r");
 }
@@ -368,7 +368,7 @@ fn cast_between_integer_widths() {
     // checking (integers are boxed uniformly), so both engines must agree: widen
     // `@Int32 -> @Int`, narrow `@Int -> @Int32`, and use the results in arithmetic.
     let src = "$ @mod T\n\
-               $ small : {} -> @Int32 = \\u = 65\n\
+               $ small : {} -> @Int32 = \\u => 65\n\
                $ widened : @Int = @cast (small {})\n\
                $ narrowed : @Int32 = @cast (widened + 1)\n\
                $ back : @Int = @cast narrowed\n\
@@ -408,30 +408,30 @@ fn one_operation_over_two_types_matches_interpreter() {
     // backend must project and call the same instance the interpreter does.
     let src = "$ @mod M\n\
                $ IKind : @struct t = kind: t -> @Int,\n\
-               $ kind : @ctx IKind t -> t -> @Int = \\d x = d.kind x\n\
-               $ kind_int : IKind @Int = .{ .kind = \\x = 1 }\n\
-               $ kind_bool : IKind @Bool = .{ .kind = \\b = 2 }\n\
+               $ kind : @use {d: IKind t} -> t -> @Int = \\x => d.kind x\n\
+               $ kind_int : IKind @Int = .{ .kind = \\x => 1 }\n\
+               $ kind_bool : IKind @Bool = .{ .kind = \\b => 2 }\n\
                $ test : @Int = (kind 7) + (kind @true) * 10\n";
     assert_matches(src, "test");
 }
 
 #[test]
 fn ctx_context_parameter_passing() {
-    // A `@ctx` parameter elaborates to a leading argument the call site injects, an
+    // A `@use` context parameter elaborates to a leading argument the call site injects, an
     // instance built from another instance to a nested one; the C backend must do it
     // exactly as the interpreter does.
     let src = "$ @mod M\n\
                $ Ord : @struct t = gt: t -> t -> @Bool,\n\
-               $ impl_Ord_for_int : Ord @Int = .{ .gt = \\a b = a > b }\n\
-               $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
+               $ impl_Ord_for_int : Ord @Int = .{ .gt = \\a b => a > b }\n\
+               $ max_of : @use {o: Ord t} -> t -> t -> t = \\x y =>\n\
                \tif o.gt x y => x else y\n\
                $ Box : @union t = Wrap: {t},\n\
-               $ ord_box : @ctx Ord t -> Ord (Box t) = \\o =\n\
-               \t.{ .gt = \\p q = is p | Box.Wrap.{a} => (is q | Box.Wrap.{b} => o.gt a b) }\n\
-               $ unbox : Box @Int -> @Int = \\b = is b | Box.Wrap.{n} => n\n\
+               $ ord_box : @use {o: Ord t} -> Ord (Box t) = \n\
+               \t.{ .gt = \\p q => p |> \\ | Box.Wrap.{a} => (q |> \\ | Box.Wrap.{b} => o.gt a b) }\n\
+               $ unbox : Box @Int -> @Int = \\b => b |> \\ | Box.Wrap.{n} => n\n\
                $ test : @Int =\n\
-               \tlet flip : Ord @Int = .{ .gt = \\a b = a < b } in\n\
-               \t(max_of 3 7) + (max_of (@ctx flip) 3 7)\n\
+               \tlet flip : Ord @Int = .{ .gt = \\a b => a < b } in\n\
+               \t(max_of 3 7) + (max_of @use {.o = flip} 3 7)\n\
                \t+ unbox (max_of (Box.Wrap.{ 2 } : Box @Int) (Box.Wrap.{ 9 } : Box @Int))\n";
     assert_matches(src, "test");
 }
@@ -445,8 +445,8 @@ fn type_splice_with() {
                $ Point3 : @struct = with Point, z: @Int\n\
                $ Base : @union = Red: {}, Green: {}\n\
                $ Color : @union = with Base, Blue: {}\n\
-               $ rank : Color -> @Int = \\c =\n\
-               \tis c | Color.Red => 1 | Color.Green => 2 | Color.Blue => 3\n\
+               $ rank : Color -> @Int = \\c =>\n\
+               \tc |> \\ | Color.Red => 1 | Color.Green => 2 | Color.Blue => 3\n\
                $ test : @Int =\n\
                \tlet p = Point3.{ .x = 1, .y = 2, .z = 3 } in\n\
                \t(p.x + p.y + p.z) + rank Color.Blue\n";
@@ -460,7 +460,7 @@ fn open_row_record_param() {
     let src = "$ @mod M\n\
                $ Point  : @struct = x: @Int, y: @Int,\n\
                $ Point3 : @struct = x: @Int, y: @Int, z: @Int,\n\
-               $ area : { x: @Int, y: @Int | r } -> @Int = \\p = p.x * p.y\n\
+               $ area : { x: @Int, y: @Int | r } -> @Int = \\p => p.x * p.y\n\
                $ test : @Int = (area Point.{ .x=3, .y=4 }) + (area Point3.{ .x=5, .y=6, .z=9 })\n";
     assert_matches(src, "test");
 }
@@ -470,8 +470,8 @@ fn anonymous_record_values() {
     // Records under an open row (name-keyed) and pair decay (positional) must build
     // and read the same on the C backend as the interpreter.
     let src = "$ @mod M\n\
-               $ area : { x: @Int, y: @Int | r } -> @Int = \\p = p.x * p.y\n\
-               $ shift : { x: @Int | r } -> { x: @Int | r } = \\p = { .x = p.x + 10 | p }\n\
+               $ area : { x: @Int, y: @Int | r } -> @Int = \\p => p.x * p.y\n\
+               $ shift : { x: @Int | r } -> { x: @Int | r } = \\p => { .x = p.x + 10 | p }\n\
                $ add : {x: @Int, y: @Int} -> @Int = x + y\n\
                $ test : @Int =\n\
                \t(area { .x = 2, .y = 5, .tag = 7 }) + (area (shift { .x = 1, .y = 4 })) + add { .x = 5, .y = 6 }\n";
@@ -483,8 +483,8 @@ fn record_destructuring_pattern() {
     // Record patterns lower to name-keyed struct matches; the C backend must
     // destructure them the same as the interpreter.
     let src = "$ @mod M\n\
-               $ area : { x: @Int, y: @Int | r } -> @Int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
-               $ sumxy : { x: @Int, y: @Int | r } -> @Int = \\{ .x, .y } = x + y\n\
+               $ area : { x: @Int, y: @Int | r } -> @Int = \\p => p |> \\ | { .x = a, .y = b, .._ } => a * b\n\
+               $ sumxy : { x: @Int, y: @Int | r } -> @Int = \\{ .x, .y } => x + y\n\
                $ test : @Int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 }\n";
     assert_matches(src, "test");
 }
@@ -495,10 +495,10 @@ fn lazy_recursive_struct_streams() {
     // backend must drive the lazy infinite stream the same as the interpreter.
     let src = "$ @mod M\n\
                $ Stream : @struct t = head : t, tail : Stream t\n\
-               $ from : @Int -> Stream @Int = \\n = { .head = n, .tail = from (n + 1) }\n\
-               $ smap : (a -> b) -> Stream a -> Stream b = \\f s = { .head = f s.head, .tail = smap f s.tail }\n\
-               $ nth : @Int -> Stream t -> t = \\n s = if n == 0 => s.head else nth (n - 1) s.tail\n\
-               $ dbl : @Int -> @Int = \\x = x + x\n\
+               $ from : @Int -> Stream @Int = \\n => { .head = n, .tail = from (n + 1) }\n\
+               $ smap : (a -> b) -> Stream a -> Stream b = \\f s => { .head = f s.head, .tail = smap f s.tail }\n\
+               $ nth : @Int -> Stream t -> t = \\n s => if n == 0 => s.head else nth (n - 1) s.tail\n\
+               $ dbl : @Int -> @Int = \\x => x + x\n\
                $ test : @Int = nth 4 (smap dbl (from 1))\n";
     assert_matches(src, "test");
 }
@@ -509,7 +509,7 @@ fn record_update_forces_a_lazy_base() {
     // before its fields are copied, in both engines.
     let src = "$ @mod M\n\
                $ Node : @struct = v : @Int, next : Node\n\
-               $ mk : @Int -> Node = \\n = { .v = n, .next = mk (n + 1) }\n\
+               $ mk : @Int -> Node = \\n => { .v = n, .next = mk (n + 1) }\n\
                $ test : @Int = let b = Node.{ .v = 5 | (mk 0).next } in b.v * 100 + b.next.v\n";
     assert_eq!(c_run(src, "test"), "test = 502");
     assert_matches(src, "test");
@@ -524,14 +524,14 @@ fn recursive_let_through_a_nested_binding() {
     // Native runs through `@main` because the `go` -> `helper` -> `go` cycle
     // is not a direct self edge, so the `Show` harness's leak check trips.
     let def = "$ @mod M\n\
-               $ f : @Int -> @Int = \\m =\n\
-               \tlet go = (let helper = \\x = if x == 0 => 0 else 1 + go (x - 1) in \\n = helper n) in\n\
+               $ f : @Int -> @Int = \\m =>\n\
+               \tlet go = (let helper = \\x => if x == 0 => 0 else 1 + go (x - 1) in \\n => helper n) in\n\
                \tgo m\n";
     assert_eq!(
         interp_show(&format!("{def}$ test : @Int = f 5\n"), "test"),
         "5"
     );
-    let main = format!("{def}$ @main : @Vec @Str -> <@IO> @Int = \\args = f 5\n");
+    let main = format!("{def}$ @main : @Vec @Str -> <@IO> @Int = \\args => f 5\n");
     assert_eq!(c_run_entry(&main, &[]).0, 5);
     // A local recursive closure that escapes the frame that bound it.
     assert_example("LET_IN.thx", "chk_escape");
@@ -563,7 +563,7 @@ fn ffi_loads_from_c_memory() {
         $ i32_at : { p: @Ptr, i: @Int } -> @Int32 = @extern \"load\"\n\
         $ u8_at : { p: @Ptr, i: @Int } -> @Nat8 = @extern \"load\"\n\
         $ str_at : { p: @Ptr, i: @Int } -> @Str = @extern \"load\"\n\
-        $ le8 : @Int -> @Int -> @Str -> @Str = \\n k acc = if k == 8 => acc else le8 (n / 256) (k + 1) (@array_push acc (n % 256))\n\
+        $ le8 : @Int -> @Int -> @Str -> @Str = \\n k acc => if k == 8 => acc else le8 (n / 256) (k + 1) (@array_push acc (n % 256))\n\
         $ test : @Str =\n\
         \x20   let buf = malloc 16, a = malloc 4, table = malloc 16 in\n\
         \x20   fill { buf, \"\\x01\\x00\\x00\\x00\\x02\\x00\\x00\\x00\\x03\\x00\\x00\\x00\\xfe\\xff\\xff\\xff\", 16 };\n\
@@ -758,7 +758,7 @@ fn ffi_callback() {
         "$ @mod M\n\
          $ call_twice : (@Int -> @Int -> @Int) -> @Int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
          $ k : @Int = 10\n\
-         $ test : @Int = call_twice (\\a b = a + b + k)",
+         $ test : @Int = call_twice (\\a b => a + b + k)",
         lib = thx_path(&so_path)
     );
     assert_eq!(interp_show(&src, "test"), "1317");
@@ -909,7 +909,7 @@ fn open_range_stream() {
     // `Stream`, `count_from`, and `range` come from CORE (`[lo ...]` /
     // `[lo ... hi]` lower to them), so the test uses those and defines only `len`.
     let src = "$ @mod M\n\
-               $ len : @Vec @Int -> @Int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
+               $ len : @Vec @Int -> @Int = \\xs => xs |> \\ | [] => 0 | h :: t => 1 + len t\n\
                $ s : Stream @Int = [3 ...]\n\
                $ test : @Int = s.head + s.tail.head + len [1 ... 4]\n";
     assert_matches(src, "test");
@@ -919,7 +919,7 @@ fn open_range_stream() {
 fn open_range_pattern() {
     // `lo ...` is an open range pattern, matching when `lo <= x` (one test).
     let src = "$ @mod M\n\
-               $ sign : @Int -> @Str = \\n = is n | 0 ... => \"nonneg\" | _ => \"neg\"\n\
+               $ sign : @Int -> @Str = \\n => n |> \\ | 0 ... => \"nonneg\" | _ => \"neg\"\n\
                $ test : @Str = sign 3\n";
     assert_matches(src, "test");
 }
@@ -927,7 +927,7 @@ fn open_range_pattern() {
 #[test]
 fn recursion_fib() {
     let src = "$ @mod T\n\
-               $ fib : @Int -> @Int = \\n =\n\
+               $ fib : @Int -> @Int = \\n =>\n\
                \tif n == 0 => 0 else if n == 1 => 1 else (fib (n-1)) + (fib (n-2))\n\
                $ test : @Int = fib 15\n";
     assert_matches(src, "test");
@@ -936,9 +936,9 @@ fn recursion_fib() {
 #[test]
 fn higher_order_and_let() {
     let src = "$ @mod T\n\
-               $ apply2 : (@Int -> @Int) -> @Int -> @Int = \\f x = f (f x)\n\
+               $ apply2 : (@Int -> @Int) -> @Int -> @Int = \\f x => f (f x)\n\
                $ test : @Int =\n\
-               \tlet inc = \\x = x + 1\n\
+               \tlet inc = \\x => x + 1\n\
                \t in apply2 inc 40\n";
     assert_matches(src, "test");
 }
@@ -958,8 +958,8 @@ fn structs_and_fields() {
 fn variants_and_when() {
     let src = "$ @mod T\n\
                $ Shape : @union = Dot: {}, Seg: { @Int }\n\
-               $ size : Shape -> @Int = \\s =\n\
-               \tis s | Shape.Dot => 0 | Shape.Seg.{n} => n\n\
+               $ size : Shape -> @Int = \\s =>\n\
+               \ts |> \\ | Shape.Dot => 0 | Shape.Seg.{n} => n\n\
                $ test : @Int = size (Shape.Seg.{7}) - size Shape.Dot\n";
     assert_matches(src, "test");
 }
@@ -968,9 +968,9 @@ fn variants_and_when() {
 fn lists_and_length() {
     let src = "$ @mod T\n\
                $ len : @Vec t -> @Int =\n\
-               \tlet helper : @Vec t -> @Int -> @Int = \\l n =\n\
-               \t\tis l | [] => n | _ :: xs => helper xs (n + 1)\n\
-               \t in \\l = helper l 0\n\
+               \tlet helper : @Vec t -> @Int -> @Int = \\l n =>\n\
+               \t\tl |> \\ | [] => n | _ :: xs => helper xs (n + 1)\n\
+               \t in \\l => helper l 0\n\
                $ xs : @Vec @Int = [1, 2, 3]\n\
                $ test : @Int = len xs\n";
     assert_matches(src, "test");
@@ -1035,10 +1035,10 @@ fn effects_multi_shot_through_a_stored_continuation() {
                $ Co : @effect = step : @Int -> {},\n\
                $ Task : @union = Fin: {}, Susp: { @Int, {} -> Task },\n\
                $ spawn : ({} -> <Co> {}) -> Task =\n\
-               \t\\t = do t {} ctl k | step v => Task.Susp.{ v, k } | _ => Task.Fin.{}\n\
+               \t\\t => do t {} ctl k | step v => Task.Susp.{ v, k } | _ => Task.Fin.{}\n\
                $ drive : Task -> @Int =\n\
-               \t\\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) | _ => 0\n\
-               $ test : @Int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {}))\n\
+               \t\\t => t |> \\ | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) | _ => 0\n\
+               $ test : @Int = spawn (\\_ => let _ = step 1 in (let _ = step 2 in {})) |> \\\n\
                \t| Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) | _ => 0\n";
     assert_matches(src, "test");
 }
@@ -1075,7 +1075,7 @@ fn sized_extern_marshalling() {
     // argument's exact C ABI type in its wrapper (not a word-size fallback).
     let src = "$ @mod T\n\
                $ f : {a: @Int8, b: @Int32, c: @Nat16, d: @Float32, e: @Ptr} -> @Float64 = @extern \"C\" \"f\" \"libx\"\n\
-               $ test : {a: @Int8, b: @Int32, c: @Nat16, d: @Float32, e: @Ptr} -> @Float64 = \\r = f r\n";
+               $ test : {a: @Int8, b: @Int32, c: @Nat16, d: @Float32, e: @Ptr} -> @Float64 = \\r => f r\n";
     let lowered = lower(src);
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
     // The wrapper's symbol declaration carries the exact C ABI types, in order.
@@ -1109,13 +1109,13 @@ fn literal_construction_hooks_match_interpreter() {
     // instance's method), while a default-typed literal stays folded.
     let src = "$ @mod M\n\
                $ Wrap : @struct = n: @Int\n\
-               $ il : @IIntLit Wrap = .{ .of_int = \\x = Wrap.{ .n = x } }\n\
+               $ il : @IIntLit Wrap = .{ .of_int = \\x => Wrap.{ .n = x } }\n\
                $ Bag : @union a = Items: {@Vec a}\n\
-               $ ql : @ISeqLit a (Bag a) = .{ .of_vec = \\v = Bag.Items.{ v } }\n\
+               $ ql : @ISeqLit a (Bag a) = .{ .of_vec = \\v => Bag.Items.{ v } }\n\
                $ w : Wrap = 40\n\
                $ bag : Bag @Int = [1, 2]\n\
                $ plain : @Int = 5\n\
-               $ r : @Int = w.n + plain + (is bag | Bag.Items.{v} => @vec_len v | _ => 0)"; // 40+5+2
+               $ r : @Int = w.n + plain + (bag |> \\ | Bag.Items.{v} => @vec_len v | _ => 0)"; // 40+5+2
     assert_matches(src, "r");
 }
 
@@ -1150,12 +1150,12 @@ fn bracket_hooks_match_interpreter() {
     // and `@Array` literals/patterns must lower the same on the C backend.
     let src = "$ @mod M\n\
                $ Span : @struct = lo: @Int, hi: @Int\n\
-               $ rg : @IRange @Int Span = .{ .range = \\lo hi = Span.{ lo, hi } }\n\
+               $ rg : @IRange @Int Span = .{ .range = \\lo hi => Span.{ lo, hi } }\n\
                $ s : Span = [2 ... 6]\n\
                $ v : @Vec @Int = [1 ... 4]\n\
                $ w : @Vec @Int = 9 :: v.[1 ... 2]\n\
                $ b : @Array = [7, 8, 9]\n\
-               $ head : @Array -> @Int = \\a = is a | [x] ++ r => x + @array_len r | _ => 0\n\
+               $ head : @Array -> @Int = \\a => a |> \\ | [x] ++ r => x + @array_len r | _ => 0\n\
                $ r : @Int = (s.hi - s.lo) + @vec_len v + @vec_get w 0 + head b";
     // 4 + 4 + 9 + (7+2)
     assert_matches(src, "r");
@@ -1168,13 +1168,13 @@ fn pattern_hooks_match_interpreter() {
     let src = "$ @mod M\n\
                $ Stack : @struct a = items: @Vec a\n\
                $ sv : @ISeqView (Stack a) a = .{\n\
-               \t.view = \\s = is s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } | _ => SeqView.Empty,\n\
+               \t.view = \\s => s.items |> \\ | h :: t => SeqView.More.{ h, Stack.{ .items = t } } | _ => SeqView.Empty,\n\
                }\n\
                $ MyStr : @struct = bytes: @Str\n\
-               $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
-               $ eq_mystr : IEq MyStr = .{ .eq = \\a b = a.bytes == b.bytes }\n\
-               $ tag : MyStr -> @Int = \\s = is s | \"hi\" => 1 | _ => 0\n\
-               $ len2 : Stack @Int -> @Int = \\s = is s | [x, y] => x + y | h :: t => h | _ => 0\n\
+               $ sl : @IStrLit MyStr = .{ .of_str = \\s => MyStr.{ .bytes = s } }\n\
+               $ eq_mystr : IEq MyStr = .{ .eq = \\a b => a.bytes == b.bytes }\n\
+               $ tag : MyStr -> @Int = \\s => s |> \\ | \"hi\" => 1 | _ => 0\n\
+               $ len2 : Stack @Int -> @Int = \\s => s |> \\ | [x, y] => x + y | h :: t => h | _ => 0\n\
                $ r : @Int = tag \"hi\" * 100 + len2 (Stack.{ .items = [4, 5] })"; // 100 + 9
     assert_matches(src, "r");
 }
@@ -1187,8 +1187,8 @@ fn recursive_union_slot_is_lazy() {
     // interpreter; without it this diverges.
     let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
-               $ from : @Int -> L @Int = \\n = L.C.{ n, from (n + 1) }\n\
-               $ hd : L @Int -> @Int = \\l = is l | L.C.{h, t} => h | _ => 0\n\
+               $ from : @Int -> L @Int = \\n => L.C.{ n, from (n + 1) }\n\
+               $ hd : L @Int -> @Int = \\l => l |> \\ | L.C.{h, t} => h | _ => 0\n\
                $ test : @Int = hd (from 7)";
     assert_matches(src, "test");
 }
@@ -1199,8 +1199,8 @@ fn a_lazy_slot_is_forced_once() {
     // finds the spine already built.
     let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
-               $ mk : @Int -> L @Int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
-               $ sum : L @Int -> @Int -> @Int = \\l acc = is l | L.C.{h, t} => sum t (acc + h) | _ => acc\n\
+               $ mk : @Int -> L @Int = \\n => if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
+               $ sum : L @Int -> @Int -> @Int = \\l acc => l |> \\ | L.C.{h, t} => sum t (acc + h) | _ => acc\n\
                $ xs : L @Int = mk 5\n\
                $ test : @Int = sum xs 0 + sum xs 0";
     assert_matches(src, "test");
@@ -1221,9 +1221,9 @@ fn for_over_a_lazy_list_stops_at_break() {
     // fine as long as the body breaks: only the cells reached are ever built.
     let src = "$ @mod M\n\
                $ Acc : @effect = add : @Int -> {},\n\
-               $ from : @Int -> List @Int = \\n = List.Cons.{ n, from (n + 1) }\n\
+               $ from : @Int -> List @Int = \\n => List.Cons.{ n, from (n + 1) }\n\
                $ test : @Int =\n\
-               \tdo for (from 1) (\\x = if x > 5 => break {} else Acc.add x)\n\
+               \tdo for (from 1) (\\x => if x > 5 => break {} else Acc.add x)\n\
                \tctl k | Acc.add n => n + k {}\n\
                \t      | r => 0\n";
     assert_matches(src, "test");
@@ -1239,7 +1239,7 @@ fn sized_integers_wrap_into_their_range() {
                $ narrow : @Int = let m : @Int8 = @cast 250 in let r : @Int = @cast m in r\n\
                $ unarrow : @Int = let m : @Nat16 = @cast (0 - 1) in let r : @Int = @cast m in r\n\
                $ sdiv : @Int = let a : @Int8 = -128 in let b : @Int8 = -1 in let q : @Int8 = a / b in let r : @Int = @cast q in r\n\
-               $ ranged : @Int = let m : @Int8 = @cast 250 in is m | -128 ... -1 => 1 | 0 ... => 2\n";
+               $ ranged : @Int = let m : @Int8 = @cast 250 in m |> \\ | -128 ... -1 => 1 | 0 ... => 2\n";
     for (entry, want) in [
         ("add8", "44"),
         ("sadd8", "-56"),
@@ -1258,32 +1258,32 @@ fn sized_integers_wrap_into_their_range() {
 /// Tasks over global data (immortal), over local data (marked shared), nested
 /// tasks, a structured result, and a lazy list several tasks force at once.
 const PAR_SRC: &str = "$ @mod M\n\
-    $ fib : @Int -> @Int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
-    $ build : @Int -> @Int -> @Vec @Int -> @Vec @Int = \\i n acc =\n\
+    $ fib : @Int -> @Int = \\n => if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+    $ build : @Int -> @Int -> @Vec @Int -> @Vec @Int = \\i n acc =>\n\
     \tif i >= n => acc else build (i + 1) n (@vec_push acc (fib (i % 15)))\n\
     $ table : @Vec @Int = build 0 200 (@vec_new {})\n\
-    $ sum_from : @Vec @Int -> @Int -> @Int -> @Int -> @Int = \\v i hi acc =\n\
+    $ sum_from : @Vec @Int -> @Int -> @Int -> @Int -> @Int = \\v i hi acc =>\n\
     \tif i >= hi => acc else sum_from v (i + 1) hi (acc + @vec_get v i)\n\
-    $ chunk : @Int -> @Future @Int = \\k = @par (\\u = sum_from table (k * 20) (k * 20 + 20) 0)\n\
-    $ spawn_all : @Int -> @Vec (@Future @Int) -> @Vec (@Future @Int) = \\k acc =\n\
+    $ chunk : @Int -> @Future @Int = \\k => @par (\\u => sum_from table (k * 20) (k * 20 + 20) 0)\n\
+    $ spawn_all : @Int -> @Vec (@Future @Int) -> @Vec (@Future @Int) = \\k acc =>\n\
     \tif k >= 10 => acc else spawn_all (k + 1) (@vec_push acc (chunk k))\n\
-    $ join : @Vec (@Future @Int) -> @Int -> @Int -> @Int = \\fs i acc =\n\
+    $ join : @Vec (@Future @Int) -> @Int -> @Int -> @Int = \\fs i acc =>\n\
     \tif i >= @vec_len fs => acc else join fs (i + 1) (acc + @await (@vec_get fs i))\n\
-    $ nested : @Int = @await (@par (\\u = @await (@par (\\w = fib 18)) + @await (@par (\\w = fib 17))))\n\
-    $ local_par : @Int -> @Int = \\n =\n\
+    $ nested : @Int = @await (@par (\\u => @await (@par (\\w => fib 18)) + @await (@par (\\w => fib 17))))\n\
+    $ local_par : @Int -> @Int = \\n =>\n\
     \tlet v = build 0 n (@vec_new {}) in\n\
-    \tlet a = @par (\\u = sum_from v 0 (n / 2) 0) in\n\
-    \tlet b = @par (\\u = sum_from v (n / 2) n 0) in\n\
+    \tlet a = @par (\\u => sum_from v 0 (n / 2) 0) in\n\
+    \tlet b = @par (\\u => sum_from v (n / 2) n 0) in\n\
     \t@await a + @await b\n\
     $ L : @union a = N: {}, C: {a, L a},\n\
-    $ mk : @Int -> L @Int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
-    $ lsum : L @Int -> @Int -> @Int = \\l acc = is l | L.C.{h, t} => lsum t (acc + h) | _ => acc\n\
-    $ shared_list : @Int -> @Int = \\n =\n\
+    $ mk : @Int -> L @Int = \\n => if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
+    $ lsum : L @Int -> @Int -> @Int = \\l acc => l |> \\ | L.C.{h, t} => lsum t (acc + h) | _ => acc\n\
+    $ shared_list : @Int -> @Int = \\n =>\n\
     \tlet l = mk n in\n\
-    \tlet a = @par (\\u = lsum l 0) in\n\
-    \tlet b = @par (\\u = lsum l 1) in\n\
+    \tlet a = @par (\\u => lsum l 0) in\n\
+    \tlet b = @par (\\u => lsum l 1) in\n\
     \t@await a + @await b + lsum l 0\n\
-    $ pair : {@Int, @Str} = @await (@par (\\u = {fib 10, \"ten\"}))\n\
+    $ pair : {@Int, @Str} = @await (@par (\\u => {fib 10, \"ten\"}))\n\
     $ test : {@Int, @Int, @Int, @Int, {@Int, @Str}} =\n\
     \t{join (spawn_all 0 (@vec_new {})) 0 0, nested, local_par 300, shared_list 400, pair}\n";
 
@@ -1364,15 +1364,15 @@ fn tsan_clean(src: &str) {
 const PAR_RESUME_SRC: &str = "$ @mod M\n\
     $ Yield : @effect = yield : @Int -> {},\n\
     $ Gen : @union = Done: {}, More: {@Int, {} -> Gen},\n\
-    $ gen : ({} -> <Yield> {}) -> Gen = \\t =\n\
+    $ gen : ({} -> <Yield> {}) -> Gen = \\t =>\n\
     \tdo t {} ctl k | Yield.yield v => Gen.More.{ v, k } | _ => Gen.Done.{}\n\
-    $ count : @Int -> @Int -> <Yield> {} = \\i n = if i > n => {} else (Yield.yield i; count (i + 1) n)\n\
-    $ sum : Gen -> @Int -> @Int = \\g acc = is g | Gen.More.{ v, k } => sum (k {}) (acc + v) | _ => acc\n\
-    $ twice : Gen -> @Int = \\g = is g | Gen.More.{ v, k } => sum (k {}) 0 + sum (k {}) 0 | _ => 0\n\
+    $ count : @Int -> @Int -> <Yield> {} = \\i n => if i > n => {} else (Yield.yield i; count (i + 1) n)\n\
+    $ sum : Gen -> @Int -> @Int = \\g acc => g |> \\ | Gen.More.{ v, k } => sum (k {}) (acc + v) | _ => acc\n\
+    $ twice : Gen -> @Int = \\g => g |> \\ | Gen.More.{ v, k } => sum (k {}) 0 + sum (k {}) 0 | _ => 0\n\
     $ test : {@Int, @Int, @Int} =\n\
-    \tlet a = @par (\\u = gen (\\w = count 1 100)) in\n\
-    \tlet b = @par (\\u = gen (\\w = count 1 10)) in\n\
-    \tlet c = @par (\\u = @await (@par (\\w = gen (\\x = count 5 9)))) in\n\
+    \tlet a = @par (\\u => gen (\\w => count 1 100)) in\n\
+    \tlet b = @par (\\u => gen (\\w => count 1 10)) in\n\
+    \tlet c = @par (\\u => @await (@par (\\w => gen (\\x => count 5 9)))) in\n\
     \t{sum (@await a) 0, twice (@await b), sum (@await c) 0}\n";
 
 #[test]
@@ -1395,9 +1395,9 @@ fn an_unawaited_task_is_dropped_cleanly() {
     // The future dies unawaited: whichever thread finishes with the task last
     // frees it, and the leak check still balances.
     let src = "$ @mod M\n\
-               $ fib : @Int -> @Int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
-               $ spin : @Int -> @Int -> @Int = \\k acc =\n\
-               \tif k == 0 => acc else let f = @par (\\u = fib 15) in spin (k - 1) (acc + 1)\n\
+               $ fib : @Int -> @Int = \\n => if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ spin : @Int -> @Int -> @Int = \\k acc =>\n\
+               \tif k == 0 => acc else let f = @par (\\u => fib 15) in spin (k - 1) (acc + 1)\n\
                $ test : @Int = spin 50 0";
     assert_matches(src, "test");
 }
@@ -1408,14 +1408,14 @@ fn spawned_tasks_perform_io_on_worker_threads() {
     // lines come out in any order, so they are compared as a set.
     let src = "$ @mod MAIN\n\
                $ puts : @Str -> @Int32 = @extern \"C\" \"puts\" \"libc\"\n\
-               $ fib : @Int -> @Int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
-               $ work : @Int -> {} -> <@IO> @Int = \\k u =\n\
+               $ fib : @Int -> @Int = \\n => if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ work : @Int -> {} -> <@IO> @Int = \\k u =>\n\
                \tlet r = fib (15 + k % 3) in puts (\"task \" ++ to_string k); r\n\
-               $ spawn_n : @Int -> @Vec (@Future @Int) -> <@IO> @Vec (@Future @Int) = \\k acc =\n\
+               $ spawn_n : @Int -> @Vec (@Future @Int) -> <@IO> @Vec (@Future @Int) = \\k acc =>\n\
                \tif k == 0 => acc else spawn_n (k - 1) (@vec_push acc (@spawn (work k)))\n\
-               $ join : @Vec (@Future @Int) -> @Int -> @Int -> @Int = \\fs i acc =\n\
+               $ join : @Vec (@Future @Int) -> @Int -> @Int -> @Int = \\fs i acc =>\n\
                \tif i >= @vec_len fs => acc else join fs (i + 1) (acc + @await (@vec_get fs i))\n\
-               $ @main : @Vec @Str -> <@IO> @Int = \\args = join (spawn_n 8 (@vec_new {})) 0 0 % 251\n";
+               $ @main : @Vec @Str -> <@IO> @Int = \\args => join (spawn_n 8 (@vec_new {})) 0 0 % 251\n";
     let (exit, stdout) = c_run_entry(src, &[]);
     let fib = |n: i64| -> i64 {
         let (mut a, mut b) = (0i64, 1i64);
@@ -1442,14 +1442,14 @@ fn constructor_reuse_never_overwrites_a_shared_cell() {
     let src = "$ @mod M\n\
                $ Lst : @union = Nl: {}, Cn: { @Int, Lst },\n\
                $ St : @union = St: { @Int, @Int },\n\
-               $ build : @Int -> Lst -> Lst = \\n acc = if n == 0 => acc else build (n - 1) (Lst.Cn.{ n, acc })\n\
-               $ inc : Lst -> Lst = \\xs = is xs | Lst.Nl => Lst.Nl | Lst.Cn.{ h, t } => Lst.Cn.{ h + 1, inc t }\n\
-               $ total : Lst -> @Int -> @Int = \\xs acc = is xs | Lst.Nl => acc | Lst.Cn.{ h, t } => total t (acc + h)\n\
-               $ step : St -> St = \\s = is s | St.St.{ a, b } => St.St.{ a + 1, b + a }\n\
-               $ loop : @Int -> St -> St = \\n s = if n == 0 => s else loop (n - 1) (step s)\n\
+               $ build : @Int -> Lst -> Lst = \\n acc => if n == 0 => acc else build (n - 1) (Lst.Cn.{ n, acc })\n\
+               $ inc : Lst -> Lst = \\xs => xs |> \\ | Lst.Nl => Lst.Nl | Lst.Cn.{ h, t } => Lst.Cn.{ h + 1, inc t }\n\
+               $ total : Lst -> @Int -> @Int = \\xs acc => xs |> \\ | Lst.Nl => acc | Lst.Cn.{ h, t } => total t (acc + h)\n\
+               $ step : St -> St = \\s => s |> \\ | St.St.{ a, b } => St.St.{ a + 1, b + a }\n\
+               $ loop : @Int -> St -> St = \\n s => if n == 0 => s else loop (n - 1) (step s)\n\
                $ shared : @Int = let xs = build 100 Lst.Nl in total (inc xs) 0 * 100000 + total xs 0\n\
                $ unique : @Int = total (inc (inc (build 100 Lst.Nl))) 0\n\
-               $ strict : @Int = is loop 1000 (St.St.{ 0, 0 }) | St.St.{ a, b } => a * 1000000 + b\n";
+               $ strict : @Int = loop 1000 (St.St.{ 0, 0 }) |> \\ | St.St.{ a, b } => a * 1000000 + b\n";
     for entry in ["shared", "unique", "strict"] {
         assert_matches(src, entry);
     }
@@ -1464,8 +1464,8 @@ fn a_shallow_arm_with_wildcard_fields_binds_the_right_slots() {
     // case; a wildcard still occupies its field's binder slot.
     let src = "$ @mod M\n\
                $ T : @union = L: {}, N: { @Int, @Int, @Int, @Int },\n\
-               $ pick : T -> @Int = \\t = is t | T.N.{ _, b, _, d } => b * 10 + d | T.L => 0\n\
-               $ lit : @Int -> @Int = \\n = is n | 1 => 10 | 2 => 20 | m => m\n\
+               $ pick : T -> @Int = \\t => t |> \\ | T.N.{ _, b, _, d } => b * 10 + d | T.L => 0\n\
+               $ lit : @Int -> @Int = \\n => n |> \\ | 1 => 10 | 2 => 20 | m => m\n\
                $ test : @Int = pick (T.N.{ 1, 2, 3, 4 }) * 1000 + lit 2 + lit 7 + pick T.L\n";
     assert_matches(src, "test");
     assert_eq!(interp_show(src, "test"), "24027");
@@ -1479,14 +1479,14 @@ fn a_shallow_arm_with_wildcard_fields_binds_the_right_slots() {
 fn direct_functions_match_interpreter() {
     let src = "$ @mod M\n\
                $ Acc : @effect = add : @Int -> {},\n\
-               $ fib : @Int -> @Int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
-               $ go : @Int -> @Int -> @Int = \\i acc = if i == 0 => acc else go (i - 1) (acc + i % 7)\n\
-               $ even : @Int -> @Bool = \\n = if n == 0 => @true else odd (n - 1)\n\
-               $ odd : @Int -> @Bool = \\n = if n == 0 => @false else even (n - 1)\n\
-               $ sumto : @Int -> @Int = \\n = if n == 0 => 0 else n + sumto (n - 1)\n\
-               $ len : List @Int -> @Int -> @Int = \\l n = is l | [] => n | x :: xs => len xs (n + x / 2)\n\
-               $ upto : @Int -> List @Int = \\n = if n == 0 => [] else n :: upto (n - 1)\n\
-               $ tell : @Int -> <Acc> @Int = \\n = if n == 0 => 0 else Acc.add n; tell (n - 1)\n\
+               $ fib : @Int -> @Int = \\n => if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ go : @Int -> @Int -> @Int = \\i acc => if i == 0 => acc else go (i - 1) (acc + i % 7)\n\
+               $ even : @Int -> @Bool = \\n => if n == 0 => @true else odd (n - 1)\n\
+               $ odd : @Int -> @Bool = \\n => if n == 0 => @false else even (n - 1)\n\
+               $ sumto : @Int -> @Int = \\n => if n == 0 => 0 else n + sumto (n - 1)\n\
+               $ len : List @Int -> @Int -> @Int = \\l n => l |> \\ | [] => n | x :: xs => len xs (n + x / 2)\n\
+               $ upto : @Int -> List @Int = \\n => if n == 0 => [] else n :: upto (n - 1)\n\
+               $ tell : @Int -> <Acc> @Int = \\n => if n == 0 => 0 else Acc.add n; tell (n - 1)\n\
                $ test : @Int =\n\
                \tlet e = if even 50001 => 1 else 0 in\n\
                \tlet t = do tell 100 ctl k | Acc.add n => n + k {} | r => r in\n\
@@ -1501,7 +1501,7 @@ fn direct_functions_match_interpreter() {
 #[test]
 fn unboxed_division_by_zero_faults() {
     let src = "$ @mod M\n\
-               $ div : @Int -> @Int -> @Int = \\a b = a / b\n\
+               $ div : @Int -> @Int -> @Int = \\a b => a / b\n\
                $ test : @Int = div 7 (@isub 3 3)\n";
     let lowered = lower(src);
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());

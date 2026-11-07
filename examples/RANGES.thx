@@ -3,23 +3,23 @@ $ with VEC
 $ with LA
 
 # \file ranges.thx
-# \info Inclusive range patterns in `is` arms: `lo ... hi` matches when
+# \info Inclusive range patterns in match arms: `lo ... hi` matches when
 #       `lo <= x <= hi`. Both bounds are numeric literals and both ends are
 #       inclusive (Jai-style: there is only the inclusive form). A range is
 #       refutable and binds nothing, so a match over ranges needs a catch-all arm. The
 #       scrutinee variable stays in scope in the arm if you need the value.
 #       The EXPRESSION form `[lo ... hi]` (below) is the same `...`, materialized.
 
-$ grade : @Int -> @Str = \n =
-    is n
-    | 90 ... 100 => "A"
-    | 80 ... 89 => "B"
-    | 70 ... 79 => "C"
-    | 60 ... 69 => "D"
-    | _ => "F"
+$ grade : @Int -> @Str = \n =>
+    n |> \
+        | 90 ... 100 => "A"
+        | 80 ... 89  => "B"
+        | 70 ... 79  => "C"
+        | 60 ... 69  => "D"
+        | _          => "F"
 
 # An OPEN range pattern `lo ...` omits the upper bound: it matches when `lo <= x`.
-$ sign : @Int -> @Str = \n = is n | 0 ... => "nonneg" | _ => "neg"
+$ sign : @Int -> @Str = \n => n |> \ | 0 ... => "nonneg" | _ => "neg"
 $ ck_open_pat : @Int = if sign 3 == "nonneg" => 0 else 1024
 $ ck_open_neg : @Int = if sign (0 - 3) == "neg" => 0 else 2048
 
@@ -31,11 +31,11 @@ $ ck_d : @Int = if grade 60 == "D" => 0 else 8
 $ ck_f : @Int = if grade 42 == "F" => 0 else 16
 
 # Ranges work on Real too; both bounds must share the scrutinee's type.
-$ band : Real -> @Int = \x =
-    is x
-    | 0.0 ... 0.5 => 1
-    | 0.5 ... 1.0 => 2
-    | _ => 0
+$ band : Real -> @Int = \x =>
+    x |> \
+        | 0.0 ... 0.5 => 1
+        | 0.5 ... 1.0 => 2
+        | _           => 0
 $ ck_r : @Int = if band 0.25 == 1 => 0 else 32
 
 # EXPRESSION form: `[lo ... hi]` is a TYPE-DIRECTED inclusive-range literal (the
@@ -62,15 +62,16 @@ $ ck_stream : @Int = if evens.head + evens.tail.head == 7 => 0 else 4096
 # of costs only the part you walk: this one stops after five of 10^14 cells.
 $ Seen : @effect = saw : @Int -> {},
 $ walked : @Int =
-    do for ([1 ... 100000000000000] : List @Int) (\i = if i > 5 => break {} else Seen.saw i)
+    do for ([1 ... 100000000000000] : List @Int) (\i => if i > 5 => break {} else Seen.saw i)
     ctl k | Seen.saw n => n + k {} | r => 0
 $ ck_lazy_range : @Int = if walked == 15 => 0 else 512
 
 # The open range has the same two overloads; `Stream` is what the bare form takes.
 $ ck_lazy_open : @Int =
-    if (is ([7 ...] : List @Int) | List.Cons.{ h, t } => h | _ => 0) == 7 => 0 else 1024
+    if (([7 ...] : List @Int) |> \ | List.Cons.{ h, t } => h | _ => 0) == 7 => 0 else 1024
 
 $ test : @Int =
-    ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty + ck_tens + ck_open_pat + ck_open_neg + ck_stream + ck_lazy_range + ck_lazy_open
+    ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty + ck_tens + ck_open_pat
+        + ck_open_neg + ck_stream + ck_lazy_range + ck_lazy_open
 
 $ @e <| assert (test == 0) "RANGES: a check failed"

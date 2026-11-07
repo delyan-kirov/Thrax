@@ -9,11 +9,11 @@ $ @mod META_TYPE
 #       source can specialize a binding's type by a build-time choice.
 
 # A compile-time generator: choose a type by name.
-$ number_type : @Str -> @Code = \which =
+$ number_type : @Str -> @Code = \which =>
     if which == "wide" => @parse_str "@Int64" else @parse_str "@Int"
 
 # The element type of a vector, computed at build time.
-$ elem_type : {} -> @Code = \_ = @parse_str "@Int"
+$ elem_type : {} -> @Code = \_ => @parse_str "@Int"
 
 # The annotation is filled in by running the generator: `n : @Int64`.
 $ n : @e (number_type "wide") = 1000 + 24

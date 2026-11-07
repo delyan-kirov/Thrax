@@ -131,7 +131,7 @@ not even for a constant. The fix inserts the type that was deduced for it:
 ## TYPE_CYCLE
 
 A type refers to itself in a way that has no meaning: an infinite type
-(`\x = x x`), or an alias that expands to itself.
+(`\x => x x`), or an alias that expands to itself.
 
 An alias only renames a type; to make a recursive type, declare a `@struct` or
 `@union`, whose name stops the expansion.
@@ -205,8 +205,8 @@ A match does not cover every value its scrutinee can have; the message names a
 value no arm matches.
 
 Add an arm for it, or a catch-all `| _ => ...`. A refutable pattern in a `let`
-or a lambda parameter is reported here too: bind a variable and match it with
-`is`, which can handle every case.
+or a lambda parameter is reported here too: match it instead, which can handle
+every case: `e |> \ | pat => ... | _ => ...`.
 
 ## UNREACHABLE_ARM
 

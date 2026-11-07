@@ -235,7 +235,7 @@ The extensible route is an ordinary effect whose handler discharges into
 ```thrax
 $ Gpu : @effect = draw : Mesh -> {}, present : {} -> {}
 
-$ run_gpu : ({} -> <Gpu | e> a) -> <@IO | e> a = \body =
+$ run_gpu : ({} -> <Gpu | e> a) -> <@IO | e> a = \body =>
 	do body {}
 	ctl k
 	| Gpu.draw m => (raylib_draw m; k {})

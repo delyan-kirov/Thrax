@@ -8,18 +8,19 @@
  * lexer/codegen; bison comes from the dev shell (flake.nix).
  *
  * TOKEN CONVENTIONS. This models the token stream, so two spellings the lexer
- * folds together are split, matching how EX.cpp branches on a token's first
+ * folds together are split, matching how parser.rs branches on a token's first
  * character:
  *   - Word  -> UIDENT (uppercase-initial) / LIDENT (lowercase) / UNDERSCORE (_)
  *   - At (@name) and Op (a maximal-munch run) -> one terminal per significant
  *     spelling (AT_STRUCT, PLUS, CONS, PIPE_BACK, ...).
- * Operator precedence/associativity is transcribed from infix_db in
- * compiler/EXxDATA.hpp; the %left/%right/%precedence block below is that spec.
+ * Operator precedence/associativity is transcribed from the OpRole table in
+ * crates/frontend/src/lexer/data.rs; the %left/%right/%precedence block below
+ * is that spec.
  *
- * CONFLICTS. `%expect 10`: bison's summary count, all resolving by the default
- * (shift), all matching EX.cpp. Not LALR(1) but unambiguous under maximal munch
- * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates seventeen
- * (state, token) warnings over the same classes: 12 on DOT, 4 on BAR, 1 on
+ * CONFLICTS. `%expect 9`: bison's summary count, all resolving by the default
+ * (shift), all matching parser.rs. Not LALR(1) but unambiguous under maximal munch
+ * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates sixteen
+ * (state, token) warnings over the same classes: 12 on DOT, 3 on BAR, 1 on
  * KW_CTL. The summary number is what `%expect` compares against.)
  *   - `lo ...`         open range shifts an upper bound when one follows, else
  *                      closes open (a pattern `num_lit ELLIPSIS`, an expression
@@ -30,28 +31,27 @@
  *                     three conflicts
  *   - `A.B.C`         qualified-name chains shift greedily
  *   - `do ... ctl`    `ctl` attaches to the nearest `do`
- *   - `is x` alone    a match may have no arms (an uninhabited scrutinee); a
- *                     `|` after it starts its arms
- *   - nested `is`     arms belong to the innermost `is` or handler; the real
- *                     parser also ends an `is` at a `| op x` operation clause,
- *                     which this grammar does not model
+ *   - nested arms     arms belong to the innermost multi-arm `\ |` or handler
+ *                     (parenthesize to nest); the real parser also ends the
+ *                     arms at a `| op x` operation clause, which this grammar
+ *                     does not model
  * The one brace overlap tuples introduced -- `Tag: {A, B}` is the variant's
  * positional PAYLOAD fields, never a bare tuple type is resolved
  * structurally (payload_decl's bare-type alternative is non-brace-initial,
- * type_nb), matching EX.cpp's context rule; see payload_decl.
+ * type_nb), matching parser.rs's context rule; see payload_decl.
  *
- * DIVERGENCES from EX.cpp (this grammar is intentionally stricter):
- *   - SHOULD WARN (future work): EX.cpp lets a control form (let/if/when/\)
- *     be a bare operand/argument (operand_starters), body extending maximally
+ * DIVERGENCES from parser.rs (this grammar is intentionally stricter):
+ *   - SHOULD WARN (future work): parser.rs lets a control form (let/if/\/with)
+ *     be a bare operand/argument (starts_operand), body extending maximally
  *     right, so `f let x = 1 in x + 100` parses as `f (let x = 1 in (x+100))`
  *     -- the `+ 100` is swallowed. Legal, but a footgun that should emit a
  *     compiler warning. Here a control form in operand position needs parens.
- *   - LOWER PRIORITY: `defer` cleanup is `op_expr` here (EX.cpp allows a full
+ *   - LOWER PRIORITY: `defer` cleanup is `op_expr` here (parser.rs allows a full
  *     expr up to `,`/`in`); semantic well-formedness (field-case, mixed
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
-%expect 10
+%expect 9
 
 %token INT REAL IMAG STR   /* IMAG: an `i`-suffixed number, `3i` / `1.2i` / `2.5e-2i` */
 %token UIDENT       /* Word, uppercase-initial */
@@ -60,7 +60,8 @@
 %token HOLE         /* ??? a typed hole: any type, always a compile error naming it */
 
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN AT_BUILD
-%token AT_E AT_RUN AT_CTX AT_IFACE
+%token AT_E AT_RUN AT_USE AT_IFACE  /* AT_USE: `@use`; `@ctx` is reserved for
+                                      the unified binder of #406 */
 %token AT_PRIVATE AT_EXTERN AT_ARRAY
 %token AT_TRUE AT_FALSE /* the two `@Bool` literals (there is no `true`/`false` alias) */
 %token AT_TYCON     /* any other @name: a built-in type (@Int64, @Str, @Vec) or
@@ -70,7 +71,7 @@
 %token LAMBDA       /* \ */
 %token EQ ARROW FATARROW DOLLAR COLON COMMA DOT  /* FATARROW is `=>` */
 
-%token KW_LET KW_IN KW_IF KW_IS KW_ELSE KW_WITH
+%token KW_LET KW_IN KW_IF KW_ELSE KW_WITH
 %token KW_DO KW_CTL KW_DEFER
 
 %right SEMI                         /* ; */
@@ -84,7 +85,7 @@
 %left  PLUS MINUS BAR3 CARET3      /* ||| ^^^ bitwise or, xor */
 %left  STAR SLASH PERCENT AMP3 SHL3 SHR3  /* &&& <<< >>> bitwise and, shifts */
 %right CARET                        /* ^ exponentiation */
-%right COMPOSE                      /* <|> composition (desugars to `\x = f (g x)`) */
+%right COMPOSE                      /* <|> composition (desugars to `\x => f (g x)`) */
 %precedence NEG                     /* unary - ! ~~~ */
 %precedence APP                     /* application */
 %left  DOT                          /* postfix . */
@@ -136,16 +137,8 @@ global
 opt_sig   : /* empty */ | COLON sig ;
 body      : expr | extern_lit ;
 
-/* A definition's signature may open with a CONTEXT parameter: `@ctx C -> rest`.
- * It is an ordinary first parameter (typed, bound by the body, printed by
- * `:type`) that call sites do not write; the compiler finds it by type. At most
- * ONE, always first, and `C`'s head must be a declared struct or union. Several
- * requirements travel as one tuple: `@ctx {IOrd t, ISub t} -> t -> t`. */
-sig
-  : type
-  | AT_CTX type_app ARROW type
-  | AT_CTX type_app ARROW eff_row type
-  ;
+/* A signature is a type; `@use` parameters are part of `type` (see use_param). */
+sig : type ;
 
 /* Every operator that may stand alone in parens: the name a `$ (op) : T = e`
  * definition binds, and the function value `(op)` refers to. The grammatical
@@ -177,7 +170,7 @@ variant_decl  : UIDENT COLON payload_decl | KW_WITH type_app_head ;
 
 /* After `Tag:` a '{' ALWAYS opens the payload's field braces (`{}` empty,
  * `{A, B}` two positional fields) never a bare tuple type; that is how
- * EX.cpp reads it. A single tuple-typed field is written nested
+ * parser.rs reads it. A single tuple-typed field is written nested
  * (`Tag: {{A, B}}`) or named (`Tag: {t: {A, B}}`), so the bare-type
  * alternative is restricted to non-brace-initial types (type_nb). */
 payload_decl
@@ -209,7 +202,23 @@ type
   : type_app
   | type_app ARROW type
   | type_app ARROW eff_row type
+  | use_param ARROW type
+  | use_param ARROW eff_row type
   ;
+
+/* A searched parameter: `@use {d: IOrd t} -> t -> t -> t`. A closed record of
+ * named fields, each an interface instance (or, with dependent types, a
+ * proposition) that call sites do not write: the compiler finds each field by
+ * its type in scope. The fields are in scope by name in the body, like a
+ * named-record parameter's, so the body's lambda starts at the first explicit
+ * parameter. Any number, anywhere in a signature; field names are unique
+ * across a signature's `@use` parameters, and there is at least one (`@use {}`
+ * is an error). Legal only on the spine of a global's signature, never
+ * inside a parameter's type, a lambda or ascription annotation, or a field
+ * type, which the parser enforces: the grammar admits `(@use {d: I t} -> t) -> t`,
+ * parser.rs rejects it. A local `let` signature does not take `@use` yet. */
+use_param  : AT_USE LBRACE use_fields opt_comma RBRACE ;
+use_fields : LIDENT COLON type | use_fields COMMA LIDENT COLON type ;
 
 type_app      : type_atom | type_app_head type_args ;
 type_app_head : UIDENT | UIDENT DOT UIDENT | AT_TYCON | AT_IFACE ;
@@ -275,8 +284,9 @@ expr
   | op_expr
   /* The two lowest, right-associative operators take a whole expression on
    * their right, so a control form may follow and run to the end:
-   * `a; let x = 1 in b`, `f <| g <| \x = ..`. `|>` is left-associative, so
-   * only its last operand may be a control form: `xs |> f |> \v = ..`. */
+   * `a; let x = 1 in b`, `f <| g <| \x => ..`. `|>` is left-associative, so
+   * only its last operand may be a control form: `xs |> f |> \v => ..`, and a
+   * match is `s |> \ | p => e | ...`. */
   | op_expr SEMI expr
   | op_expr PIPE_BACK expr
   | op_expr PIPE_FWD ctrl_expr
@@ -288,10 +298,12 @@ ctrl_expr
                                 subject struct's fields into scope unqualified
                                 for the body */
   | KW_IF if_arms opt_comma KW_ELSE expr
-  | KW_IS expr arms
-  | KW_IS expr       /* no arms: a scrutinee of an uninhabited type */
-  | LAMBDA params EQ expr
-  | LAMBDA pat_atom COLON type EQ expr
+  | LAMBDA params FATARROW expr
+  /* The multi-arm lambda: ONE argument matched against the arms, top to bottom.
+   * It replaces `is`: a match is `s |> \ | p => a | q => b`, which the checker
+   * elaborates as a match on `s`. An empty match is `x |> @absurd` (a CORE
+   * function), not a lambda with no arms. */
+  | LAMBDA arms
   | KW_DEFER defer_cleanups opt_comma KW_IN expr
   | handle
   ;
@@ -376,8 +388,11 @@ atom
   | LPAREN expr COLON type RPAREN  /* a type ascription: `([] : List @Int)` */
   | LBRACE dot_inits opt_comma RBRACE  /* a record or codata literal `{ .f = e }` */
   | LBRACE dot_inits BAR expr RBRACE   /* a record update `{ .f = e | base }` */
-  | LPAREN AT_CTX expr RPAREN    /* an explicit context, the FIRST argument of a
-                                  * call: `max_of (@ctx flip) 3 7` */
+  /* An explicit `@use` argument, matched to the signature's `@use` fields by
+   * name; omitted fields are still searched: `max_of @use {.d = flip} 3 7`.
+   * At least one field: an empty `@use {}` supplies nothing, so it is an error.
+   * It precedes the explicit argument that follows its parameter. */
+  | AT_USE LBRACE use_inits opt_comma RBRACE
   | LBRACE RBRACE
   | LBRACE elem_list opt_comma RBRACE  /* tuple literal; n >= 1 ({} is unit) */
   | seq_lit
@@ -431,6 +446,8 @@ dot_inits
   | dot_inits COMMA KW_WITH op_expr  /* `{ .tag = 1, with p }`: p's fields too */
   ;
 
+use_inits : DOT LIDENT EQ expr | use_inits COMMA DOT LIDENT EQ expr ;
+
 array_lit
   : AT_ARRAY DOT LBRACE expr opt_comma RBRACE
   | AT_ARRAY DOT LBRACE DOT LIDENT EQ expr opt_comma RBRACE
@@ -472,10 +489,10 @@ arm
   | alts KW_IF expr FATARROW expr
   ;
 
-/* A lambda's parameters, juxtaposed. An annotated parameter is parenthesized,
-   since a lowercase name in a type is a type variable and a bare annotation
-   would read the next parameter as its argument. A lone parameter may carry a
-   bare annotation (the LAMBDA rule above), as `=` ends its type. */
+/* A lambda's parameters, juxtaposed. An annotated parameter is ALWAYS
+   parenthesized, `\(x: T) => e`, even when it is the only one: the annotation
+   then ends at `)`, never at a `=>` (types become expressions with #406, and an
+   `if` arm inside a type has its own `=>`). `\x: T => e` is an error. */
 params : param | params param ;
 
 param : pat_atom | LPAREN pattern RPAREN | LPAREN pattern COLON type RPAREN ;

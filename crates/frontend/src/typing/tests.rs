@@ -134,21 +134,21 @@ fn monomorphic_arithmetic() {
 #[test]
 fn identity_is_polymorphic() {
     // The classic let-generalization test: `id` gets `forall a. a -> a`.
-    assert_eq!(type_of("$ @mod M\n$ id = \\x = x", "id"), "a -> a");
+    assert_eq!(type_of("$ @mod M\n$ id = \\x => x", "id"), "a -> a");
 }
 
 #[test]
 fn polymorphic_id_used_at_two_types() {
     // Using a generalized `id` at @Int and @Str must not conflict.
     let src = "$ @mod M\n\
-                   $ id : a -> a = \\x = x\n\
+                   $ id : a -> a = \\x => x\n\
                    $ pair : {@Int, @Str} = let a = id 1, b = id \"s\" in {a, b}";
     assert_eq!(type_of(src, "pair"), "{@Int, @Str}");
 }
 
 #[test]
 fn function_application_and_arrows() {
-    let src = "$ @mod M\n$ apply : (a -> b) -> a -> b = \\f x = f x";
+    let src = "$ @mod M\n$ apply : (a -> b) -> a -> b = \\f x => f x";
     // `(A -> B) -> A -> B`.
     assert_eq!(type_of(src, "apply"), "(a -> b) -> a -> b");
 }
@@ -156,14 +156,14 @@ fn function_application_and_arrows() {
 #[test]
 fn if_unifies_branches_and_condition() {
     assert_eq!(
-        type_of("$ @mod M\n$ f = \\n = if n == 0 => 1 else n", "f"),
+        type_of("$ @mod M\n$ f = \\n => if n == 0 => 1 else n", "f"),
         "@Int -> @Int"
     );
 }
 
 #[test]
 fn recursion_through_predeclared_globals() {
-    let src = "$ @mod M\n$ fib : @Int -> @Int = \\n = if n == 0 => 0 else fib (n - 1) + fib (n - 2)";
+    let src = "$ @mod M\n$ fib : @Int -> @Int = \\n => if n == 0 => 0 else fib (n - 1) + fib (n - 2)";
     assert_eq!(type_of(src, "fib"), "@Int -> @Int");
 }
 
@@ -176,15 +176,15 @@ fn tuples_and_lists() {
 #[test]
 fn signature_is_checked() {
     assert_eq!(
-        type_of("$ @mod M\n$ f : @Int -> @Int = \\x = x + 1", "f"),
+        type_of("$ @mod M\n$ f : @Int -> @Int = \\x => x + 1", "f"),
         "@Int -> @Int"
     );
 }
 
 #[test]
 fn occurs_check_rejects_self_application() {
-    // `\x = x x` has no finite type.
-    assert!(errors("$ @mod M\n$ bad = \\x = x x").contains("infinite type"));
+    // `\x => x x` has no finite type.
+    assert!(errors("$ @mod M\n$ bad = \\x => x x").contains("infinite type"));
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn union_constructor_and_match() {
     let src = "$ @mod M\n\
                    $ Maybe : @union t = Just: t, None: {}\n\
                    $ m : Maybe @Int = Maybe.Just.{ 7 }\n\
-                   $ get : a -> Maybe a -> a = \\d = \\o = is o | Maybe.Just.{x} => x | _ => d";
+                   $ get : a -> Maybe a -> a = \\d => \\o => o |> \\ | Maybe.Just.{x} => x | _ => d";
     assert_eq!(type_of(src, "m"), "Maybe @Int");
     assert_eq!(type_of(src, "get"), "a -> Maybe a -> a");
 }
@@ -231,8 +231,8 @@ fn union_constructor_and_match() {
 #[test]
 fn mutually_recursive_globals_via_scc() {
     let src = "$ @mod M\n\
-                   $ is_even : @Int -> @Int = \\n = if n == 0 => 1 else is_odd (n - 1)\n\
-                   $ is_odd  : @Int -> @Int = \\n = if n == 0 => 0 else is_even (n - 1)";
+                   $ is_even : @Int -> @Int = \\n => if n == 0 => 1 else is_odd (n - 1)\n\
+                   $ is_odd  : @Int -> @Int = \\n => if n == 0 => 0 else is_even (n - 1)";
     assert_eq!(type_of(src, "is_even"), "@Int -> @Int");
     assert_eq!(type_of(src, "is_odd"), "@Int -> @Int");
 }
@@ -240,7 +240,7 @@ fn mutually_recursive_globals_via_scc() {
 #[test]
 fn recursive_let_binding() {
     let src = "$ @mod M\n\
-                   $ f : @Int -> @Int = \\m = let go = \\n acc = if n == 0 => acc else go (n - 1) (acc + n) \
+                   $ f : @Int -> @Int = \\m => let go = \\n acc => if n == 0 => acc else go (n - 1) (acc + n) \
                    in go m 0";
     assert_eq!(type_of(src, "f"), "@Int -> @Int");
 }
@@ -260,8 +260,8 @@ fn arithmetic_resolves_its_interface_per_type() {
 #[test]
 fn a_name_defined_twice_is_an_error() {
     let src = "$ @mod M\n\
-                   $ f : @Int -> @Int = \\x = x + 1\n\
-                   $ f : @Str -> @Str = \\x = x ++ \"!\"";
+                   $ f : @Int -> @Int = \\x => x + 1\n\
+                   $ f : @Str -> @Str = \\x => x ++ \"!\"";
     assert!(errors(src).contains("`f` is defined twice"), "{}", errors(src));
 }
 
@@ -271,9 +271,9 @@ fn a_name_defined_twice_is_an_error() {
 fn an_interface_covers_several_types() {
     let src = "$ @mod M\n\
                    $ IBump : @struct t = bump: t -> t,\n\
-                   $ bump : @ctx IBump t -> t -> t = \\d x = d.bump x\n\
-                   $ bump_int : IBump @Int = .{ .bump = \\x = x + 1 }\n\
-                   $ bump_str : IBump @Str = .{ .bump = \\x = x ++ \"!\" }\n\
+                   $ bump : @use {d: IBump t} -> t -> t = \\x => d.bump x\n\
+                   $ bump_int : IBump @Int = .{ .bump = \\x => x + 1 }\n\
+                   $ bump_str : IBump @Str = .{ .bump = \\x => x ++ \"!\" }\n\
                    $ a : @Int = bump 3\n\
                    $ b : @Str = bump \"hi\"";
     assert_eq!(errors(src), "");
@@ -288,7 +288,7 @@ fn overload_deferred_until_signature_pins_operands() {
     // structs; bidirectional checking + the pending fixpoint handle it.
     let src = "$ @mod M\n\
                    $ P : @struct = x: @Int, y: @Int\n\
-                   $ add : P -> P -> P = \\p1 p2 = P.{ .x = p1.x + p2.x, .y = p1.y + p2.y }";
+                   $ add : P -> P -> P = \\p1 p2 => P.{ .x = p1.x + p2.x, .y = p1.y + p2.y }";
     assert_eq!(type_of(src, "add"), "P -> P -> P");
 }
 
@@ -308,8 +308,8 @@ fn sized_literal_arithmetic_takes_the_result_type() {
 fn a_type_with_no_instance_is_reported() {
     let src = "$ @mod M\n\
                    $ IBump : @struct t = bump: t -> t,\n\
-                   $ bump : @ctx IBump t -> t -> t = \\d x = d.bump x\n\
-                   $ bump_int : IBump @Int = .{ .bump = \\x = x }\n\
+                   $ bump : @use {d: IBump t} -> t -> t = \\x => d.bump x\n\
+                   $ bump_int : IBump @Int = .{ .bump = \\x => x }\n\
                    $ bad = bump 1.0";
     assert!(errors(src).contains("no value of type `IBump @Float64`"), "{}", errors(src));
 }
@@ -318,10 +318,10 @@ fn a_type_with_no_instance_is_reported() {
 fn cross_module_import_brings_in_types_and_values() {
     let dep_src = "$ @mod OPT\n\
                        $ Option : @union t = Some: t, None: {}\n\
-                       $ is_some : Option t -> @Bool = \\o = \
-                       is o | Option.Some.{_} => @true | _ => @false\n\
-                       $ unwrap_or : Option t -> t -> t = \\o d = \
-                       is o | Option.Some.{x} => x | _ => d";
+                       $ is_some : Option t -> @Bool = \\o => \
+                       o |> \\ | Option.Some.{_} => @true | _ => @false\n\
+                       $ unwrap_or : Option t -> t -> t = \\o d => \
+                       o |> \\ | Option.Some.{x} => x | _ => d";
     let use_src = "$ @mod U\n\
                        $ with OPT\n\
                        $ o : Option @Int = Option.Some.{ 41 }\n\
@@ -365,9 +365,9 @@ fn cross_module_errors(dep_src: &str, use_src: &str) -> String {
 }
 
 const PRIVATE_DEP: &str = "$ @mod A\n\
-    $ api : @Int -> @Int = \\x = helper x + 1\n\
+    $ api : @Int -> @Int = \\x => helper x + 1\n\
     $ @private\n\
-    $ helper : @Int -> @Int = \\x = x * x";
+    $ helper : @Int -> @Int = \\x => x * x";
 
 #[test]
 fn public_symbol_above_private_marker_is_importable() {
@@ -392,7 +392,7 @@ fn private_symbol_is_not_reachable_qualified() {
 #[test]
 fn private_type_is_not_importable() {
     let dep = "$ @mod A\n\
-        $ mk : @Int -> Secret = \\n = Secret.{ .v = n }\n\
+        $ mk : @Int -> Secret = \\n => Secret.{ .v = n }\n\
         $ @private\n\
         $ Secret : @struct = v: @Int";
     // Naming the private type in the importer fails; only its public constructor's
@@ -405,8 +405,8 @@ fn private_extends_to_end_of_file() {
     // `$ @private` has no counterpart, so every declaration below it stays hidden.
     let dep = "$ @mod A\n\
         $ @private\n\
-        $ hidden : @Int -> @Int = \\x = x\n\
-        $ also_hidden : @Int -> @Int = \\x = x";
+        $ hidden : @Int -> @Int = \\x => x\n\
+        $ also_hidden : @Int -> @Int = \\x => x";
     assert!(cross_module_errors(dep, "$ @mod B\n$ with A\n$ r = hidden 1").contains("TYPE_UNBOUND"));
     assert!(cross_module_errors(dep, "$ @mod B\n$ with A\n$ r = also_hidden 1")
         .contains("TYPE_UNBOUND"));
@@ -441,7 +441,7 @@ fn record_parameters_bind_fields_directly() {
 fn with_scopes_struct_fields() {
     let src = "$ @mod M\n\
                    $ P : @struct = x: @Int, y: @Int\n\
-                   $ sum : P -> @Int = \\p = with p in x + y";
+                   $ sum : P -> @Int = \\p => with p in x + y";
     assert_eq!(type_of(src, "sum"), "P -> @Int");
 }
 
@@ -455,7 +455,7 @@ fn sequence_literal_is_type_directed() {
     );
     // An @Array-typed parameter directs a `[..]` argument at the call site.
     let src = "$ @mod M\n\
-                   $ len : @Array -> @Int = \\a = @array_len a\n\
+                   $ len : @Array -> @Int = \\a => @array_len a\n\
                    $ n : @Int = len [1, 2]";
     assert_eq!(type_of(src, "n"), "@Int");
 }
@@ -467,7 +467,7 @@ fn effect_operation_is_bound_and_handler_types_result() {
     // types to the clause/`else` bodies' common type.
     let src = "$ @mod M\n\
                    $ State : @effect = get : {} -> @Int, put : @Int -> {},\n\
-                   $ tick : {} -> <State> @Int = \\u = let x = get {} in let _ = put (x + 1) in x\n\
+                   $ tick : {} -> <State> @Int = \\u => let x = get {} in let _ = put (x + 1) in x\n\
                    $ run : @Int = do tick {} ctl k | get u => k 0 | put n => k {} | x => x";
     assert_eq!(type_of(src, "tick"), "{} -> <State> @Int");
     assert_eq!(type_of(src, "run"), "@Int");
@@ -480,7 +480,7 @@ fn io_is_a_builtin_effect_and_propagates() {
     // it in its latent row, and a caller that performs it inherits `@IO`.
     let src = "$ @mod M\n\
                $ write : @Str -> <@IO> @Int = @extern \"C\" \"write\" \"libc\"\n\
-               $ p : @Str -> <@IO | a> {} = \\s = let _ = write s in {}";
+               $ p : @Str -> <@IO | a> {} = \\s => let _ = write s in {}";
     assert_eq!(type_of(src, "write"), "@Str -> <@IO> @Int");
     assert!(type_of(src, "p").contains("<@IO"), "{}", type_of(src, "p"));
 }
@@ -491,7 +491,7 @@ fn io_in_a_pure_typed_function_is_rejected() {
     // `<@IO>` cannot be subsumed into the empty ambient.
     let src = "$ @mod M\n\
                $ write : @Str -> <@IO> @Int = @extern \"C\" \"write\" \"libc\"\n\
-               $ bad : @Str -> @Int = \\s = write s";
+               $ bad : @Str -> @Int = \\s => write s";
     assert!(errors(src).contains("@IO"), "{}", errors(src));
 }
 
@@ -543,9 +543,9 @@ fn type_variable_and_sized_and_declared_types_are_accepted() {
     // name is known. None of these is an "unknown type".
     let src = "$ @mod M\n\
                $ Box : @union = Wrap: { @Int },\n\
-               $ id : a -> a = \\x = x\n\
+               $ id : a -> a = \\x => x\n\
                $ n : @Int8 = 5\n\
-               $ p : @Ptr -> @Ptr = \\x = x\n\
+               $ p : @Ptr -> @Ptr = \\x => x\n\
                $ b : Box = Box.Wrap.{ 1 }";
     assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "id"), "a -> a");
@@ -558,7 +558,7 @@ fn unhandled_effect_is_a_compile_error() {
     // is rejected: the latent `<State>` cannot be subsumed into the empty ambient.
     let src = "$ @mod M\n\
                    $ State : @effect = get : {} -> @Int, put : @Int -> {},\n\
-                   $ bad : {} -> @Int = \\u = get {}";
+                   $ bad : {} -> @Int = \\u => get {}";
     assert!(
         errors(src).contains("not handled"),
         "expected an unhandled-effect error, got: {:?}",
@@ -587,7 +587,7 @@ fn open_row_entry_may_perform_any_effect() {
     // pure `<>` would reject this (see `unhandled_effect_is_a_compile_error`).
     let src = "$ @mod MAIN\n\
                $ Yell : @effect = shout : @Int -> {},\n\
-               $ main : {} -> <| e> @Int = \\u = let _ = Yell.shout 5 in 0";
+               $ main : {} -> <| e> @Int = \\u => let _ = Yell.shout 5 in 0";
     assert_eq!(errors(src), "", "open-row main should type-check");
     assert_eq!(type_of(src, "main"), "{} -> <Yell | a> @Int");
 }
@@ -597,8 +597,8 @@ fn signed_member_recurses_at_another_type() {
     // A use inside the recursive group sees `id`'s signature, so `g` may call it
     // at `@Str` and `@Int` and neither use fixes `a`.
     let src = "$ @mod M\n\
-               $ id : a -> a = \\x = let _ = g 0 in x\n\
-               $ g : @Int -> @Int = \\n = let _ = id \"s\" in id n";
+               $ id : a -> a = \\x => let _ = g 0 in x\n\
+               $ g : @Int -> @Int = \\n => let _ = id \"s\" in id n";
     assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "id"), "a -> a");
 }
@@ -608,7 +608,7 @@ fn signature_row_tail_stays_open() {
     // Unlike a type variable, a row tail may be extended by the body (#270).
     let src = "$ @mod M\n\
                $ Yell : @effect = shout : @Int -> {},\n\
-               $ f : {} -> <| e> @Int = \\u = let _ = Yell.shout 5 in 0";
+               $ f : {} -> <| e> @Int = \\u => let _ = Yell.shout 5 in 0";
     assert_eq!(errors(src), "");
 }
 
@@ -656,7 +656,7 @@ fn build_is_the_only_io_capable_compile_time_context() {
     // A `@build`-shaped row handles both `@Meta` and `@IO`.
     assert_eq!(
         errors(&format!(
-            "$ @mod M\n{io_fn}$ b : {{}} -> <@Meta, @IO> @Code = \\_ = \
+            "$ @mod M\n{io_fn}$ b : {{}} -> <@Meta, @IO> @Code = \\_ => \
              shout \"hi\"; @parse_items \"$ x : @Int = 1\""
         )),
         "",
@@ -736,11 +736,11 @@ fn only_the_one_entry_signature_is_accepted() {
         let ty = results.iter().find(|(n, _)| *n == "@main").expect("@main").1;
         is_entry_type(checker.types(), ty)
     };
-    assert!(entry("$ @mod MAIN\n$ @main : @Vec @Str -> <@IO> @Int = \\args = 0"));
-    assert!(!entry("$ @mod MAIN\n$ @main : {} -> <@IO> @Int = \\u = 0"));
-    assert!(!entry("$ @mod MAIN\n$ @main : @Vec @Str -> @Int = \\args = 0"));
-    assert!(!entry("$ @mod MAIN\n$ @main : @Vec @Int -> <@IO> @Int = \\args = 0"));
-    assert!(!entry("$ @mod MAIN\n$ @main : @Vec @Str -> <@IO> {} = \\args = {}"));
+    assert!(entry("$ @mod MAIN\n$ @main : @Vec @Str -> <@IO> @Int = \\args => 0"));
+    assert!(!entry("$ @mod MAIN\n$ @main : {} -> <@IO> @Int = \\u => 0"));
+    assert!(!entry("$ @mod MAIN\n$ @main : @Vec @Str -> @Int = \\args => 0"));
+    assert!(!entry("$ @mod MAIN\n$ @main : @Vec @Int -> <@IO> @Int = \\args => 0"));
+    assert!(!entry("$ @mod MAIN\n$ @main : @Vec @Str -> <@IO> {} = \\args => {}"));
 }
 
 #[test]
@@ -880,7 +880,7 @@ fn int_nat_friendly_spellings_are_dropped() {
 #[test]
 fn comparison_is_extended_by_an_instance() {
     let src = "$ @mod M\n$ T : @struct = v: @Int\n\
-               $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n\
+               $ ord_t : IOrd T = .{ .lt = \\a b => a.v < b.v }\n\
                $ custom : @Bool = T.{ .v = 1 } < T.{ .v = 2 }\n\
                $ prim : @Bool = 1 < 2";
     assert_eq!(errors(src), "");
@@ -898,7 +898,7 @@ fn equality_needs_an_instance() {
     assert!(errors(bare).contains("no value of type `IEq T`"), "{}", errors(bare));
 
     let src = "$ @mod M\n$ T : @struct = v: @Int\n\
-               $ eq_t : IEq T = .{ .eq = \\a b = a.v == b.v }\n\
+               $ eq_t : IEq T = .{ .eq = \\a b => a.v == b.v }\n\
                $ same : @Bool = T.{ .v = 1 } == T.{ .v = 1 }\n\
                $ pair : @Bool = {1, \"a\"} == {1, \"a\"}";
     assert_eq!(errors(src), "");
@@ -910,11 +910,11 @@ fn equality_needs_an_instance() {
 /// undeclared one has nothing to resolve, and says so instead of inventing a type.
 #[test]
 fn generic_comparison_declares_its_context() {
-    let src = "$ @mod M\n$ eq : @ctx IEq a -> a -> a -> @Bool = \\d x y = d.eq x y";
+    let src = "$ @mod M\n$ eq : @use {d: IEq a} -> a -> a -> @Bool = \\x y => d.eq x y";
     assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "eq"), "a -> a -> @Bool");
 
-    let undeclared = errors("$ @mod M\n$ eq = \\x y = x == y");
+    let undeclared = errors("$ @mod M\n$ eq = \\x y => x == y");
     assert!(undeclared.contains("is not determined here"), "{undeclared}");
 }
 
@@ -923,8 +923,8 @@ fn generic_comparison_declares_its_context() {
 #[test]
 fn comparison_operators_coexist_with_effect_rows() {
     let src = "$ @mod M\n$ Fail : @effect = fail : {} -> @Int\n\
-               $ f : @Int -> <Fail | e> @Bool = \\n = n < 3\n\
-               $ g : @Int -> <| e> @Bool = \\n = n > 3";
+               $ f : @Int -> <Fail | e> @Bool = \\n => n < 3\n\
+               $ g : @Int -> <| e> @Bool = \\n => n > 3";
     assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "g"), "@Int -> @Bool");
 }
@@ -953,7 +953,7 @@ fn a_user_concat_instance_joins_the_existing_ones() {
     // module that adds one for its own type.
     let src = "$ @mod M\n\
                $ P : @struct = x: @Int\n\
-               $ cat_p : ICat P = .{ .cat = \\a b = P.{ .x = a.x + b.x } }\n\
+               $ cat_p : ICat P = .{ .cat = \\a b => P.{ .x = a.x + b.x } }\n\
                $ s : @Str = \"a\" ++ \"b\"\n\
                $ p : P = P.{.x=1} ++ P.{.x=2}";
     assert_eq!(errors(src), "");
@@ -964,7 +964,7 @@ fn an_unknown_variant_tag_is_a_type_error() {
     let e = errors(
         "$ @mod M\n\
          $ U : @union = A: {}, B: {@Int},\n\
-         $ h : @Int = is U.A | .Nope.{q} => q | _ => 0",
+         $ h : @Int = U.A |> \\ | .Nope.{q} => q | _ => 0",
     );
     assert!(e.contains("no union has a variant `Nope`"), "{e}");
 }
@@ -976,7 +976,7 @@ fn a_variant_pattern_on_a_non_union_is_a_type_error() {
     let e = errors(
         "$ @mod M\n\
          $ P : @struct = x: @Int\n\
-         $ h : P -> @Int = \\p = is p | P.Zzz.{a, b} => a | _ => 0",
+         $ h : P -> @Int = \\p => p |> \\ | P.Zzz.{a, b} => a | _ => 0",
     );
     assert!(e.contains("`P` is not a union"), "{e}");
 }
@@ -986,7 +986,7 @@ fn an_unknown_field_is_a_type_error() {
     let e = errors(
         "$ @mod M\n\
          $ P : @struct = x: @Int\n\
-         $ h : P -> @Int = \\v = v.nonexistent",
+         $ h : P -> @Int = \\v => v.nonexistent",
     );
     assert!(e.contains("has no field `nonexistent`"), "{e}");
 }
@@ -1005,7 +1005,7 @@ fn a_struct_literal_with_an_unknown_field_is_a_type_error() {
 fn a_field_on_an_unknown_type_becomes_a_row_constraint() {
     // Not knowing the record's type yet is a reason to CONSTRAIN it, not to
     // invent one: the parameter becomes an open row.
-    assert_eq!(type_of("$ @mod M\n$ f = \\r = r.x", "f"), "{ x: a | b } -> a");
+    assert_eq!(type_of("$ @mod M\n$ f = \\r => r.x", "f"), "{ x: a | b } -> a");
 }
 
 // -- issue #209: laziness is a property of the slot ------------------------
@@ -1077,20 +1077,20 @@ fn a_c_union_literal_picks_one_member() {
 fn a_pattern_may_bind_fewer_fields_but_never_more() {
     let p = "$ @mod M\n$ P : @struct = a: @Int, b: @Int,\n";
     // Fewer is the point of a pattern.
-    assert!(rendered_errors(&format!("{p}$ y : @Int = is P.{{1,2}} | P.{{x}} => x | _ => 0")).is_empty());
-    assert!(rendered_errors(&format!("{p}$ y : @Int = is P.{{1,2}} | P.{{ .b = v }} => v | _ => 0")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y : @Int = P.{{1,2}} |> \\ | P.{{x}} => x | _ => 0")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y : @Int = P.{{1,2}} |> \\ | P.{{ .b = v }} => v | _ => 0")).is_empty());
     assert!(
-        rendered_errors("$ @mod M\n$ y : @Int = is List.Cons.{1, List.Nil} | List.Cons.{h, t} => h | _ => 0")
+        rendered_errors("$ @mod M\n$ y : @Int = List.Cons.{1, List.Nil} |> \\ | List.Cons.{h, t} => h | _ => 0")
             .is_empty()
     );
     // More binds a name with no field behind it, which faults when read.
-    let surplus = rendered_errors(&format!("{p}$ y : @Int = is P.{{1,2}} | P.{{x, y, z}} => x | _ => 0"));
+    let surplus = rendered_errors(&format!("{p}$ y : @Int = P.{{1,2}} |> \\ | P.{{x, y, z}} => x | _ => 0"));
     assert!(surplus.contains("no field 2"), "{surplus}");
     let surplus = rendered_errors(
-        "$ @mod M\n$ y : @Int = is List.Cons.{1, List.Nil} | List.Cons.{h, t, u} => h | _ => 0",
+        "$ @mod M\n$ y : @Int = List.Cons.{1, List.Nil} |> \\ | List.Cons.{h, t, u} => h | _ => 0",
     );
     assert!(surplus.contains("no field 2"), "{surplus}");
-    let unknown = rendered_errors(&format!("{p}$ y : @Int = is P.{{1,2}} | P.{{ .c = v }} => v | _ => 0"));
+    let unknown = rendered_errors(&format!("{p}$ y : @Int = P.{{1,2}} |> \\ | P.{{ .c = v }} => v | _ => 0"));
     assert!(unknown.contains("has no field `c`"), "{unknown}");
 }
 
@@ -1120,99 +1120,99 @@ const L: &str = "$ @mod T\n$ L : @union = A, B, C,\n";
 
 #[test]
 fn missing_variant_is_an_error() {
-    let (err, _) = coverage(&format!("{L}$ f : L -> @Int = \\l = is l | L.A => 0 | L.B => 1\n"));
+    let (err, _) = coverage(&format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A => 0 | L.B => 1\n"));
     assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
     assert!(err.contains("`L.C`"), "{err}");
 }
 
 #[test]
 fn every_variant_or_a_catch_all_is_exhaustive() {
-    let all = format!("{L}$ f : L -> @Int = \\l = is l | L.A => 0 | L.B => 1 | .C => 2\n");
+    let all = format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A => 0 | L.B => 1 | .C => 2\n");
     assert_eq!(coverage(&all), (String::new(), vec![]));
-    let wild = format!("{L}$ f : L -> @Int = \\l = is l | L.A => 0 | x => 1\n");
+    let wild = format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A => 0 | x => 1\n");
     assert_eq!(coverage(&wild), (String::new(), vec![]));
-    let or = format!("{L}$ f : L -> @Int = \\l = is l | L.A | L.B | L.C => 0\n");
+    let or = format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A | L.B | L.C => 0\n");
     assert_eq!(coverage(&or), (String::new(), vec![]));
 }
 
 #[test]
 fn no_arms_cover_only_a_variantless_union() {
-    let empty = "$ @mod T\n$ E : @union =\n$ f : E -> @Int = \\e = is e\n";
+    let empty = "$ @mod T\n$ E : @union =\n$ f : E -> @Int = \\e => e |> @absurd\n";
     assert_eq!(coverage(empty), (String::new(), vec![]));
-    let (err, _) = coverage(&format!("{L}$ f : L -> @Int = \\l = is l\n"));
+    let (err, _) = coverage(&format!("{L}$ f : L -> @Int = \\l => l |> @absurd\n"));
     assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
 }
 
 #[test]
 fn guarded_arms_do_not_cover() {
-    let src = format!("{L}$ f : L -> @Int = \\l = is l | L.A => 0 | L.B => 1 | L.C if @true => 2\n");
+    let src = format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A => 0 | L.B => 1 | L.C if @true => 2\n");
     assert!(coverage(&src).0.contains("`L.C`"));
-    let src = format!("{L}$ f : L -> @Int = \\l = is l | x if @true => 0 | L.A => 1 | L.B => 1 | L.C => 2\n");
+    let src = format!("{L}$ f : L -> @Int = \\l => l |> \\ | x if @true => 0 | L.A => 1 | L.B => 1 | L.C => 2\n");
     assert_eq!(coverage(&src), (String::new(), vec![]));
 }
 
 #[test]
 fn nested_witness_is_named() {
     let src = "$ @mod T\n$ M : @union a = No, Yes: {a},\n\
-               $ f : M @Bool -> @Int = \\m = is m | .No => 0 | .Yes.{ @true } => 1\n";
+               $ f : M @Bool -> @Int = \\m => m |> \\ | .No => 0 | .Yes.{ @true } => 1\n";
     let (err, _) = coverage(src);
     assert!(err.contains("`M.Yes.{ false }`"), "{err}");
 }
 
 #[test]
 fn infinite_domains_need_a_catch_all() {
-    let (err, _) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n = is n | 0 => 1 | 1 => 2\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n => n |> \\ | 0 => 1 | 1 => 2\n");
     assert!(err.contains("`2 ...`"), "{err}");
-    let (err, _) = coverage("$ @mod T\n$ f : @Float64 -> @Int = \\n = is n | 0.0 => 1 | 1.0 => 2\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @Float64 -> @Int = \\n => n |> \\ | 0.0 => 1 | 1.0 => 2\n");
     assert!(err.contains("`_`"), "{err}");
-    let (err, _) = coverage("$ @mod T\n$ f : @Str -> @Int = \\s = is s | \"a\" => 1 | \"b\" ++ r => 2\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @Str -> @Int = \\s => s |> \\ | \"a\" => 1 | \"b\" ++ r => 2\n");
     assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
-    let (err, _) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n = is n | 0 ... 9 => 1 | 10 ... => 2\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n => n |> \\ | 0 ... 9 => 1 | 10 ... => 2\n");
     assert!(err.contains("does not cover `-1`"), "{err}");
-    let (err, _) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n = is n | 0 ... 9 => 1 | 20 ... => 2\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n => n |> \\ | 0 ... 9 => 1 | 20 ... => 2\n");
     assert!(err.contains("`10 ... 19`"), "{err}");
 }
 
 #[test]
 fn bools_tuples_and_structs() {
-    let ok = "$ @mod T\n$ f : {@Bool, @Bool} -> @Int = \\p = is p | {@true, _} => 0 | {_, @true} => 1 | {@false, @false} => 2\n";
+    let ok = "$ @mod T\n$ f : {@Bool, @Bool} -> @Int = \\p => p |> \\ | {@true, _} => 0 | {_, @true} => 1 | {@false, @false} => 2\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
-    let (err, _) = coverage("$ @mod T\n$ f : {@Bool, @Bool} -> @Int = \\p = is p | {@true, _} => 0 | {_, @true} => 1\n");
+    let (err, _) = coverage("$ @mod T\n$ f : {@Bool, @Bool} -> @Int = \\p => p |> \\ | {@true, _} => 0 | {_, @true} => 1\n");
     assert!(err.contains("`{ false, false }`"), "{err}");
     let (err, _) = coverage(
-        "$ @mod T\n$ P : @struct = x: @Bool, y: @Int,\n$ f : P -> @Int = \\p = is p | P.{ .x = @true } => 0\n",
+        "$ @mod T\n$ P : @struct = x: @Bool, y: @Int,\n$ f : P -> @Int = \\p => p |> \\ | P.{ .x = @true } => 0\n",
     );
     assert!(err.contains("`P.{ .x = false }`"), "{err}");
 }
 
 #[test]
 fn sequence_patterns_reduce_to_the_view() {
-    let ok = "$ @mod T\n$ f : @Vec @Int -> @Int = \\v = is v | [] => 0 | [x] => x | x :: y :: r => y\n";
+    let ok = "$ @mod T\n$ f : @Vec @Int -> @Int = \\v => v |> \\ | [] => 0 | [x] => x | x :: y :: r => y\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
-    let (err, _) = coverage("$ @mod T\n$ f : @Vec @Int -> @Int = \\v = is v | [] => 0 | [x, y] ++ r => y\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @Vec @Int -> @Int = \\v => v |> \\ | [] => 0 | [x, y] ++ r => y\n");
     assert!(err.contains("`[_]`"), "{err}");
-    let list = "$ @mod T\n$ f : List @Int -> @Int = \\l = is l | List.Nil => 0 | h :: t => h\n";
+    let list = "$ @mod T\n$ f : List @Int -> @Int = \\l => l |> \\ | List.Nil => 0 | h :: t => h\n";
     assert_eq!(coverage(list), (String::new(), vec![]));
 }
 
 #[test]
 fn unreachable_arms_warn() {
-    let (err, w) = coverage(&format!("{L}$ f : L -> @Int = \\l = is l | L.A => 0 | m => 1 | _ => 2\n"));
+    let (err, w) = coverage(&format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A => 0 | m => 1 | _ => 2\n"));
     assert_eq!(err, "");
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].contains("test.thx:3:"), "{w:?}");
-    let (_, w) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n = is n | 1 => 0 | 1 => 1 | _ => 2\n");
+    let (_, w) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n => n |> \\ | 1 => 0 | 1 => 1 | _ => 2\n");
     assert_eq!(w.len(), 1, "{w:?}");
-    let (_, w) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n = is n | 1 ... 3 => 0 | 2 => 1 | _ => 2\n");
+    let (_, w) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n => n |> \\ | 1 ... 3 => 0 | 2 => 1 | _ => 2\n");
     assert_eq!(w.len(), 1, "{w:?}");
-    let (_, w) = coverage("$ @mod T\n$ f : @Float64 -> @Int = \\n = is n | 1.0 ... 3.0 => 0 | 2.0 => 1 | _ => 2\n");
+    let (_, w) = coverage("$ @mod T\n$ f : @Float64 -> @Int = \\n => n |> \\ | 1.0 ... 3.0 => 0 | 2.0 => 1 | _ => 2\n");
     assert!(w.is_empty(), "{w:?}");
 }
 
 #[test]
 fn handler_value_arms_are_checked() {
     let src = "$ @mod T\n$ Exn : @effect = throw : @Str -> a,\n$ M : @union = Hit: {@Int}, Miss,\n\
-               $ g : {} -> <Exn> M = \\u = M.Miss\n\
+               $ g : {} -> <Exn> M = \\u => M.Miss\n\
                $ f : @Int = do g {} ctl k | Exn.throw m => 0 | .Hit.{ v } => v\n";
     let (err, _) = coverage(src);
     assert!(err.contains("value arms do not cover `M.Miss`"), "{err}");
@@ -1221,7 +1221,7 @@ fn handler_value_arms_are_checked() {
 
 #[test]
 fn unreachable_warnings_point_at_the_pattern() {
-    let src = format!("{L}$ f : L -> @Int = \\l = is l | L.A => 0 | m => 1 | _ => 2\n");
+    let src = format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A => 0 | m => 1 | _ => 2\n");
     let (_, w) = coverage(&src);
     let col = src.lines().nth(2).unwrap().find("| _").unwrap() + 3;
     assert_eq!(w, vec![format!("--> test.thx:3:{col}")]);
@@ -1229,58 +1229,58 @@ fn unreachable_warnings_point_at_the_pattern() {
 
 #[test]
 fn dead_alternatives_warn_separately() {
-    let (err, w) = coverage(&format!("{L}$ f : L -> @Int = \\l = is l | L.A => 0 | L.B | L.A | L.C => 1\n"));
+    let (err, w) = coverage(&format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A => 0 | L.B | L.A | L.C => 1\n"));
     assert_eq!(err, "");
     assert_eq!(w.len(), 1, "{w:?}");
-    let (_, w) = coverage(&format!("{L}$ f : L -> @Int = \\l = is l | L.A | L.B | L.C => 0 | L.A | L.B => 1\n"));
+    let (_, w) = coverage(&format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A | L.B | L.C => 0 | L.A | L.B => 1\n"));
     assert_eq!(w.len(), 1, "{w:?}");
 }
 
 #[test]
 fn refutable_let_and_lambda_patterns_are_errors() {
     let m = "$ @mod T\n$ M : @union a = No, Yes: {a},\n";
-    let (err, _) = coverage(&format!("{m}$ f : M @Int -> @Int = \\.Yes.{{ x }} = x\n"));
+    let (err, _) = coverage(&format!("{m}$ f : M @Int -> @Int = \\.Yes.{{ x }} => x\n"));
     assert!(err.contains("refutable pattern in a lambda parameter") && err.contains("`M.No`"), "{err}");
-    let (err, _) = coverage(&format!("{m}$ g : M @Int -> @Int = \\m = let .Yes.{{ x }} = m in x\n"));
+    let (err, _) = coverage(&format!("{m}$ g : M @Int -> @Int = \\m => let .Yes.{{ x }} = m in x\n"));
     assert!(err.contains("refutable pattern in a `let` binding"), "{err}");
-    let (err, _) = coverage("$ @mod T\n$ h : @Nat8 -> @Int = \\0 = 1\n");
+    let (err, _) = coverage("$ @mod T\n$ h : @Nat8 -> @Int = \\0 => 1\n");
     assert!(err.contains("`1 ...`"), "{err}");
     let ok = "$ @mod T\n$ P : @struct = x: @Int, y: @Int,\n\
-              $ f : P -> {@Int, @Int} -> @Int = \\P.{ x, _ } {a, b} = let {c, _} = {a, b} in x + c\n";
+              $ f : P -> {@Int, @Int} -> @Int = \\P.{ x, _ } {a, b} => let {c, _} = {a, b} in x + c\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
 }
 
 const ROPE: &str = "$ @mod T\n$ Rope : @union = Leaf: {@Int}, Node: {Rope, Rope},\n\
     $ impl_ISeqView_for_Rope : @ISeqView Rope @Int = .{\n\
-    \t.view = \\r = is r | Rope.Leaf.{ n } => SeqView.More.{ n, Rope.Node.{ r, r } } | _ => SeqView.Empty,\n}\n";
+    \t.view = \\r => r |> \\ | Rope.Leaf.{ n } => SeqView.More.{ n, Rope.Node.{ r, r } } | _ => SeqView.Empty,\n}\n";
 
 #[test]
 fn mixing_variant_and_sequence_patterns_is_reported() {
-    let (err, _) = coverage(&format!("{ROPE}$ f : Rope -> @Int = \\r = is r | Rope.Leaf.{{ n }} => 0 | [] => 1 | _ :: _ => 2\n"));
+    let (err, _) = coverage(&format!("{ROPE}$ f : Rope -> @Int = \\r => r |> \\ | Rope.Leaf.{{ n }} => 0 | [] => 1 | _ :: _ => 2\n"));
     assert!(err.contains("both its variants and sequence patterns") && err.contains("`Rope`"), "{err}");
-    let only_seq = format!("{ROPE}$ f : Rope -> @Int = \\r = is r | [] => 1 | _ :: _ => 2\n");
+    let only_seq = format!("{ROPE}$ f : Rope -> @Int = \\r => r |> \\ | [] => 1 | _ :: _ => 2\n");
     assert_eq!(coverage(&only_seq), (String::new(), vec![]));
-    let catch_all = format!("{ROPE}$ f : Rope -> @Int = \\r = is r | Rope.Leaf.{{ n }} => 0 | [] => 1 | _ => 2\n");
+    let catch_all = format!("{ROPE}$ f : Rope -> @Int = \\r => r |> \\ | Rope.Leaf.{{ n }} => 0 | [] => 1 | _ => 2\n");
     assert_eq!(coverage(&catch_all), (String::new(), vec![]));
-    let apart = format!("{ROPE}$ f : {{Rope, Rope}} -> @Int = \\p = is p | {{Rope.Leaf.{{ n }}, _}} => 0 | {{Rope.Node.{{ a, b }}, []}} => 1 | {{_, _ :: _}} => 2\n");
+    let apart = format!("{ROPE}$ f : {{Rope, Rope}} -> @Int = \\p => p |> \\ | {{Rope.Leaf.{{ n }}, _}} => 0 | {{Rope.Node.{{ a, b }}, []}} => 1 | {{_, _ :: _}} => 2\n");
     assert_eq!(coverage(&apart), (String::new(), vec![]));
 }
 
 #[test]
 fn integer_ranges_cover_bounded_types() {
-    let ok = "$ @mod T\n$ f : @Nat8 -> @Int = \\n = is n | 0 ... 127 => 0 | 128 ... 255 => 1\n";
+    let ok = "$ @mod T\n$ f : @Nat8 -> @Int = \\n => n |> \\ | 0 ... 127 => 0 | 128 ... 255 => 1\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
-    let (err, _) = coverage("$ @mod T\n$ f : @Int8 -> @Int = \\n = is n | 0 ... => 0\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @Int8 -> @Int = \\n => n |> \\ | 0 ... => 0\n");
     assert!(err.contains("`-128 ... -1`"), "{err}");
-    let signed = "$ @mod T\n$ f : @Int8 -> @Int = \\n = is n | -128 ... -1 => 1 | 0 ... => 2\n";
+    let signed = "$ @mod T\n$ f : @Int8 -> @Int = \\n => n |> \\ | -128 ... -1 => 1 | 0 ... => 2\n";
     assert_eq!(coverage(signed), (String::new(), vec![]));
-    let (err, _) = coverage("$ @mod T\n$ f : @Nat8 -> @Int = \\n = is n | 0 ... 99 => 0 | 101 ... => 1\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @Nat8 -> @Int = \\n => n |> \\ | 0 ... 99 => 0 | 101 ... => 1\n");
     assert!(err.contains("does not cover `100`"), "{err}");
-    let (err, _) = coverage("$ @mod T\n$ f : @Nat8 -> @Int = \\n = is n | 0 => 0 | 1 ... 9 => 1\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @Nat8 -> @Int = \\n => n |> \\ | 0 => 0 | 1 ... 9 => 1\n");
     assert!(err.contains("`10 ...`"), "{err}");
-    let (_, w) = coverage("$ @mod T\n$ f : @Nat8 -> @Int = \\n = is n | 0 ... 200 => 0 | 100 ... 150 => 1 | _ => 2\n");
+    let (_, w) = coverage("$ @mod T\n$ f : @Nat8 -> @Int = \\n => n |> \\ | 0 ... 200 => 0 | 100 ... 150 => 1 | _ => 2\n");
     assert_eq!(w.len(), 1, "{w:?}");
-    let (_, w) = coverage("$ @mod T\n$ f : {@Nat8, @Bool} -> @Int = \\p = is p | {0 ... 9, @true} => 0 | {5, _} => 1 | {_, _} => 2\n");
+    let (_, w) = coverage("$ @mod T\n$ f : {@Nat8, @Bool} -> @Int = \\p => p |> \\ | {0 ... 9, @true} => 0 | {5, _} => 1 | {_, _} => 2\n");
     assert!(w.is_empty(), "{w:?}");
 }
 
@@ -1326,7 +1326,7 @@ fn an_unknown_qualified_name_is_a_check_error() {
 
 #[test]
 fn applying_a_non_function_names_the_argument() {
-    let src = "$ @mod M\n$ f : @Int -> @Int = \\x =\n    x\n    1\n";
+    let src = "$ @mod M\n$ f : @Int -> @Int = \\x =>\n    x\n    1\n";
     let text = rendered_errors(src);
     assert!(text.contains("its type `@Int` is not a function"), "{text}");
     assert!(text.contains("- the argument"), "{text}");
@@ -1341,7 +1341,7 @@ fn an_unbound_name_suggests_a_near_miss() {
 
 #[test]
 fn a_near_miss_instance_is_named_instead_of_none_in_scope() {
-    let text = rendered_errors("$ @mod M\n$ x = for ([0 ... 100] : List @Int) \\i = i\n");
+    let text = rendered_errors("$ @mod M\n$ x = for ([0 ... 100] : List @Int) \\i => i\n");
     assert!(text.contains("`impl_IFor_for_List` does not fit this use of `for`"), "{text}");
     assert!(text.contains("its second type parameter is `@Int`, but this use needs `{}`"), "{text}");
     assert!(!text.contains("in scope"), "{text}");
@@ -1357,9 +1357,9 @@ const ROW_ALIAS_EFFECTS: &str = "$ @mod M\n\
 fn row_alias_expands_to_its_labels_and_prints_folded() {
     let src = format!(
         "{ROW_ALIAS_EFFECTS}\
-         $ frame : @Int -> <App> @Int = \\x = log x; draw x; x\n\
-         $ wide : @Int -> <Log, Gpu, Net> @Int = \\x = fetch (frame x)\n\
-         $ one : @Int -> <Log> @Int = \\x = log x; x\n"
+         $ frame : @Int -> <App> @Int = \\x => log x; draw x; x\n\
+         $ wide : @Int -> <Log, Gpu, Net> @Int = \\x => fetch (frame x)\n\
+         $ one : @Int -> <Log> @Int = \\x => log x; x\n"
     );
     assert_eq!(type_of(&src, "frame"), "@Int -> <App> @Int");
     // Every label of `App` is present, so the row prints with the alias.
@@ -1373,8 +1373,8 @@ fn row_alias_nests_and_keeps_a_label_once() {
     let src = format!(
         "{ROW_ALIAS_EFFECTS}\
          $ Big : @alias = <App, Net>\n\
-         $ f : @Int -> <Big> @Int = \\x = fetch x; log x; x\n\
-         $ g : @Int -> <App, Log> @Int = \\x = draw x; x\n"
+         $ f : @Int -> <Big> @Int = \\x => fetch x; log x; x\n\
+         $ g : @Int -> <App, Log> @Int = \\x => draw x; x\n"
     );
     assert_eq!(errors(&src), "");
     assert_eq!(type_of(&src, "f"), "@Int -> <Big> @Int");
@@ -1386,9 +1386,9 @@ fn parameterized_row_alias_takes_the_tail() {
     let src = format!(
         "{ROW_ALIAS_EFFECTS}\
          $ WithLog : @alias e = <Log | e>\n\
-         $ f : @Int -> <WithLog e> @Int = \\x = log x; x\n\
-         $ g : @Int -> <WithLog e, Net | e> @Int = \\x = fetch x\n\
-         $ closed : @Int -> <WithLog> @Int = \\x = log x; x\n"
+         $ f : @Int -> <WithLog e> @Int = \\x => log x; x\n\
+         $ g : @Int -> <WithLog e, Net | e> @Int = \\x => fetch x\n\
+         $ closed : @Int -> <WithLog> @Int = \\x => log x; x\n"
     );
     assert_eq!(type_of(&src, "f"), "@Int -> <Log | a> @Int");
     assert_eq!(type_of(&src, "g"), "@Int -> <Log, Net | a> @Int");
@@ -1398,7 +1398,7 @@ fn parameterized_row_alias_takes_the_tail() {
 
 #[test]
 fn row_alias_rejects_a_label_outside_it() {
-    let src = format!("{ROW_ALIAS_EFFECTS}$ f : @Int -> <App> @Int = \\x = fetch x\n");
+    let src = format!("{ROW_ALIAS_EFFECTS}$ f : @Int -> <App> @Int = \\x => fetch x\n");
     let e = errors(&src);
     assert!(e.contains("effect `Net` is performed but not handled"), "got: {e:?}");
 }
@@ -1407,8 +1407,8 @@ fn row_alias_rejects_a_label_outside_it() {
 fn unhandled_label_names_the_alias_it_came_from() {
     let src = format!(
         "{ROW_ALIAS_EFFECTS}\
-         $ frame : @Int -> <App> @Int = \\x = log x; draw x; x\n\
-         $ g : @Int -> <Gpu> @Int = \\x = frame x\n"
+         $ frame : @Int -> <App> @Int = \\x => log x; draw x; x\n\
+         $ g : @Int -> <Gpu> @Int = \\x => frame x\n"
     );
     let e = errors(&src);
     assert!(
@@ -1422,12 +1422,12 @@ fn row_alias_misuse_is_reported() {
     let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ x : App = 3\n"));
     assert!(e.contains("`App` is an effect row alias, not a type"), "got: {e:?}");
     let e = errors(&format!(
-        "{ROW_ALIAS_EFFECTS}$ N : @alias = @Int\n$ f : @Int -> <N> @Int = \\x = x\n"
+        "{ROW_ALIAS_EFFECTS}$ N : @alias = @Int\n$ f : @Int -> <N> @Int = \\x => x\n"
     ));
     assert!(e.contains("type alias `N` is not an effect row"), "got: {e:?}");
-    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ f : @Int -> <App e> @Int = \\x = x\n"));
+    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ f : @Int -> <App e> @Int = \\x => x\n"));
     assert!(e.contains("row alias `App` takes 0 parameter(s) but 1 were given"), "got: {e:?}");
-    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ f : @Int -> <Log e> @Int = \\x = x\n"));
+    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ f : @Int -> <Log e> @Int = \\x => x\n"));
     assert!(e.contains("effect `Log` takes no parameters"), "got: {e:?}");
     let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ W : @alias = <Log | e>\n"));
     assert!(e.contains("declares no type parameters"), "got: {e:?}");
@@ -1441,7 +1441,7 @@ const BOX_EFFECT: &str = "$ @mod M\n$ Box : @effect a = take : @Int -> a,\n";
 
 #[test]
 fn an_effect_parameter_is_fixed_by_its_row() {
-    let src = format!("{BOX_EFFECT}$ f : {{}} -> <Box @Int> @Int = \\u = Box.take 1 + Box.take 2\n");
+    let src = format!("{BOX_EFFECT}$ f : {{}} -> <Box @Int> @Int = \\u => Box.take 1 + Box.take 2\n");
     assert_eq!(type_of(&src, "f"), "{} -> <Box @Int> @Int");
 }
 
@@ -1449,7 +1449,7 @@ fn an_effect_parameter_is_fixed_by_its_row() {
 fn one_handler_serves_one_instance() {
     let src = format!(
         "{BOX_EFFECT}\
-         $ f : {{}} -> <Box> @Int = \\u = let s : @Str = Box.take 0 in Box.take 1\n"
+         $ f : {{}} -> <Box> @Int = \\u => let s : @Str = Box.take 0 in Box.take 1\n"
     );
     assert!(errors(&src).contains("expected @Int, found @Str"), "got: {:?}", errors(&src));
 }
@@ -1457,10 +1457,10 @@ fn one_handler_serves_one_instance() {
 #[test]
 fn an_operation_variable_is_opaque_in_the_handler() {
     let ok = "$ @mod M\n$ Put : @effect = put : a -> {},\n\
-              $ f : ({} -> <Put> {}) -> @Int = \\b = do b {} ctl k | Put.put x => k {} | u => 0\n";
+              $ f : ({} -> <Put> {}) -> @Int = \\b => do b {} ctl k | Put.put x => k {} | u => 0\n";
     assert_eq!(errors(ok), "");
     let bad = "$ @mod M\n$ Put : @effect = put : a -> {},\n\
-               $ f : ({} -> <Put> {}) -> @Int = \\b = do b {} ctl k | Put.put x => x + 0 | u => 0\n";
+               $ f : ({} -> <Put> {}) -> @Int = \\b => do b {} ctl k | Put.put x => x + 0 | u => 0\n";
     assert!(errors(bad).contains("`a` of `Put.put`"), "got: {:?}", errors(bad));
 }
 
@@ -1477,9 +1477,9 @@ fn a_handler_cannot_resume_with_a_value_of_its_own() {
 fn mutual_recursion_keeps_a_row_parameter_open() {
     let src = "$ @mod M\n\
                $ St : @union e = Done: @Int, More: ({} -> <e> St e),\n\
-               $ serve : St e -> @Int -> <e> @Int = \\st s =\n\
-               \tis st | St.Done.{ r } => r + s | St.More.{ k } => step k s\n\
-               $ step : ({} -> <e> St e) -> @Int -> <e> @Int = \\k s = serve (k {}) s\n";
+               $ serve : St e -> @Int -> <e> @Int = \\st s =>\n\
+               \tst |> \\ | St.Done.{ r } => r + s | St.More.{ k } => step k s\n\
+               $ step : ({} -> <e> St e) -> @Int -> <e> @Int = \\k s => serve (k {}) s\n";
     // A bare row variable is not printed; a closed one would show as `St <>`.
     assert_eq!(type_of(src, "serve"), "St a -> @Int -> @Int");
     assert_eq!(type_of(src, "step"), "({} -> St a) -> @Int -> @Int");

@@ -10,25 +10,26 @@ $ @mod STDLIB_CHANNELS
 
 $ with PAR
 
-$ fib : @Int -> @Int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
+$ fib : @Int -> @Int = \n => if n < 2 => n else fib (n - 1) + fib (n - 2)
 
 # Take jobs until the sentinel (a negative job).
-$ worker : Channel @Int -> Channel @Int -> {} -> <@IO> {} = \jobs results u =
+$ worker : Channel @Int -> Channel @Int -> {} -> <@IO> {} = \jobs results u =>
     let n = recv jobs in if n < 0 => {} else (send results (fib n); worker jobs results u)
 
-$ start : @Int -> Channel @Int -> Channel @Int -> @Vec (Future {}) -> <@IO> @Vec (Future {}) = \k jobs results acc =
+$ start : @Int -> Channel @Int -> Channel @Int -> @Vec (Future {})
+    -> <@IO> @Vec (Future {}) = \k jobs results acc =>
     if k == 0 => acc else start (k - 1) jobs results (@vec_push acc (spawn (worker jobs results)))
 
-$ send_all : Channel @Int -> @Int -> @Int -> <@IO> {} = \c i hi =
+$ send_all : Channel @Int -> @Int -> @Int -> <@IO> {} = \c i hi =>
     if i > hi => {} else (send c i; send_all c (i + 1) hi)
 
-$ sum_n : Channel @Int -> @Int -> @Int -> <@IO> @Int = \c n acc =
+$ sum_n : Channel @Int -> @Int -> @Int -> <@IO> @Int = \c n acc =>
     if n == 0 => acc else sum_n c (n - 1) (acc + recv c)
 
-$ join_all : @Vec (Future {}) -> @Int -> {} = \ws i =
+$ join_all : @Vec (Future {}) -> @Int -> {} = \ws i =>
     if i >= @vec_len ws => {} else (get (@vec_get ws i); join_all ws (i + 1))
 
-$ seq_sum : @Int -> @Int -> @Int = \i acc = if i > 24 => acc else seq_sum (i + 1) (acc + fib i)
+$ seq_sum : @Int -> @Int -> @Int = \i acc => if i > 24 => acc else seq_sum (i + 1) (acc + fib i)
 
 $ workers : @Int = 4
 
@@ -43,9 +44,10 @@ $ ck_pool : {} -> <@IO> @Int =
 # One task's messages arrive in the order it sent them.
 $ ck_order : {} -> <@IO> @Int =
     let c = channel {} in
-    let t = spawn (\u = send c "a"; send c "b"; send c "c") in
-    let s = recv c ++ recv c ++ recv c in get t; if s == "abc" => 0 else 1
+    let t = spawn (\u => send c "a"; send c "b"; send c "c") in
+    let s = recv c ++ recv c ++ recv c in
+    get t; if s == "abc" => 0 else 1
 
 $ test : {} -> <@IO> @Int = ck_pool {} + ck_order {}
 
-$ @main : @Vec @Str -> <@IO> @Int = \args = test {}
+$ @main : @Vec @Str -> <@IO> @Int = \args => test {}

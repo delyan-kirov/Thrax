@@ -55,7 +55,7 @@ struct Handler<'p> {
 }
 
 /// One evaluated handler clause: its operation (optionally effect-qualified),
-/// the 2-parameter closure `\arg = \k = body`, and how that body uses its
+/// the 2-parameter closure `\arg => \k => body`, and how that body uses its
 /// continuation (which decides whether a perform captures the stack slice at all,
 /// and whether resuming moves or copies it).
 struct HClause<'p> {

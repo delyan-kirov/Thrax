@@ -4,4 +4,4 @@ $ @mod TASK_HANDLED_EFFECT
 # sits on the spawning thread's stack.
 $ with PAR
 $ Ask : @effect = ask : {} -> @Int,
-$ g : {} -> <@IO, Ask> Future @Int = \u = spawn (\w = Ask.ask {} + 1)  #~ error[TYPE_MISMATCH]: a parallel task performs effect `Ask`
+$ g : {} -> <@IO, Ask> Future @Int = \u => spawn (\w => Ask.ask {} + 1)  #~ error[TYPE_MISMATCH]: a parallel task performs effect `Ask`

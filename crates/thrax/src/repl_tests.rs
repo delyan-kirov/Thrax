@@ -273,7 +273,7 @@ fn history_search_finds_navigates_and_cancels() {
 #[test]
 fn a_definition_typed_after_the_prefill_is_recognised() {
     assert_eq!(
-        prefilled_definition("= foo: {roo:@Int} -> @Int = \\p = p.roo"),
+        prefilled_definition("= foo: {roo:@Int} -> @Int = \\p => p.roo"),
         Some("foo".to_string())
     );
     assert_eq!(prefilled_definition("= x : @Int = 1"), Some("x".to_string()));

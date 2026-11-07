@@ -422,7 +422,13 @@ impl<'a> Lexer<'a> {
 
     /// A maximal run of operator characters, resolved against the table.
     fn lex_operator(&mut self, start: usize, line: Line) -> Result<Token> {
-        self.scan_while(crate::lexer::data::is_operator_char);
+        // `\` is always a token of its own, so `\| p => e` and `f=\x => e` lex
+        // as they do with spaces.
+        if self.cur() == b'\\' {
+            self.cursor += 1;
+        } else {
+            self.scan_while(|c| crate::lexer::data::is_operator_char(c) && c != b'\\');
+        }
         let lexeme = self.slice_from(start);
         match crate::lexer::data::operator(lexeme) {
             Some(kind) => Ok(self.mk(kind, start, line)),

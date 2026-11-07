@@ -8,14 +8,14 @@ $ @mod VEC_IN_PLACE
 
 $ Amb : @effect = flip : {} -> @Bool,
 
-$ build : @Int -> @Vec @Int -> @Vec @Int = \n v = if n == 0 => v else build (n - 1) (@vec_push v n)
+$ build : @Int -> @Vec @Int -> @Vec @Int = \n v => if n == 0 => v else build (n - 1) (@vec_push v n)
 
-$ sum_from : @Int -> @Int -> @Vec @Int -> @Int = \i acc v =
+$ sum_from : @Int -> @Int -> @Vec @Int -> @Int = \i acc v =>
     if i == @vec_len v => acc else sum_from (i + 1) (acc + @vec_get v i) v
 
-$ sum : @Vec @Int -> @Int = \v = sum_from 0 0 v
+$ sum : @Vec @Int -> @Int = \v => sum_from 0 0 v
 
-$ double_all : @Int -> @Vec @Int -> @Vec @Int = \i v =
+$ double_all : @Int -> @Vec @Int -> @Vec @Int = \i v =>
     if i == @vec_len v => v else double_all (i + 1) (@vec_set v i (2 * @vec_get v i))
 
 # Unshared: every push and set lands in place.
@@ -54,12 +54,12 @@ $ ck_partial : @Int =
 # A closure holding the vector, called twice.
 $ ck_closure : @Int =
     let v = build 3 (@vec_new {}) in
-    let g = \i = @vec_set v 0 i in
+    let g = \i => @vec_set v 0 i in
     let a = g 10 in
     let b = g 20 in
     if @vec_get a 0 == 10 && @vec_get b 0 == 20 && @vec_get v 0 == 3 => 0 else 1
 
-$ sum_all : ({} -> <Amb> @Int) -> @Int = \body =
+$ sum_all : ({} -> <Amb> @Int) -> @Int = \body =>
     do body {}
     ctl k | Amb.flip u => k @true + k @false | x => x
 
@@ -67,7 +67,7 @@ $ sum_all : ({} -> <Amb> @Int) -> @Int = \body =
 $ ck_multishot : @Int =
     let
         r =
-            sum_all <| \u =
+            sum_all <| \u =>
                 let v = build 3 (@vec_new {}) in
                 let w = @vec_push v (if flip {} => 100 else 10) in
                 sum w + @vec_len v
@@ -78,7 +78,7 @@ $ ck_multishot : @Int =
 # moves it: only the last resume may take it over.
 $ ck_multishot_move : @Int =
     let
-        r = sum_all <| \u =
+        r = sum_all <| \u =>
             let v = build 3 (@vec_new {}) in
             let x = if flip {} => 100 else 10 in
             sum (@vec_push v x)

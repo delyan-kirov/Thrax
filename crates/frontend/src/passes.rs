@@ -1,7 +1,7 @@
 //! The middle-end passes over the Core, in the order [`crate::ir::lower_modules`]
 //! runs them:
 //!
-//! 1. [`specialize`]: a call that passes a `@ctx` function a statically known
+//! 1. [`specialize`]: a call that passes a `@use` function a statically known
 //!    instance calls a clone of it with the instance substituted, and a method
 //!    projected from a known instance becomes a direct global reference.
 //! 2. [`eta_fold`]: a call through an eta-expanded primitive method becomes the

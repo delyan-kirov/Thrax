@@ -43,9 +43,9 @@ future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
   (`@tensor_index`/`@tensor_length`/`@tensor_create`/`@tensor_concat`/`@tensor_slice`/
   `@tensor_transpose`, plus `@tensor_index_axis`/`@tensor_slice_axis` for the
   multi-axis form); `transpose`/`matmul`/`dot`/`concat`/`slice`/`row`/`col` all live
-  in `library/LA.thx` as ordinary Thrax. Element arithmetic arrives as ONE `@ctx`
-  context parameter bundling the interfaces it needs
-  (`@ctx {IAdd a, IMul a, IZero a}`), not a Num class, so `matmul`/`dot` are
+  in `library/LA.thx` as ordinary Thrax. Element arithmetic arrives as `@use` fields
+  naming the interfaces it needs
+  (`@use {p: IAdd a, m: IMul a, z: IZero a}`), not a Num class, so `matmul`/`dot` are
   element-generic over @Int and Real by supplying the dictionary.
 - **Kernels shipped** (#367): `dot`/`matmul` call the `@tensor_dot`/`@tensor_matmul`
   primitives with the dictionary's methods as plain functions
@@ -281,7 +281,7 @@ constraints. Status now:
   the canonical `CORE.count_from lo`); against a `List` or sized tensor it is a type
   error. This is the "first-class lazy Range", realized by making the literal target
   codata: laziness = target a `Stream`, no separate `Range` type. Open range PATTERNS
-  `is n | lo ...` ship too (match `lo <= n`, one comparison). `Stream`/`count_from`
+  `n |> \ | lo ...` ship too (match `lo <= n`, one comparison). `Stream`/`count_from`
   are canonical in `CORE`. `Expr::Range.hi`/`Pattern::Range.hi`/`Pat::Range.hi` are
   optional.
 - **Deferred (separate from LA):**

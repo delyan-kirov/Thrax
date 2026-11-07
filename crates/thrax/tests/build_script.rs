@@ -16,12 +16,12 @@ fn project(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     write(
         &dir.join("BUILD.thx"),
-        "$ @mod BUILD\n\n$ @build : {} -> <@Meta, @IO> @Code = \\_ = @import_path \"source\"; @parse_items \"\"\n",
+        "$ @mod BUILD\n\n$ @build : {} -> <@Meta, @IO> @Code = \\_ => @import_path \"source\"; @parse_items \"\"\n",
     );
     write(&dir.join("source/GREET.thx"), "$ @mod GREET\n\n$ greeting : @Str = \"hi from source\"\n");
     let main = |m: &str| {
         format!(
-            "$ @mod {m}\n$ with GREET\n$ with IO\n\n$ @main : @Vec @Str -> <@IO> @Int = \\_ = println greeting; 0\n"
+            "$ @mod {m}\n$ with GREET\n$ with IO\n\n$ @main : @Vec @Str -> <@IO> @Int = \\_ => println greeting; 0\n"
         )
     };
     write(&dir.join("MAIN.thx"), &main("MAIN"));
@@ -52,11 +52,11 @@ fn thrax(dir: &Path, args: &[&str]) -> std::process::Output {
 fn configured(name: &str, body: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("thrax-build-options-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    write(&dir.join("BUILD.thx"), &format!("$ @mod BUILD\n\n$ @build : {{}} -> <@Meta, @IO> @Code = \\_ = {body}\n"));
+    write(&dir.join("BUILD.thx"), &format!("$ @mod BUILD\n\n$ @build : {{}} -> <@Meta, @IO> @Code = \\_ => {body}\n"));
     dir
 }
 
-const LONG: &str = "$ @mod F\n\n$ f : @Int -> @Int = \\x = is x | 0 => 1 | 1 => 2 | 2 => 3 | _ => x\n";
+const LONG: &str = "$ @mod F\n\n$ f : @Int -> @Int = \\x => x |> \\ | 0 => 1 | 1 => 2 | 2 => 3 | _ => x\n";
 
 #[test]
 fn fmt_takes_its_style_from_the_build_script() {
@@ -67,7 +67,7 @@ fn fmt_takes_its_style_from_the_build_script() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let formatted = std::fs::read_to_string(dir.join("sub/F.thx")).unwrap();
     assert!(formatted.lines().all(|l| l.len() <= 40), "{formatted}");
-    assert!(formatted.contains("\n  | 0 => 1\n"), "{formatted}");
+    assert!(formatted.contains("\n  x |> \\\n    | 0 => 1\n"), "{formatted}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -80,7 +80,7 @@ fn a_failing_build_script_leaves_fmt_on_the_defaults() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("`format.width` takes an integer"));
     let formatted = std::fs::read_to_string(dir.join("F.thx")).unwrap();
-    assert!(formatted.contains("\n    | 0 => 1\n"), "{formatted}");
+    assert!(formatted.contains("\n    x |> \\\n        | 0 => 1\n"), "{formatted}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

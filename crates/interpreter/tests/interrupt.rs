@@ -26,7 +26,7 @@ fn a_pending_request_stops_a_runaway_evaluation() {
     // would never return.
     let spin = lower(
         "$ @mod T\n\
-         $ spin : @Int -> @Int = \\n = spin n\n\
+         $ spin : @Int -> @Int = \\n => spin n\n\
          $ test : @Int = spin 0\n",
     );
     utilities::interrupt::request();
@@ -36,7 +36,7 @@ fn a_pending_request_stops_a_runaway_evaluation() {
     // Taking the request clears it, so the next evaluation runs to completion.
     assert!(utilities::interrupt::take());
     assert!(!utilities::interrupt::requested());
-    let sum = lower("$ @mod T\n$ test : @Int = (\\n = n) 3\n");
+    let sum = lower("$ @mod T\n$ test : @Int = (\\n => n) 3\n");
     assert_eq!(
         interpreter::machine::eval(&sum, "test").expect("no request pending"),
         "3"

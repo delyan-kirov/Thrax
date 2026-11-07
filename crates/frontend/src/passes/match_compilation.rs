@@ -90,7 +90,7 @@ impl MatchCompiler {
     // exponentially in the nesting depth.
     //
     // So the remaining arms are compiled once, into a nullary function bound
-    // just before the arm that may fail: `let %mk = \_ = <rest> in <arm>`.
+    // just before the arm that may fail: `let %mk = \_ => <rest> in <arm>`.
     // Each failure point is the call `%mk {}`. Matching is then linear in the
     // patterns, a false guard falls through exactly like a mismatch, and the
     // rest runs only on failure, because a lambda's body does not run until it

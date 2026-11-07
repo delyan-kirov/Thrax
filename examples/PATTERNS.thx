@@ -39,11 +39,11 @@ $ pun : @Str = let Person.{ .name, .age = a } = alice in name
 $ just_x : @Int = let Point.{ x, _ } = Point.{ .x = 7, .y = 9 } in x
 
 # Lambda struct pattern (positional).
-$ get_name : Person -> @Str = \Person.{ n, _ } = n
+$ get_name : Person -> @Str = \Person.{ n, _ } => n
 $ who1 : @Str = get_name alice
 
 # Lambda struct pattern (named), used with another argument.
-$ older : Person -> @Int -> @Int = \Person.{ .age = a } y = a + y
+$ older : Person -> @Int -> @Int = \Person.{ .age = a } y => a + y
 $ a1 : @Int = older alice 5
 
 # Nested patterns: destructure a struct inside a struct.
@@ -56,7 +56,7 @@ $ start_x : @Int = let Line.{ .from = Point.{ x, y }, .to = t } = seg in x
 $ end_y : @Int = let Line.{ _, Point.{ _, by } } = seg in by
 
 # Nested lambda pattern.
-$ line_start_x : Line -> @Int = \Line.{ .from = Point.{ x, _ }, .to = _ } = x
+$ line_start_x : Line -> @Int = \Line.{ .from = Point.{ x, _ }, .to = _ } => x
 $ sx : @Int = line_start_x seg
 
 # Force-evaluate results for the combined test runner (pass = no fault).

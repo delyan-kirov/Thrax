@@ -1001,7 +1001,7 @@ impl Server {
                     items.push(item(name, &ty, if ty.contains("->") { 3 } else { 6 }));
                 }
             }
-            for kw in ["let", "in", "if", "else", "is", "with", "do", "ctl", "defer"] {
+            for kw in ["let", "in", "if", "else", "with", "do", "ctl", "defer"] {
                 if kw.starts_with(prefix) {
                     items.push(item(kw, "keyword", 14));
                 }

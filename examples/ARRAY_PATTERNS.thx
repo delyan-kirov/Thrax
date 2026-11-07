@@ -10,38 +10,38 @@ $ arr2 : @Array = [10, 20]
 $ arr3 : @Array = [1, 2, 3]
 
 # Empty vs non-empty.
-$ is_empty : @Array -> @Int = \a = is a | [] => 1 | _ => 0
+$ is_empty : @Array -> @Int = \a => a |> \ | [] => 1 | _ => 0
 $ ck_empty : @Int = if (is_empty emptA) == 1 => 0 else 1
 $ ck_nonempty : @Int = if (is_empty arr2) == 0 => 0 else 1
 
 # Exact-length destructure: [x, y] matches a 2-element array, else falls through.
-$ sum2 : @Array -> @Int = \a = is a | [x, y] => x + y | _ => 0
+$ sum2 : @Array -> @Int = \a => a |> \ | [x, y] => x + y | _ => 0
 $ ck_sum2 : @Int = if (sum2 arr2) == 30 => 0 else 1
 $ ck_sum2_miss : @Int = if (sum2 arr3) == 0 => 0 else 1
 
 # A literal element pattern: `[1, y]` only matches when element 0 is 1.
-$ after_one : @Array -> @Int = \a = is a | [1, y] => y | _ => 0
+$ after_one : @Array -> @Int = \a => a |> \ | [1, y] => y | _ => 0
 $ ck_after_one : @Int = if (after_one [1, 42]) == 42 => 0 else 1
 $ ck_after_two : @Int = if (after_one [2, 42]) == 0 => 0 else 1
 
 # `[h] ++ rest`: head plus the remaining slice.
-$ head3 : @Array -> @Int = \a = is a | [h] ++ rest => h | _ => 0
+$ head3 : @Array -> @Int = \a => a |> \ | [h] ++ rest => h | _ => 0
 $ ck_head3 : @Int = if (head3 arr3) == 1 => 0 else 1
 
-$ rest_len : @Array -> @Int = \a = is a | [h] ++ rest => @array_len rest | _ => 0
+$ rest_len : @Array -> @Int = \a => a |> \ | [h] ++ rest => @array_len rest | _ => 0
 $ ck_rest_len : @Int = if (rest_len arr3) == 2 => 0 else 1
 
 # A literal element in the leading piece.
-$ after_one_len : @Array -> @Int = \a = is a | [1] ++ rest => @array_len rest | _ => 0 - 1
+$ after_one_len : @Array -> @Int = \a => a |> \ | [1] ++ rest => @array_len rest | _ => 0 - 1
 $ ck_prefix : @Int = if (after_one_len arr3) == 2 => 0 else 1
 $ ck_prefix_miss : @Int = if (after_one_len arr2) == 0 - 1 => 0 else 1
 
 # A guard on a sequence arm.
-$ ordered : @Array -> @Int = \a =
-    is a
-    | [x, y] if (x < y) => 1
-    | [x, y]            => 2
-    | _                 => 0
+$ ordered : @Array -> @Int = \a =>
+    a |> \
+        | [x, y] if (x < y) => 1
+        | [x, y]            => 2
+        | _                 => 0
 $ ck_ord_lt : @Int = if (ordered arr2) == 1 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.

@@ -4,7 +4,7 @@
 //! desugars surface forms (string interpolation, `&&`, `<|>`) that a formatter
 //! must print as written. Tokens are printed verbatim and in order; only the
 //! whitespace between them is chosen. The structure that decides where lines
-//! break (items, bracket groups, `let`/`if`/`is`/`\`/`do` forms, arms) is read
+//! break (items, bracket groups, `let`/`if`/`\`/`do` forms, arms) is read
 //! off the token stream with a small recursive descent that mirrors the
 //! grammar's layout-relevant shape, and laid out with a Wadler-style printer:
 //! a group is printed on one line when it fits in the width, and broken at its

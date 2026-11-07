@@ -2,15 +2,15 @@
 
 Every language feature, one entry each, with a simple example and a more
 involved one. The examples use the language's real, current surface syntax
-(branches are `if c => t else e`, matches are `is scrut | pat => e ... else d`).
+(branches are `if c => t else e`, matches are `scrut |> \ | pat => e ... else d`).
 Where a feature is only partly built, the entry says so.
 
 Every code block below is self-contained and type-checks on its own (verified
 with `thrax check`); a block that needs a library imports it (`$ with LA`, etc.).
 
 Conventions used throughout: a global is `$ name : Type = expr`; a lambda is
-`\x = e` (curried: `\a b = e`); a branch is `if c => t else e`; a match is
-`is scrut | pat => e ...`. The comparison operators are `==` (equal),
+`\x => e` (curried: `\a b => e`); a branch is `if c => t else e`; a match is
+`scrut |> \ | pat => e ...`. The comparison operators are `==` (equal),
 `!=` (not equal), `<` (less), `>` (greater), `<=` (at most), `>=` (at least),
 each of type `a -> a -> @Bool`.
 
@@ -80,7 +80,7 @@ $ z    : Cpx = 3.4 + 1.2i      # the canonical spelling: real plus imaginary
 
 An operator takes ONE type for both operands, so a real joins a complex only by
 being made one: `CPX.of_real 3.4 + 1.2i`. Nothing is promoted silently, in either
-direction. There is no imaginary PATTERN; match the fields (`is z | Cpx.{re, im}`)
+direction. There is no imaginary PATTERN; match the fields (`z |> \ | Cpx.{re, im}`)
 or compare with `==` in a guard.
 
 ## 1.5 String literals and escapes
@@ -101,13 +101,13 @@ and `\}` are literal braces.
 
 Simple:
 ```thrax
-$ greet : Str -> Str = \who = "hello {who}!"
+$ greet : Str -> Str = \who => "hello {who}!"
 ```
 
 Involved (a user type interpolates by defining an `Ito_string` instance):
 ```thrax
 $ Point : @struct = x: @Int, y: @Int
-$ impl_IToString_for_Point : Ito_string Point = .{ .show = \p = "({p.x}, {p.y})" }
+$ impl_IToString_for_Point : Ito_string Point = .{ .show = \p => "({p.x}, {p.y})" }
 $ msg : Str = "at {Point.{ .x = 3, .y = 4 }}, n={40 + 2}"   # "at (3, 4), n=42"
 ```
 
@@ -133,13 +133,13 @@ a global's type is its contract with every importer. Leaving it out is a
 Simple:
 ```thrax
 $ answer : @Int = 42
-$ id : t -> t = \x = x
+$ id : t -> t = \x => x
 ```
 
 Involved (definitions may appear in any order and reference each other):
 ```thrax
-$ even : @Int -> @Bool = \n = if n == 0 => @true else odd (n - 1)
-$ odd  : @Int -> @Bool = \n = if n == 0 => @false else even (n - 1)
+$ even : @Int -> @Bool = \n => if n == 0 => @true else odd (n - 1)
+$ odd  : @Int -> @Bool = \n => if n == 0 => @false else even (n - 1)
 ```
 
 ## 2.3 Imports `$ with`
@@ -185,9 +185,9 @@ end of the file, from importers. There is no `@public` counterpart, so a
 module's public interface sits above the marker.
 
 ```thrax
-$ api : @Int -> @Int = \x = helper x + 1
+$ api : @Int -> @Int = \x => helper x + 1
 $ @private
-$ helper : @Int -> @Int = \x = x * x    # module-private
+$ helper : @Int -> @Int = \x => x * x    # module-private
 ```
 
 ## 2.5 Entry point
@@ -198,7 +198,7 @@ entry, those are the only `@`-names a program may define, besides the blessed
 `@I*` interface types, which only `CORE` declares.
 
 ```thrax
-$ @main : @Vec @Str -> <@IO> @Int = \args = 0      # args[0] is the program path
+$ @main : @Vec @Str -> <@IO> @Int = \args => 0      # args[0] is the program path
 ```
 
 A module without `@main` is a library: `thrax check` type-checks it and runs its
@@ -254,7 +254,7 @@ position (type vs term).
 
 ```thrax
 $ nothing : {} = {}
-$ ignore : @Int -> {} = \x = {}
+$ ignore : @Int -> {} = \x => {}
 ```
 
 ## 3.5 Function types and effect rows
@@ -264,9 +264,9 @@ open row (a row variable), which is what makes a function effect-polymorphic.
 
 ```thrax
 $ State : @effect = get : {} -> @Int, put : @Int -> {},
-$ pure : @Int -> @Int = \x = x                       # pure (empty row)
-$ act  : {} -> <State> @Int = \u = get {}           # may perform State
-$ poly : (a -> <e> b) -> a -> <e> b = \f x = f x   # effect-polymorphic
+$ pure : @Int -> @Int = \x => x                       # pure (empty row)
+$ act  : {} -> <State> @Int = \u => get {}           # may perform State
+$ poly : (a -> <e> b) -> a -> <e> b = \f x => f x   # effect-polymorphic
 ```
 
 ## 3.6 Type variables
@@ -275,8 +275,8 @@ over the whole signature. The same lowercase name repeated is the same variable;
 there is no separate backtick spelling.
 
 ```thrax
-$ fst : {a, b} -> a = \t = t.0
-$ const : t -> u -> t = \x y = x
+$ fst : {a, b} -> a = \t => t.0
+$ const : t -> u -> t = \x y => x
 ```
 
 ## 3.7 Tuples
@@ -291,7 +291,7 @@ $ n : @Int = p.0
 
 Involved (generic, nested, first-class):
 ```thrax
-$ swap : {a, b} -> {b, a} = \t = {t.1, t.0}
+$ swap : {a, b} -> {b, a} = \t => {t.1, t.0}
 $ nested : {@Int, {@Int, @Int}} = {1, {2, 3}}
 $ deep : @Int = nested.1.0 + nested.1.1        # 5
 ```
@@ -303,13 +303,13 @@ least those fields. Records are structural (unify by field name).
 
 Simple:
 ```thrax
-$ area : { x: @Int, y: @Int | r } -> @Int = \p = p.x * p.y
+$ area : { x: @Int, y: @Int | r } -> @Int = \p => p.x * p.y
 ```
 
 Involved (update preserves the open tail; `with` stacks a field):
 ```thrax
-$ shift : { x: @Int | r } -> { x: @Int | r } = \p = { .x = p.x + 10 | p }
-$ tag   : { x: @Int | r } -> { x: @Int, t: @Int | r } = \p = { .t = 99, with p }
+$ shift : { x: @Int | r } -> { x: @Int | r } = \p => { .x = p.x + 10 | p }
+$ tag   : { x: @Int | r } -> { x: @Int, t: @Int | r } = \p => { .t = 99, with p }
 ```
 
 ## 3.9 Sized tensors
@@ -347,27 +347,31 @@ type, so it is used inside a row (section 8.6).
 # 4. Expressions and syntactic sugar
 
 ## 4.1 Lambdas
-`\pat ... = e`. Parameters are juxtaposed and curried sugar. A parameter may
-be an irrefutable pattern, and may carry a `: Type` annotation inside parens,
-`(x: T)`. The parens are needed because a lowercase name in a type is a type
-variable, so a bare annotation would swallow the next parameter. A lone
-parameter may drop them (`\x: T = e`), since `=` ends its type.
+`\pat ... => e`. Parameters are juxtaposed and curried sugar. A parameter may
+be an irrefutable pattern, and may carry a `: Type` annotation, always inside
+parens, `(x: T)`, even when it is the only parameter, so the type ends at `)`.
+(A lowercase name in a type is a type variable, so a bare annotation would
+swallow the next parameter as its argument.)
 
 ```thrax
 $ Person : @struct = name: Str, age: @Int,
-$ inc : @Int -> @Int = \x = x + 1
-$ add : @Int -> @Int -> @Int = \a b = a + b            # curried
-$ name : Person -> Str = \Person.{ name, _ } = name # destructuring parameter
-$ dec : @Int -> @Int = \x: @Int = x - 1                     # annotated parameter
-$ sub : @Int -> @Int -> @Int = \(a: @Int) (b: @Int) = a - b  # one annotation per parameter
+$ inc : @Int -> @Int = \x => x + 1
+$ add : @Int -> @Int -> @Int = \a b => a + b                  # curried
+$ name : Person -> Str = \Person.{ name, _ } => name          # destructuring parameter
+$ dec : @Int -> @Int = \(x: @Int) => x - 1                     # annotated parameter
+$ sub : @Int -> @Int -> @Int = \(a: @Int) (b: @Int) => a - b  # one annotation per parameter
 ```
+
+`\x = e` and `\x: T => e` are errors with fix-its. The three tokens have one
+job each: `=` names something (`$ x = e`, `let x = e`), `=>` abstracts over a
+pattern (lambdas and every kind of arm), `->` is the function type.
 
 ## 4.2 Application
 Juxtaposition, left-associative, binds tighter than any operator.
 
 ```thrax
-$ inc : @Int -> @Int = \x = x + 1
-$ add : @Int -> @Int -> @Int = \a b = a + b
+$ inc : @Int -> @Int = \x => x + 1
+$ add : @Int -> @Int -> @Int = \a b => a + b
 $ r : @Int = add (inc 2) 3   # (add (inc 2)) 3
 ```
 
@@ -412,7 +416,7 @@ A type of your own joins them with an instance:
 ```thrax
 $ Money : @struct = cents: @Int
 
-$ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
+$ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a b => a.cents < b.cents }
 $ cheaper : @Bool = Money.{ .cents = 150 } < Money.{ .cents = 900 }
 ```
 
@@ -440,7 +444,7 @@ $ xs : @Vec @Int = 1 :: 2 :: 3 :: []
 Desugar to a lazy `if`, so the right operand runs only when needed.
 
 ```thrax
-$ safe : @Int -> @Bool = \n = n > 0 && 100 / n > 5
+$ safe : @Int -> @Bool = \n => n > 0 && 100 / n > 5
 ```
 
 ## 4.7 Conditional `if ... => ... else`
@@ -450,12 +454,12 @@ allowed. It is lazy (only the taken branch runs) and is not a pattern match.
 
 Simple:
 ```thrax
-$ abs : @Int -> @Int = \n = if n > 0 => n else -n
+$ abs : @Int -> @Int = \n => if n > 0 => n else -n
 ```
 
 Involved (else-if chain):
 ```thrax
-$ sign : @Int -> @Int = \n =
+$ sign : @Int -> @Int = \n =>
 	if n == 0 => 0
 	else if n > 0 => 1
 	else -1
@@ -463,7 +467,7 @@ $ sign : @Int -> @Int = \n =
 
 The same chain with comma-separated arms:
 ```thrax
-$ sign2 : @Int -> @Int = \n =
+$ sign2 : @Int -> @Int = \n =>
 	if
 		n == 0 => 0,
 		n > 0  => 1,
@@ -484,16 +488,16 @@ Involved (comma chain, destructuring, recursion, annotation):
 ```thrax
 $ r : @Int = let {a, b} = {3, 4}, s = a + b in s * 2
 $ len : @Vec @Int -> @Int =
-	let go : @Vec @Int -> @Int -> @Int = \l n =
-		is l | _ :: t => go t (n + 1) | _ => n
-	 in \l = go l 0
+	let go : @Vec @Int -> @Int -> @Int = \l n =>
+		l |> \ | _ :: t => go t (n + 1) | _ => n
+	 in \l => go l 0
 ```
 
 ## 4.9 Sequencing `;`, pipes `|>` `<|`, composition `<|>`
 Parser sugar, lowest precedence. `a ; b` = `let _ = a in b`. `x |> f` = `f x`
 (left-assoc). `f <| x` = `f x` (right-assoc).
 
-`f <|> g` composes, and is the lambda it means: `\x = f (g x)`. It is
+`f <|> g` composes, and is the lambda it means: `\x => f (g x)`. It is
 right-associative and the tightest infix operator, so `f <|> g <|> h` is
 `f <|> (g <|> h)`, and application still binds tighter (`f <|> g x` is
 `f <|> (g x)`). Because it expands to a lambda, it is typed per use site, and the
@@ -509,16 +513,16 @@ the way short-circuiting is a property of infix `&&` (§4.10). A single row that
 the union of two variables is not expressible today (issue #200).
 
 ```thrax
-$ inc : @Int -> @Int = \x = x + 1
-$ double : @Int -> @Int = \x = x * 2
-$ step1 : {} -> @Int = \u = 0
-$ step2 : {} -> @Int = \u = 0
+$ inc : @Int -> @Int = \x => x + 1
+$ double : @Int -> @Int = \x => x * 2
+$ step1 : {} -> @Int = \u => 0
+$ step2 : {} -> @Int = \u => 0
 $ eff : @Int = step1 {} ; step2 {} ; 0     # run for effect, return 0
 $ y   : @Int = 5 |> inc |> double          # double (inc 5)
 $ z   : @Int = double <| inc <| 5          # same
 $ f   : @Int -> @Int = double <|> inc      # \x = double (inc x)
 $ w   : @Int = (double <|> inc) 5          # 12
-$ shout : @Str -> <@IO> {} = \s = IO.println s
+$ shout : @Str -> <@IO> {} = \s => IO.println s
 $ show  : @Int -> <@IO> {} = shout <|> to_string   # the row is the union
 $ h2    : @Int -> @Int = (<|>) double inc          # = compose double inc
 ```
@@ -539,7 +543,7 @@ $ total : @Int = VEC.foldl (+) 0 [1, 2, 3] # as an argument
 The parens must hold exactly one operator, so `(a + b)` and `(-1)` still group.
 `|` and `<>` are grammatical delimiters, not operators, and have no function
 form. An operator the parser rewrites rather than calls (`&&`, `||`, `;`, `|>`,
-`<|`) has no binding of its own, so `(op)` is the function `\l r = l op r`;
+`<|`) has no binding of its own, so `(op)` is the function `\l r => l op r`;
 `(&&)` therefore evaluates both sides, since short-circuiting is a property of
 the infix form. `<|>` is rewritten too, but its function form names a binding:
 `(<|>)` is CORE's `compose` (§4.9).
@@ -568,7 +572,7 @@ type and lists the names in scope that fit it, each offered as a fix. A hole is
 how to ask the compiler what goes in a spot.
 
 ```thrax
-$ f : @Int -> @Int = \n = n + ???
+$ f : @Int -> @Int = \n => n + ???
 # error[TYPED_HOLE]: hole `???` has type `@Int`
 # note: in scope with this type: `n`
 ```
@@ -577,35 +581,42 @@ $ f : @Int -> @Int = \n = n + ???
 
 # 5. Pattern matching
 
-## 5.1 The match form `is`
-`is scrut | pat => e | pat => e ...`. Arms are tried top to bottom; the first
-matching pattern wins and binds its variables. The leading `is` distinguishes it
-from `if`. There is no default branch: a catch-all is an ordinary arm whose
-pattern matches anything, `| _ => d` (or `| x => d` to use the value).
+## 5.1 The multi-arm lambda and matches
+`\ | pat => e | pat => e ...` is a lambda of ONE argument, matched against the
+arms top to bottom; the first matching pattern wins and binds its variables. A
+match is the multi-arm lambda applied to the scrutinee, usually with `|>`:
+`scrut |> \ | pat => e ...`. There is no default branch: a catch-all is an
+ordinary arm whose pattern matches anything, `| _ => d` (or `| x => d` to use
+the value). Several arguments are matched as a tuple, and arms belong to the
+innermost multi-arm lambda or handler, so a nested one is parenthesized.
 
 Simple:
 ```thrax
-$ classify : @Int -> Str = \n =
-	is n | 0 => "zero" | 1 => "one" | _ => "many"
+$ classify : @Int -> @Str = \ | 0 => "zero" | 1 => "one" | _ => "many"
+$ yn : @Str -> @Int = \s => s |> \ | "yes" => 1 | "no" => 0 | _ => 99
+$ total : { @Int, @Int } -> @Int = \ | { 0, acc } => acc | { n, acc } => total { n - 1, acc + n }
 ```
 
 Involved (nested union patterns, exhaustive so no catch-all, see 5.9):
 ```thrax
 $ Wrap : @union = Empty: {}, W: { Opt }
 $ Opt  : @union = None: {}, Some: { @Int }
-$ unwrap : Wrap -> @Int = \w =
-	is w | Wrap.Empty => 0
-	     | Wrap.W.{ Opt.None } => 1
-	     | Wrap.W.{ Opt.Some.{ n } } => n
+$ unwrap : Wrap -> @Int = \
+    | Wrap.Empty                => 0
+    | Wrap.W.{ Opt.None }       => 1
+    | Wrap.W.{ Opt.Some.{ n } } => n
 ```
+
+An empty match, on a value of an uninhabited type, is `x |> @absurd`. `is` was
+removed; writing it is an error whose fix-it moves the scrutinee in front.
 
 ## 5.2 Literal patterns
 Match integers (any width), Real, and Str by equality (refutable). A numeric
 literal may be negative (`-1`, `-0.5`), also as a range bound (`-10 ... -1`).
 
 ```thrax
-$ describe : @Int -> Str = \n = is n | 0 => "z" | 1 => "o" | -1 => "m1" | _ => "m"
-$ yn : Str -> @Int = \s = is s | "yes" => 1 | "no" => 0 | _ => 99
+$ describe : @Int -> Str = \n => n |> \ | 0 => "z" | 1 => "o" | -1 => "m1" | _ => "m"
+$ yn : Str -> @Int = \s => s |> \ | "yes" => 1 | "no" => 0 | _ => 99
 ```
 
 A string literal can be a piece of a `++` pattern (5.7): `"GET " ++ path`
@@ -615,7 +626,7 @@ strips a prefix, `name ++ ".thx"` a suffix, and `"<" ++ body ++ ">"` both.
 `_` matches anything binding nothing; a lowercase name binds the value.
 
 ```thrax
-$ tag : @Int -> @Int = \n = is n | 0 => 100 | m => m + 1
+$ tag : @Int -> @Int = \n => n |> \ | 0 => 100 | m => m + 1
 ```
 
 ## 5.4 Struct patterns
@@ -625,8 +636,8 @@ or named (dotted, any order, others ignored; a lone `.name` puns).
 ```thrax
 $ Point  : @struct = x: @Int, y: @Int,
 $ Person : @struct = name: Str, age: @Int,
-$ sum_xy : Point -> @Int = \p = is p | Point.{ x, y } => x + y
-$ who    : Person -> Str = \p = is p | Person.{ .name } => name
+$ sum_xy : Point -> @Int = \p => p |> \ | Point.{ x, y } => x + y
+$ who    : Person -> Str = \p => p |> \ | Person.{ .name } => name
 ```
 
 ## 5.5 Variant patterns
@@ -635,8 +646,8 @@ the union inferred from the arms. Payloads nest.
 
 ```thrax
 $ Maybe : @union t = Just: t, None: {}
-$ get : @Int -> Maybe @Int -> @Int = \d m = is m | Maybe.Just.{ x } => x | _ => d
-$ isJust : Maybe t -> @Bool = \m = is m | .Just.{ _ } => @true | _ => @false
+$ get : @Int -> Maybe @Int -> @Int = \d m => m |> \ | Maybe.Just.{ x } => x | _ => d
+$ isJust : Maybe t -> @Bool = \m => m |> \ | .Just.{ _ } => @true | _ => @false
 ```
 
 ## 5.6 Range patterns
@@ -645,13 +656,13 @@ scrutinee's type). Open `lo ...` matches `lo <= x`. Refutable, binds nothing.
 
 Simple:
 ```thrax
-$ grade : @Int -> Str = \n = is n | 90 ... 100 => "A" | 60 ... 89 => "C" | _ => "F"
+$ grade : @Int -> Str = \n => n |> \ | 90 ... 100 => "A" | 60 ... 89 => "C" | _ => "F"
 ```
 
 Involved (open range, Real):
 ```thrax
-$ sign : @Int -> Str = \n = is n | 0 ... => "nonneg" | _ => "neg"
-$ band : Real -> @Int = \x = is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 | _ => 0
+$ sign : @Int -> Str = \n => n |> \ | 0 ... => "nonneg" | _ => "neg"
+$ band : Real -> @Int = \x => x |> \ | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 | _ => 0
 ```
 
 ## 5.7 Sequence and array patterns
@@ -670,14 +681,14 @@ them in more than one way.
 
 Simple:
 ```thrax
-$ sum : @Vec @Int -> @Int = \xs = is xs | [] => 0 | h :: t => h + sum t
+$ sum : @Vec @Int -> @Int = \xs => xs |> \ | [] => 0 | h :: t => h + sum t
 ```
 
 Involved (a prefix, a suffix, and both ends):
 ```thrax
-$ second : @Vec @Int -> @Int = \xs = is xs | [_, x] ++ rest => x | _ => -1
-$ ext    : @Str -> @Str = \s = is s | name ++ ".thx" => name | _ => s
-$ ends   : @Array -> @Int = \a = is a | [x] ++ mid ++ [z] => x + z | _ => 0
+$ second : @Vec @Int -> @Int = \xs => xs |> \ | [_, x] ++ rest => x | _ => -1
+$ ext    : @Str -> @Str = \s => s |> \ | name ++ ".thx" => name | _ => s
+$ ends   : @Array -> @Int = \a => a |> \ | [x] ++ mid ++ [z] => x + z | _ => 0
 ```
 
 A sized tensor `[n]T` (3.9) knows its length, so its patterns are checked at
@@ -687,7 +698,7 @@ wrong length is a type error, and the middle of a split gets an exact size
 A rank-2 tensor splits along its first axis, one row per element.
 
 ```thrax
-$ sum3 : [3] @Int -> @Int = \t = is t | [x, y, z] => x + y + z
+$ sum3 : [3] @Int -> @Int = \t => t |> \ | [x, y, z] => x + y + z
 ```
 
 ## 5.8 Or-patterns and guards
@@ -697,21 +708,21 @@ arm, even one with the same constructor.
 
 Or-pattern:
 ```thrax
-$ small : @Int -> @Int = \n = is n | 0 | 1 | 2 => 1 | _ => 0
+$ small : @Int -> @Int = \n => n |> \ | 0 | 1 | 2 => 1 | _ => 0
 ```
 
 Guards falling through the same constructor:
 ```thrax
 $ Box : @union = Some: @Int, Nil: {},
-$ grade : Box -> @Int = \x =
-	is x | Box.Some.{ v } if v > 100 => 3
+$ grade : Box -> @Int = \x =>
+	x |> \ | Box.Some.{ v } if v > 100 => 3
 	     | Box.Some.{ v } if v > 0   => 2
 	     | Box.Some.{ _ }             => 1
 	     | Box.Nil.{}                 => 0
 ```
 
 ## 5.9 Exhaustiveness
-Every `is` match, and every set of handler value arms, is checked after type
+Every match, and every set of handler value arms, is checked after type
 inference. A match that misses a value is a compile error
 (`NON_EXHAUSTIVE_MATCH`) that names a missing shape, such as `Light.Green` or
 `Opt.Some.{ _ }`. An arm the earlier arms already cover is a warning
@@ -734,8 +745,8 @@ inference. A match that misses a value is a compile error
 
 ```thrax
 $ Light : @union = Red: {}, Yellow: {}, Green: {}
-$ go : Light -> @Int = \l =
-	is l | Light.Red => 0 | Light.Yellow => 1 | Light.Green => 2   # no catch-all needed
+$ go : Light -> @Int = \l =>
+	l |> \ | Light.Red => 0 | Light.Yellow => 1 | Light.Green => 2   # no catch-all needed
 ```
 
 ## 5.10 Irrefutable patterns in `let` and lambda
@@ -743,8 +754,9 @@ A `let` binder or a lambda parameter has no next arm to fall through to, so its
 pattern must match every value of its type. `_`, variables, and struct, tuple,
 and record patterns built from them always do. A pattern that can fail, such as
 a literal or a variant of a union with several, is a compile error
-(`NON_EXHAUSTIVE_MATCH`) naming a value it misses; bind a variable and match it
-with `is` instead.
+(`NON_EXHAUSTIVE_MATCH`) naming a value it misses; match it instead,
+`e |> \ | pat => ... | _ => ...`. There is no `let ... else`: `let` is a
+definition, not sugar for applying a lambda.
 
 ```thrax
 $ Point  : @struct = x: @Int, y: @Int,
@@ -752,7 +764,7 @@ $ Person : @struct = name: Str, age: @Int,
 $ Line   : @struct = from: Point, to: Point,
 $ person : Person = Person.{ .name = "A", .age = 30 }
 $ age : @Int = let Person.{ .age = a } = person in a
-$ start : Line -> @Int = \Line.{ .from = Point.{ x, _ }, .to = _ } = x
+$ start : Line -> @Int = \Line.{ .from = Point.{ x, _ }, .to = _ } => x
 ```
 
 ---
@@ -834,22 +846,22 @@ plain function.
 Simple (the prelude `Stream`, a recursive `@struct`):
 ```thrax
 $ Stream : @struct t = head : t, tail : Stream t
-$ first : Stream @Int -> @Int = \s = s.head
-$ next  : Stream @Int -> Stream @Int = \s = s.tail
+$ first : Stream @Int -> @Int = \s => s.head
+$ next  : Stream @Int -> Stream @Int = \s => s.tail
 ```
 
 Involved (map over an unbounded stream; `tail` is only built when read):
 ```thrax
-$ smap : (a -> b) -> Stream a -> Stream b = \f s =
+$ smap : (a -> b) -> Stream a -> Stream b = \f s =>
 	{ .head = f s.head, .tail = smap f s.tail }
-$ tenth : @Int = (smap (\x = x + x) (count_from 1)).tail.tail.head
+$ tenth : @Int = (smap (\x => x + x) (count_from 1)).tail.tail.head
 ```
 
 A recursive `@union` works the same way, which is how a `List` is consumed one
 cons at a time:
 ```thrax
-$ from : @Int -> List @Int = \n = List.Cons.{ n, from (n + 1) }
-$ head : List @Int -> @Int = \l = is l | List.Cons.{h, t} => h | _ => 0
+$ from : @Int -> List @Int = \n => List.Cons.{ n, from (n + 1) }
+$ head : List @Int -> @Int = \l => l |> \ | List.Cons.{h, t} => h | _ => 0
 ```
 
 Evaluation is otherwise call by value, so a slot filled through a function
@@ -866,7 +878,7 @@ Every function of several parameters is curried; partial application yields a
 function.
 
 ```thrax
-$ add : @Int -> @Int -> @Int = \a b = a + b
+$ add : @Int -> @Int -> @Int = \a b => a + b
 $ add5 : @Int -> @Int = add 5           # partial application
 ```
 
@@ -874,8 +886,8 @@ $ add5 : @Int -> @Int = add 5           # partial application
 Functions are first-class values.
 
 ```thrax
-$ apply_twice : (t -> t) -> t -> t = \f x = f (f x)
-$ compose : (b -> c) -> (a -> b) -> a -> c = \f g x = f (g x)
+$ apply_twice : (t -> t) -> t -> t = \f x => f (f x)
+$ compose : (b -> c) -> (a -> b) -> a -> c = \f g x => f (g x)
 ```
 
 ## 7.3 One name, one definition
@@ -885,55 +897,74 @@ two imports bring in has no bare meaning, so a use of it says so and names the
 owners (`A.name` and `B.name` still reach either). An operation that covers several
 types is an interface (§7.4), not several definitions.
 
-## 7.4 Interfaces and the context parameter `@ctx`
+## 7.4 Interfaces and `@use` parameters
 An interface is an ordinary `@struct` whose fields are its operations; implementing
-it is defining a value of that type. A function that needs one declares it as a
-`@ctx` FIRST parameter: ordinary in every respect, except that call sites do not
-write it. The compiler finds it BY TYPE, taking the nearest binder in scope and
-otherwise the one instance in scope (two would be an error, since global scope is
-flat). It elaborates to a leading argument, so the backends need no support.
+it is defining a value of that type. A function that needs one declares a `@use`
+parameter, a record of named fields, each an instance it needs. Call sites do not
+write it: the compiler finds each field BY TYPE, taking the nearest binder in scope
+and otherwise the one instance in scope (two would be an error, since global scope
+is flat). The fields are in scope by name in the body, so the body's lambda starts
+at the first explicit parameter. It elaborates to a leading argument, so the
+backends need no support.
 
 Simple:
 ```thrax
 $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 $ IOrder : @struct t = compare: t -> t -> Ordering,
 $ impl_IOrder_for_int : IOrder @Int = .{
-	.compare = \a b = if a < b => Ordering.LT else if a > b => Ordering.GT else Ordering.EQ,
+	.compare = \a b => if a < b => Ordering.LT else if a > b => Ordering.GT else Ordering.EQ,
 }
-$ max_of : @ctx IOrder t -> t -> t -> t = \d x y =
-	is d.compare x y | Ordering.GT => x | _ => y
+$ max_of : @use {d: IOrder t} -> t -> t -> t = \x y =>
+	d.compare x y |> \ | Ordering.GT => x | _ => y
 $ biggest : @Int = max_of 3 7
 ```
 
-A definition has at most ONE context parameter and it is first; its type's head
-must be a declared struct or union. Several requirements travel as one tuple, which
-the call site builds:
+A signature may have any number of `@use` parameters, anywhere on its arrows, and
+each names one or more fields; a field's type must be a declared struct or union
+applied to its arguments, and field names are unique across the signature:
 
 ```thrax
-$ abs : @ctx {IOrd t, ISub t, IZero t} -> t -> t = \ds x =
-	if ds.0.lt x ds.2.zero => ds.1.sub ds.2.zero x else x
+$ abs : @use {o: IOrd t, s: ISub t, z: IZero t} -> t -> t = \x =>
+	if o.lt x z.zero => s.sub z.zero x else x
+$ floor_at : @use {o: IOrd t} -> t -> @use {z: IZero t} -> t -> t = \x y =>
+	if o.lt x z.zero => y else x
 ```
 
-Chaining and the explicit form (`f (@ctx e) x`, first argument, where the `@ctx`
-keyword is needed because the parameter is otherwise not addressable):
+Calls inside the body find the fields by search, so they pass down without being
+written. An explicit `@use {.f = e}` argument names the fields it supplies (the
+rest are still searched) and goes where its parameter stands, before the explicit
+argument that follows it:
 
 ```thrax
-$ max3 : @ctx IOrder t -> t -> t -> t -> t = \d x y z =
+$ Ordering : @union = LT: {}, EQ: {}, GT: {}
+$ IOrder : @struct t = compare: t -> t -> Ordering,
+$ impl_IOrder_for_int : IOrder @Int = .{
+	.compare = \a b => if a < b => Ordering.LT else if a > b => Ordering.GT else Ordering.EQ,
+}
+$ max_of : @use {d: IOrder t} -> t -> t -> t = \x y =>
+	d.compare x y |> \ | Ordering.GT => x | _ => y
+$ max3 : @use {d: IOrder t} -> t -> t -> t -> t = \x y z =>
 	max_of (max_of x y) z          # d satisfies max_of's requirement, so it passes down
 $ as_min : @Int =
-	let flip : IOrder @Int = .{ .compare = \a b = impl_IOrder_for_int.compare b a } in
-	max_of (@ctx flip) 3 7
+	let flip : IOrder @Int = .{ .compare = \a b => impl_IOrder_for_int.compare b a } in
+	max_of @use {.d = flip} 3 7
 ```
+
+`@use` stands only on a global definition's own signature: not inside a
+parameter's type (`(@use {d: IOrd t} -> t) -> t`), an annotation, a field type, or
+(for now) a local `let`'s signature. `@use {}` is an error. `@ctx` is reserved:
+with dependent types (#406) it becomes the binder of parameters solved by
+unification (`@ctx {t: @Type}`), and writing it today is an error that points here.
 
 An instance may itself take a context, which resolution fills in recursively, so
 `IEq (@Vec t)` is built from `IEq t`. `CORE`'s operators are all ordinary functions
 over such interfaces: `+ - * / %` over `IAdd`/`ISub`/`IMul`/`IDiv`/`IMod`, `^` over
 `IPow`, `== != < > <= >=` over `IEq`/`IOrd`, `++` over `ICat`, `::` over `ICons`, and
-`to_string` over `Ito_string`. A type joins any of them by defining an instance:
+`to_string` over `IToString`. A type joins any of them by defining an instance:
 
 ```thrax
 $ Money : @struct = cents: @Int
-$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
+$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b => Money.{ .cents = a.cents + b.cents } }
 $ total : Money = Money.{ .cents = 1 } + Money.{ .cents = 2 }
 ```
 
@@ -945,7 +976,7 @@ Tail-recursive calls (self, mutual, or through a recursive local `let`) run in
 constant stack.
 
 ```thrax
-$ sum_to : @Int -> @Int -> @Int = \n acc =
+$ sum_to : @Int -> @Int -> @Int = \n acc =>
 	if n == 0 => acc else sum_to (n - 1) (acc + n)      # constant stack at any depth
 ```
 
@@ -975,7 +1006,7 @@ its parameters. Arguments left out of a row (`<State>`) are inferred.
 ```thrax
 $ State : @effect s = get : {} -> s, put : s -> {},
 $ Async : @effect m e = spawn : ({} -> <Async m e | e> {}) -> {}, send : m -> {},
-$ count : {} -> <State @Int> @Int = \u = let n = get {} in put (n + 1); n
+$ count : {} -> <State @Int> @Int = \u => let n = get {} in put (n + 1); n
 ```
 
 An operation's type may also use variables the effect does not declare, like
@@ -996,28 +1027,28 @@ ambient row.
 
 ```thrax
 $ State : @effect = get : {} -> @Int, put : @Int -> {},
-$ tick : {} -> <State> @Int = \u = let x = get {} in let _ = put (x + 1) in x
+$ tick : {} -> <State> @Int = \u => let x = get {} in let _ = put (x + 1) in x
 ```
 
 ## 8.3 Handling `do ... ctl`
 `do body ctl k | op a => e ... | pat => e ...`. `k` is the captured
 continuation, shared by every clause. Each `| op a => e` handles an operation. A
 value arm `| pat => e` runs on normal completion, matching the body's final value
-like an `is` arm; with none, that value is the handler's result. An operation
+like a match arm; with none, that value is the handler's result. An operation
 clause always names an operation and its argument (`| op a`, `| Eff.op a`),
 which no pattern can look like, so the two kinds of arm need no marker. A shared
 operation name is qualified in a clause head.
 
 Exception (ignores `k`, so it resumes zero times):
 ```thrax
-$ safeDiv : @Int -> @Int -> @Int = \a b =
+$ safeDiv : @Int -> @Int -> @Int = \a b =>
 	do if b == 0 => Exn.throw "div0" else a / b
 	ctl k | Exn.throw msg => -1
 ```
 
 Generator (resume once per yield, summing results):
 ```thrax
-$ sumGen : ({} -> <Yield> {}) -> @Int = \gen =
+$ sumGen : ({} -> <Yield> {}) -> @Int = \gen =>
 	do gen {}
 	ctl k | Yield.yield v => v + k {}
 	      | _ => 0
@@ -1031,7 +1062,7 @@ computation is still governed by the same handler).
 
 ```thrax
 $ Task : @union = Fin: {}, Susp: { @Int, {} -> Task }
-$ spawn : ({} -> <Yield> {}) -> Task = \t =
+$ spawn : ({} -> <Yield> {}) -> Task = \t =>
 	do t {}
 	ctl k | Yield.yield v => Task.Susp.{ v, k }     # store k, resume later
 	      | _ => Task.Fin.{}
@@ -1041,7 +1072,7 @@ Resuming more than once runs the rest of the computation once per resume, each o
 its own copy, which is what nondeterminism and backtracking are:
 
 ```thrax
-$ sum_all : ({} -> <Amb> @Int) -> @Int = \body =
+$ sum_all : ({} -> <Amb> @Int) -> @Int = \body =>
 	do body {}
 	ctl k | Amb.flip u => k @true + k @false        # both branches
 	      | x => x
@@ -1061,8 +1092,8 @@ discharges the effects it handles. A performed-but-unhandled effect is a compile
 error. Subsumption: a pure function is callable in any effectful context.
 
 ```thrax
-$ map : (a -> <e> b) -> @Vec a -> <e> @Vec b = \f xs =
-	is xs | [] => [] | h :: t => f h :: map f t
+$ map : (a -> <e> b) -> @Vec a -> <e> @Vec b = \f xs =>
+	xs |> \ | [] => [] | h :: t => f h :: map f t
 ```
 
 ## 8.6 Row aliases
@@ -1078,8 +1109,8 @@ $ Gpu : @effect = draw : @Int -> {},
 $ Net : @effect = fetch : @Int -> @Int,
 $ App : @alias = <Gpu, Log>
 $ Online : @alias = <App, Net>
-$ frame : @Int -> <App> @Int = \x = draw x; log x; x
-$ sync : @Int -> <Online> @Int = \x = frame (fetch x)
+$ frame : @Int -> <App> @Int = \x => draw x; log x; x
+$ sync : @Int -> <Online> @Int = \x => frame (fetch x)
 ```
 
 A row variable in the body makes the alias parameterized, and it is applied to
@@ -1088,7 +1119,7 @@ an under-applied type alias.
 
 ```thrax
 $ WithLog : @alias e = <Log | e>
-$ traced : (@Int -> <WithLog e> @Int) -> @Int -> <WithLog e> @Int = \f x = log x; f x
+$ traced : (@Int -> <WithLog e> @Int) -> @Int -> <WithLog e> @Int = \f x => log x; f x
 ```
 
 A printed row that holds every label of a closed, parameterless alias of two or
@@ -1104,10 +1135,10 @@ continuation holding it completes. Nested defers run innermost-first. The
 resource-safe FFI idiom.
 
 ```thrax
-$ open  : @Str -> @Int = \path = 0        # stand-ins for real handles
-$ close : @Int -> @Int = \h = h
-$ read  : @Int -> @Int = \h = h
-$ useFile : @Str -> @Int = \path =
+$ open  : @Str -> @Int = \path => 0        # stand-ins for real handles
+$ close : @Int -> @Int = \h => h
+$ read  : @Int -> @Int = \h => h
+$ useFile : @Str -> @Int = \path =>
 	let f = open path in
 	defer close f in
 		read f
@@ -1117,7 +1148,7 @@ Several cleanups may share one `defer`, separated by commas (a trailing comma
 before `in` is allowed). They nest exactly as separate `defer`s do, so they still
 run innermost-first:
 ```thrax
-$ useTwo : @Str -> @Str -> @Int = \a b =
+$ useTwo : @Str -> @Str -> @Int = \a b =>
 	let f = open a, g = open b in
 	defer close f,
 	      close g,
@@ -1171,9 +1202,9 @@ Each axis may carry a variance tag `@contra` (upper index / column) or `@co`
 
 ```thrax
 $ with LA
-$ row : [m][n]a -> @Int -> [n]a = \m i = m.[i]
-$ col : [m][n]a -> @Int -> [m]a = \m j = m.[.., j]
-$ sub : [8]@Int -> [4]@Int = \m = m.[2 ... 5]      # inclusive 2..5, four elements
+$ row : [m][n]a -> @Int -> [n]a = \m i => m.[i]
+$ col : [m][n]a -> @Int -> [m]a = \m j => m.[.., j]
+$ sub : [8]@Int -> [4]@Int = \m => m.[2 ... 5]      # inclusive 2..5, four elements
 ```
 
 ## 9.5 Tensor primitives and the `LA` library
@@ -1184,9 +1215,9 @@ by defining an instance. A multi-axis slice stays tensor-only: its result shape 
 computed from the slots.
 
 ```thrax
-$ transpose : [m][n]a -> [n][m]a = \t =
+$ transpose : [m][n]a -> [n][m]a = \t =>
 	@tensor_create (@tensor_index t 0)
-		(\j = @tensor_create t (\i = @tensor_index (@tensor_index t i) j))
+		(\j => @tensor_create t (\i => @tensor_index (@tensor_index t i) j))
 ```
 
 ## 9.6 Expression-form ranges
@@ -1211,7 +1242,7 @@ you only walk part of cheap:
 ```thrax
 $ first5 : <@IO> {} =
 	for ([1 ... 100000000000000] : List @Int)
-		(\i = if i > 5 => break {} else IO.print "?(i), ")
+		(\i => if i > 5 => break {} else IO.print "?(i), ")
 ```
 
 ---
@@ -1300,7 +1331,7 @@ $ Point : @struct @extern "C" = x: @Int32, y: @Int32,
 $ point_at : { p: @Ptr, i: @Int } -> Point = @extern "load"
 $ arg_at : { p: @Ptr, i: @Int } -> @Str = @extern "load"      # a `char**`
 
-$ points : @Ptr -> @Int -> @Vec Point = \p n = VEC.from_c point_at p n
+$ points : @Ptr -> @Int -> @Vec Point = \p n => VEC.from_c point_at p n
 ```
 
 Like a C dereference, a load trusts the program: the memory must hold `n`
@@ -1338,7 +1369,7 @@ hand-written code. `@e` works in expression, type, and item position, and
 composes with the pipes like any one-argument function.
 
 ```thrax
-$ lit : @Int -> @Code = \n = @parse_str <| to_string n
+$ lit : @Int -> @Code = \n => @parse_str <| to_string n
 
 $ fib10 : @Int = @e <| lit <| fib 10                    # inserts `55`
 $ n     : @e <| @parse_str "@Int64" = 1024              # inserts the type
@@ -1383,10 +1414,10 @@ starts from. The compiler runs it during compilation and adds the items of the
 one accepted signature.
 
 ```thrax
-$ @build : {} -> <@Meta, @IO> @Code = \_ =
+$ @build : {} -> <@Meta, @IO> @Code = \_ =>
 	@parse_items "$ answer : @Int = 42"
 
-$ @main : @Vec @Str -> <@IO> @Int = \args = answer      # 42
+$ @main : @Vec @Str -> <@IO> @Int = \args => answer      # 42
 ```
 
 The `<@IO>` in that row is its whole privilege: `@build` is the one context where
@@ -1423,7 +1454,7 @@ once per project option it sets.
 ```thrax
 $ @mod BUILD
 
-$ @build : {} -> <@Meta, @IO> @Code = \_ =
+$ @build : {} -> <@Meta, @IO> @Code = \_ =>
     @import_path "source";
     @option "format.width" "120";
     @option "lints.unreachable_arm" "deny";
@@ -1478,7 +1509,7 @@ The built-in boolean; values are `@true` and `@false` (matched with the
 
 ```thrax
 $ b : @Bool = 3 < 4
-$ chk : @Int = is b | @true => 0 | _ => 1
+$ chk : @Int = b |> \ | @true => 0 | _ => 1
 ```
 
 ## 12.2 `@Array` (byte block)
@@ -1496,7 +1527,7 @@ $ n : @Int = @array_len "hello"          # 5
 
 Involved (build a string byte by byte, as CORE's integer stringifier does):
 ```thrax
-$ digit : @Int -> Str = \d = @array_push "" (48 + d)   # push a byte onto a Str
+$ digit : @Int -> Str = \d => @array_push "" (48 + d)   # push a byte onto a Str
 ```
 
 ## 12.3 `@Vec` (growable vector)
@@ -1539,7 +1570,9 @@ A quick index of the `@`-forms and where each is documented above.
 | `@build` | compile-time entry | 11.3 |
 | `@struct` `@union` `@effect` `@alias` | type declarations | 6, 8.1, 3.10 |
 | `@extern` | foreign binding, builtin declaration | 10 |
-| `@ctx` | context (interface) parameter | 7.4 |
+| `@use` | instance (interface) parameter and explicit argument | 7.4 |
+| `@ctx` | reserved for dependent types | 7.4 |
+| `@absurd` | the empty match | 5.1 |
 | `@private` | visibility | 2.4 |
 | `@e` `@abort` | compile-time code insertion | 11 |
 | `@link` `@link_path` | build directives | 11.2 |
@@ -1610,3 +1643,4 @@ import). A brief map:
 | `LA` | shape-checked linear algebra over sized tensors |
 | `CPX` | complex math over `CORE`'s `Cpx`: parts, polar form, roots, transcendentals |
 | `TARGET` | compilation-target reflection (qualified) |
+

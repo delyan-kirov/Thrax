@@ -98,7 +98,7 @@ fn diagnostics_fixes_hover_definition_and_formatting() {
     let dir = std::env::temp_dir().join(format!("thrax-lsp-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("DEMO.thx");
-    let src = "$ @mod DEMO\n\n$ double : @Int -> @Int = \\x = x * 2\n\n$ h = \\x = (x + 1\n\n$ k : @Int = dobule 3\n\n$ y : @Float64 = 2.\n";
+    let src = "$ @mod DEMO\n\n$ double : @Int -> @Int = \\x => x * 2\n\n$ h = \\x => (x + 1\n\n$ k : @Int = dobule 3\n\n$ y : @Float64 = 2.\n";
     std::fs::write(&path, src).unwrap();
     let path = path.canonicalize().unwrap();
     let uri = thrax::lsp::path_to_uri(&path);
@@ -203,7 +203,7 @@ fn diagnostics_fixes_hover_definition_and_formatting() {
     assert_eq!(symbols.as_arr()[0].get("name").as_str(), Some("x"), "{symbols}");
 
     // Completion offers visible names with their types.
-    let typing = "$ @mod DEMO\n$ double : @Int -> @Int = \\x = x * 2\n$ k : @Int = dou\n";
+    let typing = "$ @mod DEMO\n$ double : @Int -> @Int = \\x => x * 2\n$ k : @Int = dou\n";
     c.notify(
         "textDocument/didChange",
         Json::obj([
@@ -305,7 +305,7 @@ fn build_script_import_path_reaches_the_editor() {
     let dir = dir.canonicalize().unwrap();
     std::fs::write(
         dir.join("BUILD.thx"),
-        "$ @mod BUILD\n$ @build : {} -> <@Meta, @IO> @Code = \\_ = @import_path \"source\"; @parse_items \"\"\n",
+        "$ @mod BUILD\n$ @build : {} -> <@Meta, @IO> @Code = \\_ => @import_path \"source\"; @parse_items \"\"\n",
     )
     .unwrap();
     std::fs::write(dir.join("source/GREET.thx"), "$ @mod GREET\n$ greeting : @Str = \"hi\"\n").unwrap();

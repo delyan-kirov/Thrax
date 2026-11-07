@@ -160,7 +160,7 @@ reference, section 11.4, lists them all):
 ```thrax
 $ @mod BUILD
 
-$ @build : {} -> <@Meta, @IO> @Code = \_ =
+$ @build : {} -> <@Meta, @IO> @Code = \_ =>
     @option "lsp.check" "save";
     @option "lsp.focus" "one";
     @parse_items ""
@@ -180,13 +180,14 @@ them, so it cannot change what a program means; it re-lexes its own output and
 refuses if a single token or comment differs, or if the result stops parsing.
 It works on tokens rather than the AST because the AST already desugars forms
 (string interpolation, `&&`, `<|>`) that must print as written. The structure
-that decides line breaks (items, brackets, `let`/`if`/`is`/`\`/`do` forms and
+that decides line breaks (items, brackets, `let`/`if`/`\`/`do` forms and
 their arms) is read off the token stream, and a Wadler-style printer fits each
 group into `width` or breaks it. Indentation is 4 spaces.
 
 The rules, in short: a group fits on one line or breaks at every one of its
-line points; an `is` or handler with more than two arms puts each arm on its
-own line under the head; `let ... in` ends its line with `in`; `else if` chains
+line points; a multi-arm lambda or handler with more than two arms puts each
+arm on its own line, a multi-arm lambda's one level under the line its `\`
+ends; `let ... in` ends its line with `in`; `else if` chains
 stay flat; a list written across lines with a trailing comma stays one entry
 per line; blank lines between items collapse to one; comments stay where they
 were written.
@@ -208,7 +209,7 @@ productions the way tree-sitter needs, and spelling each terminal. The output is
 ignored by git. The tree-sitter CLI comes from `tools/editors/flake.nix`, kept
 out of the root dev shell. Generating it also keeps the spec honest: parsing the
 whole corpus with it found the places the spec had drifted from the language.
-Two known divergences remain: the real parser ends an `is` at a `| Op.op x`
+Two known divergences remain: the real parser ends a multi-arm lambda's arms at a `| Op.op x`
 handler clause (more lookahead than LR(1) has), and `@e <| ..` inside a type
 is not in the spec.
 

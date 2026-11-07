@@ -1,9 +1,9 @@
 $ @mod MATCH
 
 # \file match.thx
-# \info The match form `is scrut | pat => e | pat => e ...`. The leading `is`
-#       distinguishes it from the boolean `if c => t else e`. Arms are tried top
-#       to bottom; the first matching pattern wins and binds its variables.
+# \info A match is a multi-arm lambda applied to the scrutinee,
+#       `scrut |> \ | pat => e | pat => e ...`. Arms are tried top to bottom;
+#       the first matching pattern wins and binds its variables.
 #       There is no default branch: a catch-all is an ordinary `| _ => d` arm,
 #       unneeded when the arms are exhaustive (cover every constructor of a
 #       union). A match that misses a value is a compile error naming it, and
@@ -22,50 +22,50 @@ $ Point : @struct =
     y: @Int,
 
 # A literal switch over @Int -- doubles as a `case`.
-$ classify : @Int -> @Str = \n =
-    is n
-    | 0 => "zero"
-    | 1 => "one"
-    | 2 => "two"
-    | _ => "many"
+$ classify : @Int -> @Str = \n =>
+    n |> \
+        | 0 => "zero"
+        | 1 => "one"
+        | 2 => "two"
+        | _ => "many"
 
 $ c0 : @Str = classify 0
 $ c2 : @Str = classify 2
 $ cN : @Str = classify 17
 
 # Guard on a struct's field value, then bind.
-$ greet : Person -> @Str = \p =
-    is p | Person.{ .age = 0 } => "newborn" | Person.{ .name = who } => who
+$ greet : Person -> @Str = \p =>
+    p |> \ | Person.{ .age = 0 } => "newborn" | Person.{ .name = who } => who
 
 $ g_baby : @Str = greet Person.{ .name = "Q", .age = 0 }
 $ g_alice : @Str = greet Person.{ .name = "Alice", .age = 41 }
 
 # Bind fields out of the matched value (irrefutable arm: always matches).
-$ sum_xy : Point -> @Int = \pt = is pt | Point.{ x, y } => x + y
+$ sum_xy : Point -> @Int = \pt => pt |> \ | Point.{ x, y } => x + y
 
 $ s : @Int = sum_xy Point.{ .x = 3, .y = 4 }
 
 # Nested: guard a struct inside a struct, binding from the same arm.
-$ origin_or : Point -> @Int = \pt =
-    is pt | Point.{ .x = 0, .y = 0 } => 0 | Point.{ .x = a, .y = b } => a + b
+$ origin_or : Point -> @Int = \pt =>
+    pt |> \ | Point.{ .x = 0, .y = 0 } => 0 | Point.{ .x = a, .y = b } => a + b
 
 $ o0 : @Int = origin_or Point.{ .x = 0, .y = 0 }
 $ o7 : @Int = origin_or Point.{ .x = 3, .y = 4 }
 
 # A catch-all variable arm binds the whole scrutinee.
-$ describe : @Int -> @Int = \n = is n | 0 => 100 | m => m + 1
+$ describe : @Int -> @Int = \n => n |> \ | 0 => 100 | m => m + 1
 $ d5 : @Int = describe 5
 
 # An exhaustive union match needs no catch-all: the three constructors cover the
-# type, so TC accepts the `is` with no fallthrough. Adding a fourth variant
-# without extending this `is` would then be a compile error.
+# type, so TC accepts the match with no fallthrough. Adding a fourth variant
+# without extending this match would then be a compile error.
 $ Light : @union = Red: {}, Yellow: {}, Green: {}
 
-$ go : Light -> @Int = \l =
-    is l
-    | Light.Red => 0
-    | Light.Yellow => 1
-    | Light.Green => 2
+$ go : Light -> @Int = \l =>
+    l |> \
+        | Light.Red    => 0
+        | Light.Yellow => 1
+        | Light.Green  => 2
 
 $ lr : @Int = go Light.Red
 $ lg : @Int = go Light.Green
@@ -76,11 +76,11 @@ $ lg : @Int = go Light.Green
 $ Opt : @union = None: {}, Some: { @Int }
 $ Wrap : @union = Empty: {}, W: { Opt }
 
-$ unwrap : Wrap -> @Int = \w =
-    is w
-    | Wrap.Empty => 0
-    | Wrap.W.{ Opt.None } => 1
-    | Wrap.W.{ Opt.Some.{ n } } => n
+$ unwrap : Wrap -> @Int = \w =>
+    w |> \
+        | Wrap.Empty                => 0
+        | Wrap.W.{ Opt.None }       => 1
+        | Wrap.W.{ Opt.Some.{ n } } => n
 
 $ u_none : @Int = unwrap Wrap.W.{ Opt.None }
 $ u_some : @Int = unwrap Wrap.W.{ Opt.Some.{ 42 } }
@@ -100,12 +100,12 @@ $ u_some : @Int = unwrap Wrap.W.{ Opt.Some.{ 42 } }
 # cover `Peano` with no gap. (`@Nat` is a built-in numeric type, hence `Peano`.)
 $ Peano : @union = Zero: {}, Succ: { Peano }
 
-$ depth : Peano -> @Int = \n =
-    is n
-    | Peano.Zero => 0
-    | Peano.Succ.{ Peano.Zero } => 1
-    | Peano.Succ.{ Peano.Succ.{ Peano.Zero } } => 2
-    | Peano.Succ.{ Peano.Succ.{ Peano.Succ.{ _ } } } => 3
+$ depth : Peano -> @Int = \n =>
+    n |> \
+        | Peano.Zero                => 0
+        | Peano.Succ.{ Peano.Zero } => 1
+        | Peano.Succ.{ Peano.Succ.{ Peano.Zero } } => 2
+        | Peano.Succ.{ Peano.Succ.{ Peano.Succ.{ _ } } } => 3
 
 $ p0 : Peano = Peano.Zero
 $ p2 : Peano = Peano.Succ.{ Peano.Succ.{ Peano.Zero } }
@@ -117,12 +117,12 @@ $ p5 : Peano = Peano.Succ.{ Peano.Succ.{ Peano.Succ.{ Peano.Succ.{ Peano.Succ.{ 
 # four left/right shape combinations (Tip|Fork x Tip|Fork), so no catch-all.
 $ Tree : @union = Tip: {}, Fork: { Tree, Tree }
 
-$ shape : Tree -> @Int = \t =
-    is t
-    | Tree.Tip => 0
-    | Tree.Fork.{ Tree.Tip, Tree.Tip } => 1
-    | Tree.Fork.{ Tree.Tip, Tree.Fork.{ _, _ } } => 2
-    | Tree.Fork.{ Tree.Fork.{ _, _ }, _ } => 3
+$ shape : Tree -> @Int = \t =>
+    t |> \
+        | Tree.Tip                            => 0
+        | Tree.Fork.{ Tree.Tip, Tree.Tip }    => 1
+        | Tree.Fork.{ Tree.Tip, Tree.Fork.{ _, _ } } => 2
+        | Tree.Fork.{ Tree.Fork.{ _, _ }, _ } => 3
 
 $ tp : Tree = Tree.Tip
 $ t2 : Tree = Tree.Fork.{ Tree.Tip, Tree.Fork.{ Tree.Tip, Tree.Tip } }
@@ -133,12 +133,12 @@ $ t3 : Tree = Tree.Fork.{ Tree.Fork.{ Tree.Tip, Tree.Tip }, Tree.Tip }
 # `Skin.{ n }` binds the payload. Generic + three levels, still exhaustive.
 $ NestingDoll : @union t = Core: {}, Skin: { t }
 
-$ peel : NestingDoll (NestingDoll (NestingDoll @Int)) -> @Int = \o =
-    is o
-    | NestingDoll.Core => 0
-    | NestingDoll.Skin.{ NestingDoll.Core } => 1
-    | NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Core } } => 2
-    | NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Skin.{ n } } } => n
+$ peel : NestingDoll (NestingDoll (NestingDoll @Int)) -> @Int = \o =>
+    o |> \
+        | NestingDoll.Core                      => 0
+        | NestingDoll.Skin.{ NestingDoll.Core } => 1
+        | NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Core } } => 2
+        | NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Skin.{ n } } } => n
 
 $ k1 : NestingDoll (NestingDoll (NestingDoll @Int)) = NestingDoll.Skin.{ NestingDoll.Core }
 $ k7 : NestingDoll (NestingDoll (NestingDoll @Int)) =
@@ -153,13 +153,13 @@ $ Bit : @union = Off: {}, On: {}
 $ Flags : @struct = sign: Sign, bit: Bit
 $ Cell : @union = Blank: {}, Set: { Flags }
 
-$ decode : Cell -> @Int = \c =
-    is c
-    | Cell.Blank => 0
-    | Cell.Set.{ Flags.{ Sign.Plus, Bit.Off } } => 1
-    | Cell.Set.{ Flags.{ Sign.Plus, Bit.On } } => 2
-    | Cell.Set.{ Flags.{ Sign.Minus, Bit.Off } } => 3
-    | Cell.Set.{ Flags.{ Sign.Minus, Bit.On } } => 4
+$ decode : Cell -> @Int = \c =>
+    c |> \
+        | Cell.Blank => 0
+        | Cell.Set.{ Flags.{ Sign.Plus, Bit.Off } } => 1
+        | Cell.Set.{ Flags.{ Sign.Plus, Bit.On } } => 2
+        | Cell.Set.{ Flags.{ Sign.Minus, Bit.Off } } => 3
+        | Cell.Set.{ Flags.{ Sign.Minus, Bit.On } } => 4
 
 $ c_blank : Cell = Cell.Blank
 $ c_po : Cell = Cell.Set.{ Flags.{ .sign = Sign.Plus, .bit = Bit.On } }
@@ -169,19 +169,9 @@ $ c_mn : Cell = Cell.Set.{ Flags.{ .sign = Sign.Minus, .bit = Bit.On } }
 # type-check: each term is (actual - expected), so this is 0 exactly when every
 # result is right -- and the combined runner treats a non-zero `test` as a fail.
 $ nested_ok : @Int =
-    (
-        depth p0 - 0
-    ) + (
-        depth p2 - 2
-    ) + (
-        depth p5 - 3
-    ) + (
-        shape tp - 0
-    ) + (
-        shape t2 - 2
-    ) + (
-        shape t3 - 3
-    ) + (peel k1 - 1) + (peel k7 - 7) + (decode c_blank - 0) + (decode c_po - 2) + (decode c_mn - 4)
+    (depth p0 - 0) + (depth p2 - 2) + (depth p5 - 3) + (shape tp - 0) + (shape t2 - 2)
+        + (shape t3 - 3) + (peel k1 - 1) + (peel k7 - 7) + (decode c_blank - 0) + (decode c_po - 2)
+        + (decode c_mn - 4)
 
 # Force-evaluate results for the combined test runner (pass = no fault); the
 # nested block above additionally checks values, contributing 0 when correct.

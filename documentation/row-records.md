@@ -17,11 +17,11 @@ first-class, name-keyed types** (an earlier "decay to pairs" model was replaced)
   binds `x`, `y` in the body (an implicit record destructuring).
 - **Update / stack** on an open-row value: `{ .x = v | p }` preserves the shape
   (tail flows through), `{ .x = 1, with p }` concatenates.
-- **Destructuring patterns**: `is p | { .x = a, .y = b, .._ } => ...` and lambda
-  shorthand `\{ .x, .y } = ...`, on open-row values and nominal structs.
+- **Destructuring patterns**: `p |> \ | { .x = a, .y = b, .._ } => ...` and lambda
+  shorthand `\{ .x, .y } => ...`, on open-row values and nominal structs.
 
 All three former gaps are now closed:
-- **`..name` rest-BINDING** in patterns: `is p | { .x = a, ..rest } => ...` binds
+- **`..name` rest-BINDING** in patterns: `p |> \ | { .x = a, ..rest } => ...` binds
   `rest` to the record minus the listed labels (a `record_without` runtime primitive
   in both engines; `.._` is still the discard). `rest`'s type is the row tail.
 - **Generic structs** at open rows: a generic instance like `Box @Int` satisfies
@@ -95,7 +95,7 @@ open row it structurally matches (its closed row unifies with the open row,
 binding `r` to the leftover fields). So:
 
 ```
-$ area : { x:@Int, y:@Int | r } -> @Int = \p = p.x * p.y
+$ area : { x:@Int, y:@Int | r } -> @Int = \p => p.x * p.y
 area (Point3.{ .x=1, .y=2, .z=3 })   # ok: r = { z:@Int }
 ```
 
@@ -130,7 +130,7 @@ This resolves the roadmap's note that `with … in` needs the fields known.
 
 ## What this unlocks
 
-- **Record-rest patterns** `is p | { .x = a, ..rest } => ...`, where `rest` has
+- **Record-rest patterns** `p |> \ | { .x = a, ..rest } => ...`, where `rest` has
   the remaining row type (the roadmap's deferred #5 tail-binding, blocked purely
   on this type not existing).
 - Row-polymorphic field-updating helpers: `move : { x:@Int | r } -> { x:@Int | r }`.

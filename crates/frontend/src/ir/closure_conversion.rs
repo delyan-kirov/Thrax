@@ -465,7 +465,7 @@ impl<'c> ClosureConverter<'c> {
         }
     }
 
-    /// The identity value clause `\x = x`, lifted: its body reads the sole
+    /// The identity value clause `\x => x`, lifted: its body reads the sole
     /// parameter, and it captures nothing.
     fn identity(&mut self, ctx: &mut FunctionScope) -> data::Atom {
         let (captures, inner) = Self::enter(&BTreeSet::new(), ctx.scope.len(), 1, ctx);
@@ -480,7 +480,7 @@ impl<'c> ClosureConverter<'c> {
         data::Atom::Clos { code: id, captures }
     }
 
-    /// A handler clause `\arg = \k = body` becomes a single 2-parameter code: the
+    /// A handler clause `\arg => \k => body` becomes a single 2-parameter code: the
     /// operation argument is `Local 0`, the continuation `Local 1`.
     fn clause(&mut self, c: &CoreClause, continuation: StrId, ctx: &mut FunctionScope) -> HandleClause {
         let fun = self.lift(c.body, 2, &[c.arg, continuation], ctx);

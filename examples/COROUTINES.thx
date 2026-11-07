@@ -14,21 +14,21 @@ $ Task : @union = Fin: {}, Susp: { @Int, {} -> Task },
 # often the scheduler resumes it. It costs nothing here all the same: `rr`
 # consumes each `Susp` exactly once, so when it resumes `k` nothing else holds
 # it, and the captured computation is handed over rather than copied.
-$ spawn : ({} -> <Co> {}) -> Task = \t =
+$ spawn : ({} -> <Co> {}) -> Task = \t =>
     do t {}
     ctl k | Co.yield v => Task.Susp.{ v, k } | _ => Task.Fin.{}
 
 # Round-robin two tasks: step the head task, emit its yield, then swap so the
 # other runs next. Resuming `ka {}` / `kb {}` resumes a continuation captured in
 # `spawn`'s handler from HERE -- cross-context resume.
-$ rr : Task -> Task -> @Int = \a b =
-    is a
-    | Task.Fin.{} =>
-        (is b | Task.Fin.{} => 0 | Task.Susp.{ vb, kb } => vb + rr (Task.Fin.{}) (kb {}))
-    | Task.Susp.{ va, ka } => va + rr b (ka {})
+$ rr : Task -> Task -> @Int = \a b =>
+    a |> \
+        | Task.Fin.{}          =>
+            (b |> \ | Task.Fin.{} => 0 | Task.Susp.{ vb, kb } => vb + rr (Task.Fin.{}) (kb {}))
+        | Task.Susp.{ va, ka } => va + rr b (ka {})
 
-$ t1 : {} -> <Co> {} = \u = let _ = Co.yield 1 in let _ = Co.yield 3 in {}
-$ t2 : {} -> <Co> {} = \u = let _ = Co.yield 2 in let _ = Co.yield 4 in {}
+$ t1 : {} -> <Co> {} = \u => let _ = Co.yield 1 in let _ = Co.yield 3 in {}
+$ t2 : {} -> <Co> {} = \u => let _ = Co.yield 2 in let _ = Co.yield 4 in {}
 
 # Interleaved order is 1,2,3,4 -> sum 10.
 $ scheduled : @Int = rr (spawn t1) (spawn t2)

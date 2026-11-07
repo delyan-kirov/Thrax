@@ -13,7 +13,7 @@ fn prog(globals: Vec<(&str, Build)>) -> CoreProgram {
     p
 }
 
-/// `\a b = op p q`, with `p` and `q` the parameters named.
+/// `\a b => op p q`, with `p` and `q` the parameters named.
 fn eta(t: &mut Terms, op: &str, p: &str, q: &str) -> Aol<Term> {
     let op = t.var(op);
     let (p, q) = (t.var(p), t.var(q));
@@ -31,13 +31,13 @@ fn instance(t: &mut Terms, field: Aol<Term>) -> Aol<Term> {
     })
 }
 
-/// `\a b = @iadd a b`, the shape every CORE arithmetic instance field has.
+/// `\a b => @iadd a b`, the shape every CORE arithmetic instance field has.
 fn eta_add(t: &mut Terms) -> Aol<Term> {
     let field = eta(t, "@iadd", "a", "b");
     instance(t, field)
 }
 
-/// A method that reorders its arguments: `\a b = @iadd b a`.
+/// A method that reorders its arguments: `\a b => @iadd b a`.
 fn flipped(t: &mut Terms) -> Aol<Term> {
     let field = eta(t, "@iadd", "b", "a");
     instance(t, field)
@@ -176,7 +176,7 @@ fn a_reordering_global_over_two_calls_is_left_alone() {
     assert!(rendered(&p, 1).contains("Var STR.at"));
 }
 
-/// `\a b = not (@ilt a b)`, the shape `>=` specializes to, folds at any
+/// `\a b => not (@ilt a b)`, the shape `>=` specializes to, folds at any
 /// argument: negation reorders nothing.
 #[test]
 fn a_negating_global_folds() {
