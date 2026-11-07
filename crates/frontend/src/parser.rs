@@ -2273,14 +2273,35 @@ impl<'a> Parser<'a> {
 
     // -- control forms ------------------------------------------------------
 
+    /// `let`, `with`, `if` and `defer` take one binding, subject, arm or
+    /// cleanup; a comma once chained several. Report it, recovered, with the
+    /// nested spelling as the fix, so every one is reported (and `thrax fix`
+    /// rewrites them all). Returns whether another entry follows.
+    fn chained_comma(&mut self, form: &str, stop: Kind, nested: &str) -> Result<bool> {
+        let t = self.peek()?;
+        if !matches!(t.kind, Kind::Comma) {
+            return Ok(false);
+        }
+        self.bump()?;
+        let more = self.peek_kind()? != stop;
+        let d = Diagnostic::error(Code::UnexpectedToken, t.span, t.line, format!("`{form}` takes no comma-separated list"));
+        let d = if more {
+            d.with_note(format!("chaining with `,` was removed; nest another `{form}`"))
+                .with_fix(format!("write `{}`", nested.trim()), vec![Edit::new(t.span, nested)], Applicability::MachineApplicable)
+        } else {
+            d.with_fix("remove the comma", vec![Edit::new(t.span, "")], Applicability::MachineApplicable)
+        };
+        self.errors.push(d);
+        Ok(more)
+    }
+
     fn parse_let(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'let'
         let mut bindings = Vec::new();
         loop {
             let pat = self.parse_pattern()?;
             // Any pattern may carry the annotation, as a lambda parameter does: the
-            // type describes the whole binding, not one of its binders. A type runs
-            // to the `=`, so the comma that separates bindings is never swallowed.
+            // type describes the whole binding, not one of its binders.
             let sig = if self.eat(|k| matches!(k, Kind::Colon))? {
                 Some(self.parse_type()?)
             } else {
@@ -2289,12 +2310,11 @@ impl<'a> Parser<'a> {
             expect!(self, Kind::Eq, "expected '=' in the 'let' binding");
             let value = self.parse_expr(0)?;
             bindings.push(Binding { pat, sig, value });
-            // A trailing comma before `in` is allowed.
-            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::In) {
+            if !self.chained_comma("let", Kind::In, " in let")? {
                 break;
             }
         }
-        expect!(self, Kind::In, "expected 'in' after the 'let' bindings");
+        expect!(self, Kind::In, "expected 'in' after the 'let' binding");
         let body = self.parse_expr(0)?;
         let bindings = self.ast.make_slice(bindings);
         Ok(self.expr(Expr::Let { bindings, body }))
@@ -2306,8 +2326,7 @@ impl<'a> Parser<'a> {
         loop {
             let start = self.here()?;
             subjects.push((start, self.parse_expr(0)?));
-            // A trailing comma before `in` is allowed, as in `let`.
-            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::In) {
+            if !self.chained_comma("with", Kind::In, " in with")? {
                 break;
             }
         }
@@ -2329,9 +2348,7 @@ impl<'a> Parser<'a> {
             expect!(self, Kind::FatArrow, "expected '=>' after the 'if' condition");
             let then = self.parse_expr(0)?;
             arms.push((start, cond, then));
-            // A comma chains another `cond => then` arm, spelling what nested
-            // `else if` does; a trailing comma before `else` is allowed.
-            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::Else) {
+            if !self.chained_comma("if", Kind::Else, " else if")? {
                 break;
             }
         }
@@ -2592,8 +2609,7 @@ impl<'a> Parser<'a> {
         loop {
             let start = self.here()?;
             cleanups.push((start, self.parse_expr(0)?)); // stops at ',' / 'in', as in `let`
-            // A trailing comma before `in` is allowed, as in `let`.
-            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::In) {
+            if !self.chained_comma("defer", Kind::In, " in defer")? {
                 break;
             }
         }

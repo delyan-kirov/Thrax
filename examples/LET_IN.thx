@@ -1,9 +1,7 @@
 # \file let_in.thx
 # \info Local bindings with `let x = e in body`, including nesting and using
-#       earlier bindings in later ones. Multiple bindings chain with `,`:
-#       `let x = a, y = b in e` is exactly `let x = a in let y = b in e`, so
-#       each binding scopes the ones after it -- one `in`, no nesting. A
-#       trailing `,` before `in` is allowed (`let x = a, in e`).
+#       earlier bindings in later ones. One `let` binds one pattern; several
+#       nest, `let x = a in let y = b in e`, each scoping the ones after it.
 
 $ @mod LET_IN
 
@@ -13,31 +11,8 @@ $ nested : @Int = let a = 10 in let b = 20 in a * b + a
 
 $ chained : @Int = let x = 1 in let y = x + 10 in let z = y * 2 in x + y + z
 
-# The same chain, comma-separated: one `in`, later bindings see earlier ones.
-$ commas : @Int =
-    let
-        x = 1,
-        y = x + 10,
-        z = y * 2
-    in
-        x + y + z
-
-# A comma chain mixing a tuple-pattern binder with a plain one.
-$ mixed : @Int =
-    let
-        { a, b } = { 3, 4 },
-        s        = a + b
-    in
-        s * 2
-
-# A trailing comma before `in` is fine (handy when editing a chain).
-$ trailing : @Int =
-    let
-        a = 1,
-        b = 2,
-        c = 3,
-    in
-        a + b + c
+# A chain mixing a tuple-pattern binder with a plain one.
+$ mixed : @Int = let { a, b } = { 3, 4 } in let s = a + b in s * 2
 
 $ compose : @Int = let square = \x => x * x in let add1 = \x => x + 1 in add1 (square 5)
 
@@ -56,6 +31,6 @@ $ make_counter : {} -> Counter = \u =>
 $ chk_escape : @Int = if (make_counter {}).run 7 == 7 => 0 else 1
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @Int = simple; nested; chained; commas; mixed; trailing; compose; chk_indirect + chk_escape
+$ test : @Int = simple; nested; chained; mixed; compose; chk_indirect + chk_escape
 
 $ @e <| assert (test == 0) "LET_IN: a check failed"

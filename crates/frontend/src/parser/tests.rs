@@ -109,39 +109,21 @@ fn lambda_if_and_comparison() {
 }
 
 #[test]
-fn comma_arms_nest_if_defer_and_with() {
-    // A comma-separated list is the surface for the nested form: `if` arms nest
-    // as `else if`, `defer` cleanups and `with` subjects nest outward-in. A
-    // trailing comma before `else`/`in` is allowed.
-    let p = prog("$ @mod M\n$ f = \\n => if n == 0 => 1, n > 0 => 2, else 3");
-    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
-        panic!("expected a lambda")
-    };
-    let Expr::If { alt, .. } = p.ast.expr(*body) else {
-        panic!("expected an if")
-    };
-    let Expr::If { alt, .. } = p.ast.expr(*alt) else {
-        panic!("expected the second arm to nest as an if")
-    };
-    assert!(matches!(p.ast.expr(*alt), Expr::Int(3)));
-
-    let p = prog("$ @mod M\n$ f = \\a b c => defer a, b, in c");
-    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
-        panic!("expected a lambda")
-    };
-    let Expr::Defer { body, .. } = p.ast.expr(*body) else {
-        panic!("expected a defer")
-    };
-    assert!(matches!(p.ast.expr(*body), Expr::Defer { .. }));
-
-    let p = prog("$ @mod M\n$ f = \\a b => with a, b in 1");
-    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
-        panic!("expected a lambda")
-    };
-    let Expr::With { body, .. } = p.ast.expr(*body) else {
-        panic!("expected a with")
-    };
-    assert!(matches!(p.ast.expr(*body), Expr::With { .. }));
+fn a_comma_chain_is_an_error_with_the_nested_fix() {
+    // `let`, `if`, `with` and `defer` take one entry each; a comma reports the
+    // nested spelling (and a trailing comma its removal) as the fix.
+    for (src, fix) in [
+        ("$ @mod M\n$ f = \\n => let a = 1, b = 2 in a", " in let"),
+        ("$ @mod M\n$ f = \\n => if n == 0 => 1, n > 0 => 2 else 3", " else if"),
+        ("$ @mod M\n$ f = \\a b => with a, b in 1", " in with"),
+        ("$ @mod M\n$ f = \\a b c => defer a, b in c", " in defer"),
+        ("$ @mod M\n$ f = \\n => let a = 1, in a", ""),
+    ] {
+        let Err(err) = parse(src) else { panic!("expected a parse error: {src}") };
+        assert!(err.to_string().contains("takes no comma-separated list"), "{err}");
+        let edits: Vec<_> = err.helps().iter().flat_map(|h| h.located_edits().unwrap_or_default()).collect();
+        assert!(matches!(&edits[..], [e] if e.text == fix), "{src}: {edits:?}");
+    }
 }
 
 #[test]
@@ -723,8 +705,7 @@ fn a_binding_site_annotation_takes_any_pattern() {
     assert!(parse("$ @mod M\n$ y = let {a, b} : {@Int, @Int} = {1, 2} in a").is_ok());
     assert!(parse("$ @mod M\n$ y = \\({a, b}: {@Int, @Int}) => a").is_ok());
     assert!(parse("$ @mod M\n$ y = let x : @Int = 1 in x").is_ok());
-    // Several bindings still separate on the comma; a type runs only to the `=`.
-    assert!(parse("$ @mod M\n$ y = let a : @Int = 1, b : @Int = 2 in a").is_ok());
+    assert!(parse("$ @mod M\n$ y = let a : @Int = 1 in let b : @Int = 2 in a").is_ok());
 
     // A match arm takes no annotation: the scrutinee fixes the pattern's type.
     let err = match parse("$ @mod M\n$ y = 1 |> \\ | n: @Int => n | _ => 0") {

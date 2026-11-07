@@ -120,40 +120,40 @@ $ impl_ICmp_for_bool : ICmp @Bool = .{ .cmp = \a b => if a == b => 0 else if a =
 # several types and one name holds one definition.
 $ bool_ops : @Str -> @Str = \ty =>
     let c = "cmp_" ++ ty ++ " a b" in
-    let
-        sig = \n => "$ " ++ n ++ "_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @Bool = \\a b => "
+    let sig =
+        \n => "$ " ++ n ++ "_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @Bool = \\a b => "
     in
-        "$ impl_IOrd_for_"
-            ++ ty
-            ++ " : IOrd "
-            ++ ty
-            ++ " = .{ .lt = \\a b => "
-            ++ c
-            ++ " < 0 }\n"
-            ++ "$ impl_IEq_for_"
-            ++ ty
-            ++ " : IEq "
-            ++ ty
-            ++ " = .{ .eq = \\a b => "
-            ++ c
-            ++ " == 0 }\n"
-            ++ sig "lt"
-            ++ c
-            ++ " < 0\n"
-            ++ sig "le"
-            ++ "not ("
-            ++ c
-            ++ " > 0)\n"
-            ++ sig "gt"
-            ++ c
-            ++ " > 0\n"
-            ++ sig "ge"
-            ++ "not ("
-            ++ c
-            ++ " < 0)\n"
-            ++ sig "eq"
-            ++ c
-            ++ " == 0"
+    "$ impl_IOrd_for_"
+        ++ ty
+        ++ " : IOrd "
+        ++ ty
+        ++ " = .{ .lt = \\a b => "
+        ++ c
+        ++ " < 0 }\n"
+        ++ "$ impl_IEq_for_"
+        ++ ty
+        ++ " : IEq "
+        ++ ty
+        ++ " = .{ .eq = \\a b => "
+        ++ c
+        ++ " == 0 }\n"
+        ++ sig "lt"
+        ++ c
+        ++ " < 0\n"
+        ++ sig "le"
+        ++ "not ("
+        ++ c
+        ++ " > 0)\n"
+        ++ sig "gt"
+        ++ c
+        ++ " > 0\n"
+        ++ sig "ge"
+        ++ "not ("
+        ++ c
+        ++ " < 0)\n"
+        ++ sig "eq"
+        ++ c
+        ++ " == 0"
 
 # A struct's `compare`: a lexicographic chain over its fields, short-circuiting on
 # the first non-equal field.

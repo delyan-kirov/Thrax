@@ -114,12 +114,11 @@ $ tallied : {} -> <Async, Tally> @Int = \u =>
 
 # A count of every `bump`, the handler threading it as a parameter.
 $ count : ({} -> <Tally> a) -> { a, @Int } = \body =>
-    let
-        run =
-            do body {}
-            ctl k | Tally.bump n => \acc => k {} (acc + n) | r => \acc => { r, acc }
+    let run =
+        do body {}
+        ctl k | Tally.bump n => \acc => k {} (acc + n) | r => \acc => { r, acc }
     in
-        run 0
+    run 0
 
 $ ck_tally : @Int =
     let r = count (\u => unwrap_or (run_async tallied) 0) in if r.0 == 11 && r.1 == 22 => 0 else 1

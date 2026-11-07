@@ -44,12 +44,11 @@ $ retry : {} -> <Stm> a = \u => Stm.retry {}
 # `first` made still count, so a `retry` of the whole also waits on them.
 $ or_else : ({} -> <Stm> a) -> ({} -> <Stm> a) -> <Stm> a = \first second =>
     let mark = Stm.save {} in
-    let
-        r =
-            do first {}
-            ctl k | Stm.retry u => Option.None | v => Option.Some.{ v }
+    let r =
+        do first {}
+        ctl k | Stm.retry u => Option.None | v => Option.Some.{ v }
     in
-        r |> \ | Option.Some.{ v } => v | _ => (Stm.rollback mark; second {})
+    r |> \ | Option.Some.{ v } => v | _ => (Stm.rollback mark; second {})
 
 $ atomically : ({} -> <Stm> a) -> <@IO | e> a = \tx =>
     @stm_begin {}; attempt tx |> \

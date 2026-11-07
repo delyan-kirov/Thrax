@@ -41,23 +41,17 @@ $ ck_ops : @Int = if (12 &&& 10 ||| 1 ^^^ 3) == 10 && ~~~0 == 0 - 1 && 1 <<< 3 +
 
 # `>>>` is arithmetic on a signed type and logical on a nat.
 $ ck_shr : @Int =
-    let
-        s : @Int = 0 - 8,
-        u : @Nat = 0 - 8
-    in
-        if s >>> 1 == 0 - 4 && u >>> 61 == 7 => 0 else 1
+    let s : @Int = 0 - 8 in let u : @Nat = 0 - 8 in if s >>> 1 == 0 - 4 && u >>> 61 == 7 => 0 else 1
 
 # A narrow type wraps what leaves its range.
 $ ck_narrow : @Int =
-    let
-        a : @Nat8  = 200,
-        b : @Int8  = 0 - 100,
-        c : @Nat16 = 0xff00
-    in
-        if a <<< 1 == 144 && ~~~a == 55 && b <<< 1 == 56 && b >>> 1 == 0 - 50 && c >>> 4 == 0xff0 =>
-            0
-        else
-            1
+    let a : @Nat8 = 200 in
+    let b : @Int8 = 0 - 100 in
+    let c : @Nat16 = 0xff00 in
+    if a <<< 1 == 144 && ~~~a == 55 && b <<< 1 == 56 && b >>> 1 == 0 - 50 && c >>> 4 == 0xff0 =>
+        0
+    else
+        1
 
 $ test : @Int =
     ck_and + ck_or + ck_xor + ck_not + ck_neg + ck_shl + ck_shr_u + ck_shr_s + ck_zext + ck_sext

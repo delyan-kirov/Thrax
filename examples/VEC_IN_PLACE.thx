@@ -65,25 +65,20 @@ $ sum_all : ({} -> <Amb> @Int) -> @Int = \body =>
 
 # A continuation resumed twice: each branch pushes onto its own copy of `v`.
 $ ck_multishot : @Int =
-    let
-        r =
-            sum_all <| \u =>
-                let v = build 3 (@vec_new {}) in
-                let w = @vec_push v (if flip {} => 100 else 10) in
-                sum w + @vec_len v
+    let r =
+        sum_all <| \u =>
+            let v = build 3 (@vec_new {}) in
+            let w = @vec_push v (if flip {} => 100 else 10) in
+            sum w + @vec_len v
     in
-        if r == 6 + 100 + 3 + 6 + 10 + 3 => 0 else 1
+    if r == 6 + 100 + 3 + 6 + 10 + 3 => 0 else 1
 
 # The same with the vector's last use after the choice, so each resumed branch
 # moves it: only the last resume may take it over.
 $ ck_multishot_move : @Int =
-    let
-        r = sum_all <| \u =>
-            let v = build 3 (@vec_new {}) in
-            let x = if flip {} => 100 else 10 in
-            sum (@vec_push v x)
-    in
-        if r == 6 + 100 + 6 + 10 => 0 else 1
+    let r = sum_all <| \u =>
+        let v = build 3 (@vec_new {}) in let x = if flip {} => 100 else 10 in sum (@vec_push v x) in
+    if r == 6 + 100 + 6 + 10 => 0 else 1
 
 $ test : @Int =
     ck_unique + ck_shared * 2 + ck_slack * 4 + ck_partial * 8 + ck_closure * 16 + ck_multishot * 32

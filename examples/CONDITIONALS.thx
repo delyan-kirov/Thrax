@@ -1,21 +1,11 @@
 $ @mod CONDITIONALS
 
 # \file conditionals.thx
-# \info Branching with `if c => e else alt`, including else-if chains. A comma
-#       chains further arms inside one `if`, so `if a => b, c => d else e` is the
-#       same expression as `if a => b else if c => d else e`.
+# \info Branching with `if c => e else alt`, including else-if chains.
 
 $ abs : @Int -> @Int = \n => if n > 0 => n else -n
 
 $ sign : @Int -> @Int = \n => if n == 0 => 0 else if n > 0 => 1 else -1
-
-# The same chain written with comma-separated arms; a trailing comma before
-# `else` is allowed.
-$ sign2 : @Int -> @Int = \n =>
-    if
-        n == 0 => 0,
-        n > 0  => 1,
-        else -1
 
 $ max : @Int -> @Int -> @Int = \a b => if a > b => a else b
 
@@ -26,11 +16,20 @@ $ abs_pos : @Int = abs 9
 $ sign_neg : @Int = sign (-3)
 $ sign_zero : @Int = sign 0
 $ sign_pos : @Int = sign 3
-$ sign2_agree : @Int = (sign2 (-3) - sign (-3)) + (sign2 0 - sign 0) + (sign2 3 - sign 3)
 $ max_ex : @Int = max 3 7
 $ min_ex : @Int = min 3 7
+$ chk_all : @Int =
+    if abs_neg == 9
+        && sign_neg == -1
+        && sign_zero == 0
+        && sign_pos == 1
+        && max_ex == 7
+        && min_ex == 3 =>
+        0
+    else
+        1
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @Int = abs_neg; abs_pos; sign_neg; sign_zero; sign_pos; max_ex; min_ex; sign2_agree
+$ test : @Int = abs_neg; abs_pos; sign_neg; sign_zero; sign_pos; max_ex; min_ex; chk_all
 
 $ @e <| assert (test == 0) "CONDITIONALS: a check failed"

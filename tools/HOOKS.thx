@@ -100,29 +100,28 @@ $ dir_of : @Str -> @Str = \path =>
 # Checks picked by what is staged. The .thx files are formatted in the index
 # (and in the working tree when it matches), the rest only checked.
 $ pre_commit : {} -> <@IO, Fail> {} = \u =>
-    let
-        staged = STR.lines (output "git diff --cached --name-only --diff-filter=ACMR"),
-        thx    =
-            VEC.filter (\f => STR.ends_with f ".thx" && !(STR.starts_with f "tests/diagnostics/"))
-                staged,
-        bad    = unformatted thx 0 []
+    let staged = STR.lines (output "git diff --cached --name-only --diff-filter=ACMR") in
+    let thx =
+        VEC.filter (\f => STR.ends_with f ".thx" && !(STR.starts_with f "tests/diagnostics/"))
+            staged
     in
-        (
-            if VEC.is_empty bad =>
-                {}
-            else
-                Fail.fail ("not formatted, commit stopped: " ++ STR.join ", " bad)
-        );
-        (
-            if VEC.any (\f => STR.ends_with f ".rs" || STR.ends_with f "Cargo.toml") staged =>
-                say "cargo check ..."; sh "cargo check --workspace --quiet"
-            else
-                {}
-        );
-        if VEC.any (\f => f == "documentation/thrax.y") staged =>
-            say "grammar check ..."; sh "bison -o /dev/null documentation/thrax.y"
+    let bad = unformatted thx 0 [] in
+    (
+        if VEC.is_empty bad =>
+            {}
+        else
+            Fail.fail ("not formatted, commit stopped: " ++ STR.join ", " bad)
+    );
+    (
+        if VEC.any (\f => STR.ends_with f ".rs" || STR.ends_with f "Cargo.toml") staged =>
+            say "cargo check ..."; sh "cargo check --workspace --quiet"
         else
             {}
+    );
+    if VEC.any (\f => f == "documentation/thrax.y") staged =>
+        say "grammar check ..."; sh "bison -o /dev/null documentation/thrax.y"
+    else
+        {}
 
 $ unformatted : @Vec @Str -> @Int -> @Vec @Str -> <@IO, Fail> @Vec @Str = \fs i acc =>
     if i >= @vec_len fs =>
@@ -134,44 +133,34 @@ $ unformatted : @Vec @Str -> @Int -> @Vec @Str -> <@IO, Fail> @Vec @Str = \fs i 
 # The STAGED version is formatted, so a partially staged file commits only its
 # staged hunks. tests/diagnostics/ is exempt: its files pin error positions.
 $ fmt_staged : @Str -> <@IO, Fail> @Bool = \f =>
+    let thrax = if STR.is_empty (env "THRAX_BIN") => "thrax" else env "THRAX_BIN" in
     let
-        thrax  = if STR.is_empty (env "THRAX_BIN") => "thrax" else env "THRAX_BIN",
-        # Beside the original, so `thrax fmt` finds the same BUILD.thx.
-        tmp    = dir_of f ++ ".fmt.thxdo." ++ VEC.get_or (VEC.reverse (STR.split f "/")) 0 f,
-        staged = (capture ("git show " ++ quote (":" ++ f))).out
+    # Beside the original, so `thrax fmt` finds the same BUILD.thx.
+    tmp =
+        dir_of f ++ ".fmt.thxdo." ++ VEC.get_or (VEC.reverse (STR.split f "/")) 0 f
     in
-        write_file tmp staged;
-        if !(succeeds (thrax ++ " fmt " ++ quote tmp ++ " 2>/dev/null")) =>
-            say ("thrax fmt refused " ++ f ++ ":");
-            eprint
-                (
-                    STR.replace (capture (thrax ++ " fmt --check " ++ quote tmp ++ " 2>&1")).out tmp
-                        f
-                );
-            remove_file tmp;
-            @false
+    let staged = (capture ("git show " ++ quote (":" ++ f))).out in
+    write_file tmp staged;
+    if !(succeeds (thrax ++ " fmt " ++ quote tmp ++ " 2>/dev/null")) =>
+        say ("thrax fmt refused " ++ f ++ ":");
+        eprint (STR.replace (capture (thrax ++ " fmt --check " ++ quote tmp ++ " 2>&1")).out tmp f);
+        remove_file tmp;
+        @false
+    else
+        let formatted = OPT.unwrap_or (read_file tmp) staged in
+        if formatted == staged =>
+            remove_file tmp; @true
         else
-            let formatted = OPT.unwrap_or (read_file tmp) staged in
-            if formatted == staged =>
-                remove_file tmp; @true
-            else
-                let
-                    mode =
-                        OPT.unwrap_or
-                            (VEC.first (STR.split (output ("git ls-files -s -- " ++ quote f)) " "))
-                            "100644",
-                    blob = output ("git hash-object -w -- " ++ quote tmp)
-                in
-                    (
-                        if OPT.unwrap_or (read_file f) "" == staged =>
-                            write_file f formatted
-                        else
-                            @true
-                    );
-                    sh ("git update-index --cacheinfo " ++ quote (mode ++ "," ++ blob ++ "," ++ f));
-                    remove_file tmp;
-                    say ("formatted " ++ f);
-                    @true
+            let mode =
+                OPT.unwrap_or
+                    (VEC.first (STR.split (output ("git ls-files -s -- " ++ quote f)) " ")) "100644"
+            in
+            let blob = output ("git hash-object -w -- " ++ quote tmp) in
+            (if OPT.unwrap_or (read_file f) "" == staged => write_file f formatted else @true);
+            sh ("git update-index --cacheinfo " ++ quote (mode ++ "," ++ blob ++ "," ++ f));
+            remove_file tmp;
+            say ("formatted " ++ f);
+            @true
 
 # ---- commit-msg / post-commit ----
 
@@ -191,39 +180,33 @@ $ need_issue : @Str =
 # On the trunk, every commit names an issue, `#new <title>` opening it. On an
 # issue's branch, a message without one gets the branch's.
 $ commit_msg : @Str -> <Forge, @IO, Fail> {} = \path =>
-    let
-        text    = expect (read_file path) ("cannot read " ++ path),
-        subject = first_line text,
-        branch  = current_branch {}
-    in
-        remove_file (marker {});
-        if exempt subject || STR.is_empty (STR.trim subject) =>
-            {}
-        else
-            subject_issue subject |> \
-                | Option.Some.{ n } =>
-                    let
-                        rest = STR.trim
-                            (STR.substr subject (1 + STR.len (int_to_str n)) (STR.len subject))
-                    in
-                        claim branch n (issue_title n rest)
-                | _ =>
-                    if is_new subject =>
-                        let title = STR.trim (STR.substr subject 4 (STR.len subject)) in
-                        if STR.is_empty title =>
-                            Fail.fail "`#new` needs a title, `#new <title>`"
-                        else
-                            let n = expect (Forge.create_issue title) "could not open the issue" in
-                            say ("opened issue #" ++ int_to_str n);
-                            write_file path
-                                ("#" ++ int_to_str n ++ STR.substr text 4 (STR.len text));
-                            claim branch n title
+    let text = expect (read_file path) ("cannot read " ++ path) in
+    let subject = first_line text in
+    let branch = current_branch {} in
+    remove_file (marker {});
+    if exempt subject || STR.is_empty (STR.trim subject) =>
+        {}
+    else
+        subject_issue subject |> \
+            | Option.Some.{ n } =>
+                let rest =
+                    STR.trim (STR.substr subject (1 + STR.len (int_to_str n)) (STR.len subject)) in
+                claim branch n (issue_title n rest)
+            | _ =>
+                if is_new subject =>
+                    let title = STR.trim (STR.substr subject 4 (STR.len subject)) in
+                    if STR.is_empty title =>
+                        Fail.fail "`#new` needs a title, `#new <title>`"
                     else
-                        branch_issue branch |> \
-                            | Option.Some.{ m } =>
-                                write_file path ("#" ++ int_to_str m ++ " " ++ text); {}
-                            | _                 =>
-                                if branch == trunk => Fail.fail need_issue else {}
+                        let n = expect (Forge.create_issue title) "could not open the issue" in
+                        say ("opened issue #" ++ int_to_str n);
+                        write_file path ("#" ++ int_to_str n ++ STR.substr text 4 (STR.len text));
+                        claim branch n title
+                else
+                    branch_issue branch |> \
+                        | Option.Some.{ m } =>
+                            write_file path ("#" ++ int_to_str m ++ " " ++ text); {}
+                        | _                 => if branch == trunk => Fail.fail need_issue else {}
 
 # The open issue's title. `fallback` when the forge does not answer, so working
 # offline only loses the check.
@@ -289,22 +272,15 @@ $ post_commit : {} -> <@IO, Fail> {} = \u =>
     read_file m |> \
         | Option.Some.{ text } =>
             remove_file m;
-            let
-                branch = STR.trim text,
-                head   = output "git rev-parse HEAD"
-            in
-                if current_branch {} == trunk && !(STR.is_empty head) =>
-                    sh ("git branch " ++ quote branch ++ " " ++ head);
-                    sh ("git symbolic-ref HEAD refs/heads/" ++ branch);
-                    sh ("git update-ref refs/heads/" ++ trunk ++ " " ++ head ++ "~1 " ++ head);
-                    say
-                        (
-                            "the commit moved to `"
-                                ++ branch
-                                ++ "`; `git push` opens its pull request"
-                        )
-                else
-                    {}
+            let branch = STR.trim text in
+            let head = output "git rev-parse HEAD" in
+            if current_branch {} == trunk && !(STR.is_empty head) =>
+                sh ("git branch " ++ quote branch ++ " " ++ head);
+                sh ("git symbolic-ref HEAD refs/heads/" ++ branch);
+                sh ("git update-ref refs/heads/" ++ trunk ++ " " ++ head ++ "~1 " ++ head);
+                say ("the commit moved to `" ++ branch ++ "`; `git push` opens its pull request")
+            else
+                {}
         | _ => {}
 
 # ---- pre-push / open-pr ----
@@ -316,27 +292,25 @@ $ push_lines : @Str -> <@IO, Fail> {} = \line =>
     if STR.is_empty line =>
         {}
     else
-        let
-            parts  = STR.split line " ",
-            sha    = arg_at parts 1,
-            branch = STR.replace (arg_at parts 2) "refs/heads/" ""
-        in
-            (
-                if branch == trunk =>
-                    Fail.fail
-                        (
-                            "master changes through pull requests\n"
-                                ++ "help: commit on master with `#N <subject>` and the commit moves to its branch;"
-                                ++ " `git push --no-verify` pushes anyway"
-                        )
-                else if STR.starts_with sha "0000000000" =>
-                    {}
-                else if is_some (branch_issue branch) =>
-                    spawn_open_pr branch sha
-                else
-                    {}
-            );
-            push_lines (read_line {})
+        let parts = STR.split line " " in
+        let sha = arg_at parts 1 in
+        let branch = STR.replace (arg_at parts 2) "refs/heads/" "" in
+        (
+            if branch == trunk =>
+                Fail.fail
+                    (
+                        "master changes through pull requests\n"
+                            ++ "help: commit on master with `#N <subject>` and the commit moves to its branch;"
+                            ++ " `git push --no-verify` pushes anyway"
+                    )
+            else if STR.starts_with sha "0000000000" =>
+                {}
+            else if is_some (branch_issue branch) =>
+                spawn_open_pr branch sha
+            else
+                {}
+        );
+        push_lines (read_line {})
 
 # The pull request can only be opened once the branch is on the remote, which
 # is after this hook returns, so a detached helper waits for it.
@@ -360,36 +334,34 @@ $ open_pr : @Str -> @Str -> <Forge, @IO, Fail> {} = \branch sha =>
     else
         Forge.pr branch |> \
             | .Absent =>
-                let
-                    n        = OPT.unwrap_or (branch_issue branch) 0,
-                    subjects = STR.lines
-                        (
-                            output
-                                (
-                                    "git log --reverse --format=%s origin/"
-                                        ++ trunk
-                                        ++ ".."
-                                        ++ quote branch
-                                )
-                        ),
-                    title    =
-                        OPT.unwrap_or
-                            (VEC.find (\s => OPT.unwrap_or (subject_issue s) 0 == n) subjects)
-                            branch
-                in
+                let n = OPT.unwrap_or (branch_issue branch) 0 in
+                let subjects = STR.lines
                     (
-                        Forge.open_pr
-                            PrSpec.{
-                                .branch = branch,
-                                .base = trunk,
-                                .title = title,
-                                .body = "Closes #" ++ int_to_str n
-                            }
-                            |> \
-                                | Option.Some.{ url } => say ("opened " ++ url)
-                                | _                   =>
-                                    say ("could not open a pull request for `" ++ branch ++ "`")
-                    )
+                        output
+                            (
+                                "git log --reverse --format=%s origin/"
+                                    ++ trunk
+                                    ++ ".."
+                                    ++ quote branch
+                            )
+                    ) in
+                let title =
+                    OPT.unwrap_or (VEC.find (\s => OPT.unwrap_or (subject_issue s) 0 == n) subjects)
+                        branch
+                in
+                (
+                    Forge.open_pr
+                        PrSpec.{
+                            .branch = branch,
+                            .base = trunk,
+                            .title = title,
+                            .body = "Closes #" ++ int_to_str n
+                        }
+                        |> \
+                            | Option.Some.{ url } => say ("opened " ++ url)
+                            | _                   =>
+                                say ("could not open a pull request for `" ++ branch ++ "`")
+                )
             | .Open.{ url } => {}
             | .Merged       => say ("`" ++ branch ++ "` was merged already, no pull request opened")
             | .Closed       => say
@@ -416,18 +388,16 @@ $ sync_trunk : {} -> <Forge, @IO, Fail> {} = \u =>
         {}
 
 $ prune_merged : {} -> <Forge, @IO, Fail> {} = \u =>
-    let
-        here     = current_branch {},
-        branches = STR.lines (output "git for-each-ref --format='%(refname:short)' refs/heads/")
-    in
-        for branches (\b =>
-            if b != here && is_some (branch_issue b) =>
-                (
-                    Forge.pr b |> \
-                        | .Merged =>
-                            sh ("git branch -q -D " ++ quote b);
-                            say ("deleted `" ++ b ++ "`, its pull request merged")
-                        | _ => {}
-                )
-            else
-                {})
+    let here = current_branch {} in
+    let branches = STR.lines (output "git for-each-ref --format='%(refname:short)' refs/heads/") in
+    for branches (\b =>
+        if b != here && is_some (branch_issue b) =>
+            (
+                Forge.pr b |> \
+                    | .Merged =>
+                        sh ("git branch -q -D " ++ quote b);
+                        say ("deleted `" ++ b ++ "`, its pull request merged")
+                    | _ => {}
+            )
+        else
+            {})

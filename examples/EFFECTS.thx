@@ -30,15 +30,14 @@ $ gen3 : {} -> <Yield> {} = \u =>
 # State via parameter-passing: each clause returns a state-transforming function.
 # The action performs State, so its arrow is `{} -> <State> @Int`.
 $ runState : ({} -> <State> @Int) -> @Int -> @Int = \action s0 =>
-    let
-        h =
-            do action {}
-            ctl k
-            | get u => \s => (k s) s
-            | put n => \s => (k {}) n
-            | x     => \s => x
+    let h =
+        do action {}
+        ctl k
+        | get u => \s => (k s) s
+        | put n => \s => (k {}) n
+        | x     => \s => x
     in
-        h s0
+    h s0
 
 $ counter : {} -> <State> @Int = \u =>
     let x = get {} in let _ = put (x + 1) in let y = get {} in x + y
@@ -48,10 +47,7 @@ $ counter : {} -> <State> @Int = \u =>
 $ Found : @union = Hit: @Int, Miss: {},
 $ lookup : @Int -> @Int = \key =>
     do (
-        if
-            key < 0  => Exn.throw "negative",
-            key == 0 => Found.Miss
-            else Found.Hit.{ key * 2 }
+        if key < 0 => Exn.throw "negative" else if key == 0 => Found.Miss else Found.Hit.{ key * 2 }
     )
     ctl k
     | Exn.throw msg         => 0 - 2

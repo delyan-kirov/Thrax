@@ -189,32 +189,28 @@ $ native_path : @Str -> @Str = \p => if TARGET.os == "windows" => STR.replace p 
 # CI runs it on every platform. `wasm` builds the native leg for wasm32-wasi and
 # runs it under node instead.
 $ corpus_task : @Bool -> <@IO, Fail> {} = \wasm =>
-    let
-        bin    = thrax_bin {},
-        interp = "target/corpus-interp.txt",
-        native = "target/corpus-native.txt",
-        build  =
-            if wasm => " build --target=wasm32-wasi tests/MAIN.thx" else " build tests/MAIN.thx",
-        exe    = if wasm => "node tests/thrax-out/MAIN.js" else native_path "tests/thrax-out/MAIN"
+    let bin = thrax_bin {} in
+    let interp = "target/corpus-interp.txt" in
+    let native = "target/corpus-native.txt" in
+    let build =
+        if wasm => " build --target=wasm32-wasi tests/MAIN.thx" else " build tests/MAIN.thx"
     in
-        step "interpreter run" (bin ++ " run tests/MAIN.thx > " ++ interp);
-        step "native build" (bin ++ build);
-        step "native run" (exe ++ " > " ++ native);
-        { read_file interp, read_file native }
-            |> \
-                | { Option.Some.{ a }, Option.Some.{ b } } =>
-                    print b;
-                    let
-                        la   = STR.lines a,
-                        lb   = STR.lines b,
-                        skip = VEC.append (skips la) (skips lb)
-                    in
-                        if STR.join "\n" (comparable skip la) == STR.join "\n"
-                            (comparable skip lb) =>
-                            {}
-                        else
-                            Fail.fail "the engines disagree (target/corpus-*.txt)"
-                | _ => Fail.fail "corpus output missing"
+    let exe = if wasm => "node tests/thrax-out/MAIN.js" else native_path "tests/thrax-out/MAIN" in
+    step "interpreter run" (bin ++ " run tests/MAIN.thx > " ++ interp);
+    step "native build" (bin ++ build);
+    step "native run" (exe ++ " > " ++ native);
+    { read_file interp, read_file native }
+        |> \
+            | { Option.Some.{ a }, Option.Some.{ b } } =>
+                print b;
+                let la = STR.lines a in
+                let lb = STR.lines b in
+                let skip = VEC.append (skips la) (skips lb) in
+                if STR.join "\n" (comparable skip la) == STR.join "\n" (comparable skip lb) =>
+                    {}
+                else
+                    Fail.fail "the engines disagree (target/corpus-*.txt)"
+            | _ => Fail.fail "corpus output missing"
 
 # The compiler the tasks run: $THRAX_BIN (thxdo's dev-shell wrapper points it
 # at the workspace build), else `thrax` on the PATH.
@@ -230,47 +226,43 @@ $ zalmoxis_dir : @Str = "applications/zalmoxis"
 # applications submodule is checked out first if it is not, and the counter
 # built when it has no binary or a source is newer than it.
 $ stats_task : {} -> <@IO, Fail> {} = \_ =>
-    let
-        main = zalmoxis_dir ++ "/MAIN.thx",
-        exe  = native_path (zalmoxis_dir ++ "/thrax-out/MAIN"),
-    in
-        (
-            when
-                (VEC.is_empty (read_dir "applications")) <| \_ =>
-                    println "thxdo: checking out the applications submodule ...";
-                    step "submodule checkout" "git submodule update --init applications"
-        );
-        (
-            when
-                (OPT.is_none (mtime main)) <| \_ =>
-                    Fail.fail
-                        (
-                            main
-                                ++ " is missing: the applications submodule predates it (git submodule update applications)"
-                        )
-        );
-        (
-            when
-                (stale exe zalmoxis_dir) <| \_ =>
-                    println "thxdo: building zalmoxis ...";
-                    step "zalmoxis build" (thrax_bin {} ++ " build " ++ main)
-        );
-        step "stats" (exe ++ " -e external -e applications")
+    let main = zalmoxis_dir ++ "/MAIN.thx" in
+    let exe = native_path (zalmoxis_dir ++ "/thrax-out/MAIN") in
+    (
+        when
+            (VEC.is_empty (read_dir "applications")) <| \_ =>
+                println "thxdo: checking out the applications submodule ...";
+                step "submodule checkout" "git submodule update --init applications"
+    );
+    (
+        when
+            (OPT.is_none (mtime main)) <| \_ =>
+                Fail.fail
+                    (
+                        main
+                            ++ " is missing: the applications submodule predates it (git submodule update applications)"
+                    )
+    );
+    (
+        when
+            (stale exe zalmoxis_dir) <| \_ =>
+                println "thxdo: building zalmoxis ...";
+                step "zalmoxis build" (thrax_bin {} ++ " build " ++ main)
+    );
+    step "stats" (exe ++ " -e external -e applications")
 
 # Whether `exe` is missing or older than one of the .thx sources in `dir`.
 $ stale : @Str -> @Str -> <@IO> @Bool = \exe dir =>
     mtime exe |> \ | Option.Some.{ built } => newer_than built dir (read_dir dir) 0 | _ => @true
 
 $ newer_than : @Int -> @Str -> @Vec @Str -> @Int -> <@IO> @Bool = \built dir names i =>
-    if
-        i >= @vec_len names =>
-            @false,
-        !(STR.ends_with (@vec_get names i) ".thx") =>
-            newer_than built dir names (i + 1),
-        else
-            mtime (dir ++ "/" ++ @vec_get names i) |> \
-                | Option.Some.{ t } if t > built => @true
-                | _                              => newer_than built dir names (i + 1)
+    if i >= @vec_len names =>
+        @false
+    else if !(STR.ends_with (@vec_get names i) ".thx") =>
+        newer_than built dir names (i + 1)
+    else
+        mtime (dir ++ "/" ++ @vec_get names i) |>
+            \ | Option.Some.{ t } if t > built => @true | _ => newer_than built dir names (i + 1)
 
 # The module named on a corpus line (`OK NAME`, `ERR NAME`, `SKIP NAME (why)`).
 $ line_module : @Str -> @Str = \l =>
