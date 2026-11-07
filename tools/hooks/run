@@ -2,7 +2,16 @@
 # Every hook in this directory is `run <hook> <git's arguments>`. The logic is
 # Thrax, in tools/HOOKS.thx, reached through `thxdo hook`. Installed by
 # `thxdo hooks` (and on entering the nix shell); `--no-verify` skips the
-# commit and push checks.
+# commit and push checks, which are refused outside the nix shell.
+case $1 in
+pre-commit | commit-msg | pre-push)
+    [ -n "$IN_NIX_SHELL" ] || {
+        echo "thxdo: $1 refused outside the nix shell" >&2
+        echo "help: run git from \`nix develop\`; \`--no-verify\` skips the check" >&2
+        exit 1
+    }
+    ;;
+esac
 thxdo=$(command -v thxdo) || {
     echo "thxdo: not on PATH (outside the nix shell?), $1 hook skipped" >&2
     exit 0

@@ -60,17 +60,17 @@ $ ck_gen_nest : @Int =
 
 # Two type parameters: each field renders through its own dictionary, by type.
 $ ck_pair : @Int =
-    if to_string (
-        Pair.{ .fst = 5, .snd = @true } : Pair @Int @Bool
-    ) == "Pair { fst = 5 snd = true }" =>
+    if to_string
+        (Pair.{ .fst = 5, .snd = @true } : Pair @Int @Bool) == "Pair { fst = 5 snd = true }" =>
         0
-    else 256
+    else
+        256
 $ ck_pair2 : @Int =
-    if to_string (
-        Pair.{ .fst = Shape.Dot, .snd = 9 } : Pair Shape @Int
-    ) == "Pair { fst = Dot snd = 9 }" =>
+    if to_string
+        (Pair.{ .fst = Shape.Dot, .snd = 9 } : Pair Shape @Int) == "Pair { fst = Dot snd = 9 }" =>
         0
-    else 512
+    else
+        512
 
 # A generic instance derived in ANOTHER module (DERIVE_LIB) still works here: the
 # imported `to_string : Wrap t` kept its `@ctx to_string : t` requirement, so this
@@ -79,6 +79,7 @@ $ ck_xmod : @Int =
     if to_string (DERIVE_LIB.Wrap.Just.{ 5 } : DERIVE_LIB.Wrap @Int) == "Just(5)" => 0 else 1024
 
 $ test : @Int =
-    ck_struct + ck_nullary + ck_unary + ck_nary + ck_interp + ck_gen_int + ck_gen_empty + ck_gen_nest + ck_pair + ck_pair2 + ck_xmod
+    ck_struct + ck_nullary + ck_unary + ck_nary + ck_interp + ck_gen_int + ck_gen_empty
+        + ck_gen_nest + ck_pair + ck_pair2 + ck_xmod
 
 $ @e <| assert (test == 0) "DERIVE_SHOW: a check failed"
