@@ -1,0 +1,66 @@
+$ @mod FINALE
+
+# `@finale cleanup body` runs `body {}`, then `cleanup {}` when the body's scope
+# exits: on normal completion, on abort (an effect handled by an outer handler
+# that does not resume -- cleanup still runs, on the live stack with enclosing
+# handlers installed), and when a stored continuation holding it completes.
+# Nested finales run innermost-first (LIFO). It is an ordinary CORE function, so
+# it pipes, partially applies, and passes around. No IO here, so each case
+# observes its cleanup by performing an effect a handler collects.
+
+$ Y : @effect = yield : @Int -> {},
+$ Exn : @effect = throw : @Str -> a,
+
+# Sum every yielded value, plus the body's own result.
+$ sum : ({} -> <Y> @Int) -> @Int = \body =>
+    do body {}
+    ctl k | Y.yield v => v + k {} | r => r
+
+# Normal completion: body yields 1 and returns 100; cleanup yields 2.       -> 103
+$ r_normal : @Int = sum <| \_ => @finale (\_ => Y.yield 2) <| \_ => Y.yield 1; 100
+
+# Abort: the body throws to an OUTER handler that drops the continuation; the
+# cleanup (yield 9) still runs as the discarded scope is finalized.            -> 9
+$ r_abort : @Int =
+    sum <| \_ =>
+        do @finale (\_ => Y.yield 9) <| \_ => Exn.throw "x"; 100
+        ctl k | Exn.throw e => 0
+
+# Nested finales run inner-first (LIFO); both cleanups run.            -> 1+2+3 = 6
+$ r_nested : @Int =
+    sum <| \_ => @finale (\_ => Y.yield 3) <| \_ => @finale (\_ => Y.yield 2) <| \_ => Y.yield 1; 0
+
+# A stored continuation (coroutine): cleanup runs once, when the resumed task
+# finally completes -- not when the continuation is first stashed.
+$ Task : @union =
+    Fin: {},
+    Susp: { {} -> Task },
+
+$ Co : @effect = step : @Int -> {},
+
+$ spawn : ({} -> <Co> {}) -> Task = \t =>
+    do t {}
+    ctl k | step v => .Susp.{ k } | _ => .Fin.{}
+
+$ drive : Task -> @Int = \t => t |> \ | .Fin.{} => 0 | .Susp.{ k } => 1 + drive (k {})
+
+$ r_stored : @Int = drive <| spawn <| \_ => @finale (\_ => step 2) <| \_ => step 1; {}
+
+# First-class: a partial application is a reusable "run this, then yield 4"
+# wrapper, and a named thunk is passed as the cleanup directly.         -> 1+4+5 = 10
+$ yield_five : {} -> <Y> {} = \_ => Y.yield 5
+$ then_four : ({} -> <Y> {}) -> <Y> {} = @finale (\_ => Y.yield 4)
+$ r_first_class : @Int = sum <| \_ => @finale yield_five <| \_ => then_four (\_ => Y.yield 1); 0
+
+# The arguments are evaluated where they are written, before the body runs: the
+# cleanup expression yields 10 once, up front, and its value is the thunk the
+# frame runs at exit.                                             -> 10+1+20 = 31
+$ yield_twenty : {} -> <Y> {} = \_ => Y.yield 20
+$ r_order : @Int = sum <| \_ => @finale (Y.yield 10; yield_twenty) <| \_ => Y.yield 1; 0
+
+# Force-evaluate results for the combined test runner (pass = no fault).
+$ test : @Int =
+    let ok = r_normal == 103 && r_abort == 9 && r_nested == 6 in
+    if ok && r_stored == 2 && r_first_class == 10 && r_order == 31 => 0 else 1
+
+$ @e <| assert (test == 0) "FINALE: a check failed"

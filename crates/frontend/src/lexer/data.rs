@@ -60,7 +60,6 @@ pub enum Kind {
     With,
     Do,
     Ctl,
-    Defer,
 
     // Only the lexer emits this; peek/next skip it.
     Comment,
@@ -77,7 +76,6 @@ pub const KEYWORDS: &[(&str, Kind)] = &[
     ("with", Kind::With),
     ("do", Kind::Do),
     ("ctl", Kind::Ctl),
-    ("defer", Kind::Defer),
 ];
 
 /// The parser role of an operator lexeme, and the single source of truth for it.

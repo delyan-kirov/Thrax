@@ -1178,8 +1178,8 @@ fn same_named_struct_types_in_two_modules_do_not_collide() {
 }
 
 #[test]
-fn defer_runs_cleanup_on_completion_abort_and_nesting() {
-    // A `Y` handler that sums every yielded value; the deferred cleanups perform
+fn finale_runs_cleanup_on_completion_abort_and_nesting() {
+    // A `Y` handler that sums every yielded value; the `@finale` cleanups perform
     // `Y.yield`, so their effects are observable in the total.
     let prelude = "$ @mod M\n\
         $ Y : @effect = yield : @Int -> {},\n\
@@ -1188,21 +1188,28 @@ fn defer_runs_cleanup_on_completion_abort_and_nesting() {
           \\body => do body {} ctl k | Y.yield v => v + k {} | r => r\n";
     // Normal completion: body yields 1 and returns 100, cleanup yields 2 -> 103.
     let normal =
-        format!("{prelude}$ r : @Int = sum (\\_ => defer Y.yield 2 in (let _ = Y.yield 1 in 100))");
+        format!("{prelude}$ r : @Int = sum (\\_ => @finale (\\_ => Y.yield 2) (\\_ => let _ = Y.yield 1 in 100))");
     assert_eq!(run(&normal, "r"), "103");
     // Abort: the inner handler drops the continuation, but the cleanup (yield 9)
     // still runs under the enclosing `Y` handler -> 9.
     let abort = format!(
         "{prelude}$ r : @Int = sum (\\_ => \
-         do (defer Y.yield 9 in (let _ = Exn.throw \"x\" in 100)) ctl k | Exn.throw e => 0)"
+         do @finale (\\_ => Y.yield 9) (\\_ => let _ = Exn.throw \"x\" in 100) ctl k | Exn.throw e => 0)"
     );
     assert_eq!(run(&abort, "r"), "9");
-    // Nested defers run innermost-first: 1 + 2 + 3 = 6.
+    // Nested finales run innermost-first: 1 + 2 + 3 = 6.
     let nested = format!(
         "{prelude}$ r : @Int = sum (\\_ => \
-         defer Y.yield 3 in (defer Y.yield 2 in (let _ = Y.yield 1 in 0)))"
+         @finale (\\_ => Y.yield 3) (\\_ => @finale (\\_ => Y.yield 2) (\\_ => let _ = Y.yield 1 in 0)))"
     );
     assert_eq!(run(&nested, "r"), "6");
+    // First-class: bound to a name and called through it, with a variable as
+    // the cleanup: 1 + 4 = 5.
+    let first_class = format!(
+        "{prelude}$ four : {{}} -> <Y> {{}} = \\_ => Y.yield 4\n\
+         $ r : @Int = sum (\\_ => let f = @finale in f four (\\_ => let _ = Y.yield 1 in 0))"
+    );
+    assert_eq!(run(&first_class, "r"), "5");
 }
 
 #[test]
@@ -1325,7 +1332,7 @@ fn a_stored_continuation_resumed_twice_copies() {
 }
 
 #[test]
-fn defer_cleanup_runs_when_a_stored_continuation_completes() {
+fn finale_cleanup_runs_when_a_stored_continuation_completes() {
     // The handler stores the continuation instead of resuming; the cleanup runs
     // only when that continuation is later driven to completion (two steps).
     let src = "$ @mod M\n\
@@ -1335,7 +1342,7 @@ fn defer_cleanup_runs_when_a_stored_continuation_completes() {
           \\t => do t {} ctl k | step v => Task.Susp.{ k } | _ => Task.Fin.{}\n\
         $ drive : Task -> @Int = \
           \\t => t |> \\ | Task.Fin.{} => 0 | Task.Susp.{ k } => 1 + drive (k {}) | _ => 0\n\
-        $ r : @Int = drive (spawn (\\_ => defer step 2 in (let _ = step 1 in {})))";
+        $ r : @Int = drive (spawn (\\_ => @finale (\\_ => step 2) (\\_ => let _ = step 1 in {})))";
     assert_eq!(run(src, "r"), "2");
 }
 

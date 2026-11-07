@@ -947,11 +947,6 @@ impl<'a> Checker<'a> {
                 None => self.infer(*body),
                 Some(handler) => self.infer_handle(*body, handler),
             },
-            Expr::Defer { cleanup, body } => {
-                let (cleanup, body) = (*cleanup, *body);
-                self.infer(cleanup)?;
-                self.infer(body)
-            }
             Expr::Extern { .. } => {
                 let v = self.unifier.fresh();
                 self.extern_tys.insert(e, v);

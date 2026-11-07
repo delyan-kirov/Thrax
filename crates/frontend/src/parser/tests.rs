@@ -110,13 +110,12 @@ fn lambda_if_and_comparison() {
 
 #[test]
 fn a_comma_chain_is_an_error_with_the_nested_fix() {
-    // `let`, `if`, `with` and `defer` take one entry each; a comma reports the
+    // `let`, `if` and `with` take one entry each; a comma reports the
     // nested spelling (and a trailing comma its removal) as the fix.
     for (src, fix) in [
         ("$ @mod M\n$ f = \\n => let a = 1, b = 2 in a", " in let"),
         ("$ @mod M\n$ f = \\n => if n == 0 => 1, n > 0 => 2 else 3", " else if"),
         ("$ @mod M\n$ f = \\a b => with a, b in 1", " in with"),
-        ("$ @mod M\n$ f = \\a b c => defer a, b in c", " in defer"),
         ("$ @mod M\n$ f = \\n => let a = 1, in a", ""),
     ] {
         let Err(err) = parse(src) else { panic!("expected a parse error: {src}") };

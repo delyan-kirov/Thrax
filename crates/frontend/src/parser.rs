@@ -9,7 +9,7 @@
 //! * `Parser::parse_primary` parses one atom then a left-associative postfix
 //!   `.` chain (field access, tuple index, struct/variant literals,
 //!   module-qualified names) that binds tighter than application.
-//! * The control forms (`let`, `if`, `when`, `\`, `with`, `do`, `defer`) are
+//! * The control forms (`let`, `if`, `when`, `\`, `with`, `do`) are
 //!   primaries, each with its own `parse_*` method.
 //!
 //! Nodes are built into the [`Ast`] stores as they are parsed (bottom-up), so a
@@ -1658,7 +1658,6 @@ impl<'a> Parser<'a> {
             Kind::If => self.parse_if(),
             Kind::Is => self.parse_match(),
             Kind::Do => self.parse_handle(),
-            Kind::Defer => self.parse_defer(),
             Kind::Lambda => self.parse_lambda(),
             Kind::LBrack => self.parse_list(),
             Kind::At => self.parse_at_term(),
@@ -2293,8 +2292,7 @@ impl<'a> Parser<'a> {
 
     // -- control forms ------------------------------------------------------
 
-    /// `let`, `with`, `if` and `defer` take one binding, subject, arm or
-    /// cleanup; a comma once chained several. Report it, recovered, with the
+    /// `let`, `with` and `if` take one binding, subject or arm; a comma once chained several. Report it, recovered, with the
     /// nested spelling as the fix, so every one is reported (and `thrax fix`
     /// rewrites them all). Returns whether another entry follows.
     fn chained_comma(&mut self, form: &str, stop: Kind, nested: &str) -> Result<bool> {
@@ -2621,25 +2619,6 @@ impl<'a> Parser<'a> {
         let arms = self.ast.make_slice(arms);
         let node = self.expr(Expr::Match { scrut, arms });
         Some((name, self.stamp(start, node)))
-    }
-
-    fn parse_defer(&mut self) -> Result<Aol<Expr>> {
-        self.bump()?; // 'defer'
-        let mut cleanups = Vec::new();
-        loop {
-            let start = self.here()?;
-            cleanups.push((start, self.parse_expr(0)?)); // stops at ',' / 'in', as in `let`
-            if !self.chained_comma("defer", Kind::In, " in defer")? {
-                break;
-            }
-        }
-        expect!(self, Kind::In, "expected 'in' after the 'defer' cleanup");
-        let mut node = self.parse_expr(0)?;
-        for (start, cleanup) in cleanups.into_iter().rev() {
-            node = self.expr(Expr::Defer { cleanup, body: node });
-            node = self.stamp(start, node);
-        }
-        Ok(node)
     }
 
     // -- patterns -----------------------------------------------------------

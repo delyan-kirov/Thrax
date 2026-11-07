@@ -68,7 +68,7 @@ impl Class {
 pub fn class(kind: Kind, text: &str) -> Option<Class> {
     use frontend::Kind::*;
     Some(match kind {
-        Let | In | If | Is | Else | With | Do | Ctl | Defer => Class::Keyword,
+        Let | In | If | Is | Else | With | Do | Ctl => Class::Keyword,
         Comment => Class::Comment,
         Str => Class::String,
         Int(_) | Real(_) | Imaginary(_) => Class::Number,

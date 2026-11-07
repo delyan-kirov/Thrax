@@ -1122,31 +1122,44 @@ label that the performed row holds through such an alias names it:
 ``effect `Log` (part of `App`) is performed but not handled``. A row alias in
 type position, or a type alias in a row, is an error.
 
-## 8.7 `defer`
-`defer <cleanup> in <body>` runs the cleanup when the body's scope exits, on
-normal completion, on an abort by an outer non-resuming handler, or when a stored
-continuation holding it completes. Nested defers run innermost-first. The
+## 8.7 `@finale`
+`@finale cleanup body` runs `body {}`, then `cleanup {}` when the body's scope
+exits: on normal completion, on an abort by an outer non-resuming handler, or
+when a stored continuation holding it completes. Nested finales run
+innermost-first. It is an ordinary CORE function, not syntax, so the parser has
+no rule for it and it can be partially applied and passed around. The
 resource-safe FFI idiom.
 
 ```thrax
 $ open  : @Str -> @Int = \path => 0        # stand-ins for real handles
-$ close : @Int -> @Int = \h => h
+$ close : @Int -> {} = \h => {}
 $ read  : @Int -> @Int = \h => h
 $ useFile : @Str -> @Int = \path =>
 	let f = open path in
-	defer close f in
-		read f
+	@finale (\_ => close f) <| \_ =>
+	read f
 ```
 
-Several cleanups nest as separate `defer`s, and run innermost-first (here
+Several cleanups nest as separate `@finale`s, and run innermost-first (here
 `close g`, then `close f`):
 ```thrax
 $ useTwo : @Str -> @Str -> @Int = \a b =>
 	let f = open a in
 	let g = open b in
-	defer close f in
-	defer close g in
+	@finale (\_ => close f) <| \_ =>
+	@finale (\_ => close g) <| \_ =>
 	read f + read g
+```
+
+Both arguments are thunks, because Thrax is call-by-value: `@finale (close f)`
+would close the file before the body ran. The cleanup returns `{}`, and its row
+is the body's, so a pure function passed directly where the body performs
+effects needs a lambda around it (`\_ => closeWindow {}`). A library wraps it
+in a bracket function so callers never see the handle's cleanup:
+```thrax
+$ with_file : @Str -> (@Int -> @Int) -> @Int = \path body =>
+	let f = open path in
+	@finale (\_ => close f) <| \_ => body f
 ```
 
 ---

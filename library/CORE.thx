@@ -38,6 +38,13 @@ $ (;) : a -> b -> b = @extern "thrax"
 $ (|>) : a -> (a -> <e> b) -> <e> b = @extern "thrax"
 $ (<|) : (a -> <e> b) -> a -> <e> b = @extern "thrax"
 
+# `@finale cleanup body` runs `body {}`, then `cleanup {}` when the body's scope
+# exits: on normal completion, on an abort by an outer handler that drops the
+# continuation, or when a stored continuation holding it completes. Nested ones
+# run innermost-first. The desugarer lowers every use to the runtime's
+# finalization frame, so nothing calls this declaration either.
+$ @finale : ({} -> <e> {}) -> ({} -> <e> a) -> <e> a = @extern "thrax"
+
 # Arithmetic, the floor the operator instances bottom out on. One width-agnostic
 # operation over the value representation, so `t` is unconstrained: the instance
 # picks the right family for its type. `@i*` is signed (division truncates toward
@@ -220,7 +227,6 @@ $ Token : @union =
     With: @Str,
     Do: @Str,
     Ctl: @Str,
-    Defer: @Str,
     Comment: @Str,
 
 # The `<@Meta>` operations, usable only where the compiler handles `@Meta`
