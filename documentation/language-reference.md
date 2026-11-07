@@ -1358,8 +1358,8 @@ variance.
 `@e X` runs `X` at build time and inserts the code it returns in its place. `X`
 must be an `@Code`: `@parse_str` builds an expression and `@parse_items` builds
 top-level items from a string. The inserted source is then checked like
-hand-written code. `@e` works in expression, type, and item position, and
-composes with the pipes like any one-argument function.
+hand-written code. `@e` works in expression, type, pattern, and item position,
+and composes with the pipes like any one-argument function.
 
 ```thrax
 $ lit : @Int -> @Code = \n => @parse_str <| to_string n
@@ -1367,7 +1367,19 @@ $ lit : @Int -> @Code = \n => @parse_str <| to_string n
 $ fib10 : @Int = @e <| lit <| fib 10                    # inserts `55`
 $ n     : @e <| @parse_str "@Int64" = 1024              # inserts the type
 $ @e <| @parse_items "$ injected : @Int = 99"           # inserts an item
+$ is55 : @Int -> @Bool = \ | @e (lit (fib 10)) => @true | _ => @false
 ```
+
+In a pattern the operand is always parenthesized, `@e (X)`, so it ends at `)`
+and never runs into the `=>` or `|` after it. This is how a value the compiler
+can compute stands in a pattern: the generator renders it, and the arm matches
+it like a hand-written literal. The spliced pattern may bind names, and its
+coverage is checked once it is spliced.
+
+A generator never runs code the checker could not yet resolve. While `@e` sites
+remain, a missing name or instance is left open, since a generator may still
+supply it; an `@e` whose code reaches one waits for a later round, and if no
+round supplies it the error is reported as written.
 
 `X` may perform the compile-time operations (`@emit`, `@abort`, `@fresh`,
 `@link`, `@link_path`). They carry the `<@Meta>` effect, which `@e`

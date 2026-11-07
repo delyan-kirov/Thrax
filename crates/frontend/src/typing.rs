@@ -350,6 +350,11 @@ pub struct Checker<'a> {
     /// Whether a lenient check took any of its lenient branches. One that did not
     /// is exactly the strict check of the same module.
     deferred: bool,
+    /// The expression sites a lenient check deferred (an unbound name, an
+    /// unresolved context or overload). Lowering marks the globals that contain
+    /// one, so the driver does not run an `@e` that would reach them.
+    /// See Note [Deferred sites hold back generators].
+    deferred_sites: HashSet<Aol<Expr>>,
     /// Set for the interactive shell: a top-level body is checked under an open
     /// ambient effect row rather than the pure closed row, so an entered expression
     /// may perform effects (`println`, file IO) the way a `main` body can. A
@@ -526,6 +531,7 @@ impl<'a> Checker<'a> {
             unknown_type: None,
             lenient: false,
             deferred: false,
+            deferred_sites: HashSet::new(),
             open_effects: false,
             inferred: None,
         };
@@ -545,6 +551,17 @@ impl<'a> Checker<'a> {
     /// instance or overload). When it did not, the check is the strict one.
     pub fn deferred(&self) -> bool {
         self.deferred
+    }
+
+    /// The sites a lenient check deferred. See [`Self::deferred_sites`].
+    pub fn deferred_sites(&self) -> &HashSet<Aol<Expr>> {
+        &self.deferred_sites
+    }
+
+    /// Take a lenient branch at `site`: leave it unresolved for a later round.
+    fn defer(&mut self, site: Option<Aol<Expr>>) {
+        self.deferred = true;
+        self.deferred_sites.extend(site);
     }
 
     /// Point the checker at `ast`, a copy of its tree with nodes only appended
@@ -1394,9 +1411,11 @@ fn free_globals(
 
         Expr::Let { bindings, body } => {
             let mark = bound.len();
+            let mut metas = Vec::new();
             for b in ast.slice(*bindings).iter() {
-                collect_pattern_binders(ast, b.pat, bound);
+                collect_pattern_binders(ast, b.pat, bound, &mut metas);
             }
+            free_globals_meta_patterns(ast, metas, globals, out);
             for b in ast.slice(*bindings).iter() {
                 free_globals(ast, b.value, globals, bound, out);
             }
@@ -1412,9 +1431,11 @@ fn free_globals(
             free_globals(ast, *scrut, globals, bound, out);
             for arm in ast.slice(*arms).iter() {
                 let mark = bound.len();
+                let mut metas = Vec::new();
                 for pat in ast.slice(arm.patterns).iter() {
-                    collect_pattern_binders(ast, *pat, bound);
+                    collect_pattern_binders(ast, *pat, bound, &mut metas);
                 }
+                free_globals_meta_patterns(ast, metas, globals, out);
                 if let Some(g) = arm.guard {
                     free_globals(ast, g, globals, bound, out);
                 }
@@ -1424,9 +1445,11 @@ fn free_globals(
         }
         Expr::Lambda { params, body } => {
             let mark = bound.len();
+            let mut metas = Vec::new();
             for p in ast.slice(*params).iter() {
-                collect_pattern_binders(ast, p.pat, bound);
+                collect_pattern_binders(ast, p.pat, bound, &mut metas);
             }
+            free_globals_meta_patterns(ast, metas, globals, out);
             free_globals(ast, *body, globals, bound, out);
             bound.truncate(mark);
         }
@@ -1481,30 +1504,45 @@ fn free_globals_field_inits(
     }
 }
 
-/// Push every name a pattern binds onto `bound`.
-fn collect_pattern_binders(ast: &Ast, pat: Aol<Pattern>, bound: &mut Vec<StrId>) {
+/// The globals the `@e (X)` patterns' operands use. An operand runs at compile
+/// time, so it sees globals only, never a local in scope where it is written.
+fn free_globals_meta_patterns(
+    ast: &Ast,
+    metas: Vec<Aol<Expr>>,
+    globals: &HashMap<StrId, usize>,
+    out: &mut Vec<usize>,
+) {
+    for e in metas {
+        free_globals(ast, e, globals, &mut Vec::new(), out);
+    }
+}
+
+/// Push every name a pattern binds onto `bound`, and the operand of every
+/// `@e (X)` in it onto `metas`.
+fn collect_pattern_binders(ast: &Ast, pat: Aol<Pattern>, bound: &mut Vec<StrId>, metas: &mut Vec<Aol<Expr>>) {
     match ast.pat(pat) {
+        Pattern::MetaE(e) => metas.push(*e),
         Pattern::Var(name) => bound.push(*name),
         Pattern::List(elems) => ast
             .slice(*elems)
             .iter()
-            .for_each(|p| collect_pattern_binders(ast, *p, bound)),
+            .for_each(|p| collect_pattern_binders(ast, *p, bound, metas)),
         Pattern::Concat { pre, mid, suf } => {
             ast.slice(*pre)
                 .iter()
                 .chain(mid.iter())
                 .chain(ast.slice(*suf).iter())
-                .for_each(|p| collect_pattern_binders(ast, *p, bound));
+                .for_each(|p| collect_pattern_binders(ast, *p, bound, metas));
         }
         Pattern::Tuple(pats) => ast
             .slice(*pats)
             .iter()
-            .for_each(|p| collect_pattern_binders(ast, *p, bound)),
+            .for_each(|p| collect_pattern_binders(ast, *p, bound, metas)),
         Pattern::Struct { fields, .. } | Pattern::Variant { fields, .. } => {
             for f in ast.slice(*fields).iter() {
                 match f {
-                    FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound),
-                    FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound),
+                    FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound, metas),
+                    FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound, metas),
                     FieldPat::Shorthand(name) => bound.push(*name),
                 }
             }
@@ -1512,13 +1550,13 @@ fn collect_pattern_binders(ast: &Ast, pat: Aol<Pattern>, bound: &mut Vec<StrId>)
         Pattern::Record { fields, rest } => {
             for f in ast.slice(*fields).iter() {
                 match f {
-                    FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound),
-                    FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound),
+                    FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound, metas),
+                    FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound, metas),
                     FieldPat::Shorthand(name) => bound.push(*name),
                 }
             }
             if let Some(r) = rest {
-                collect_pattern_binders(ast, *r, bound);
+                collect_pattern_binders(ast, *r, bound, metas);
             }
         }
         Pattern::Range { .. }

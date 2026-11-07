@@ -95,6 +95,9 @@ pub struct Resolved {
     /// lowering injects ahead of the explicit arguments (from
     /// [`Checker::ctx_calls`]).
     pub ctx_args: HashMap<Aol<Expr>, CtxVal>,
+    /// The sites a lenient expansion round left unresolved (from
+    /// [`Checker::deferred_sites`]). Lowering marks the globals containing one.
+    pub deferred_sites: HashSet<Aol<Expr>>,
     /// The ordered field names each `with` expression binds, keyed by the `With`
     /// node (from [`Checker::with_fields`]). Lowering desugars
     /// `with` into a `let` per field so the Core carries no `with` node.
@@ -174,6 +177,7 @@ pub fn collect_resolved<'c, 'a: 'c>(checkers: impl IntoIterator<Item = &'c Check
         for (&site, val) in checker.ctx_calls() {
             resolved.ctx_args.insert(site, val.clone());
         }
+        resolved.deferred_sites.extend(checker.deferred_sites());
         for (&site, fields) in checker.with_fields() {
             resolved.with_fields.insert(site, fields.clone());
         }

@@ -1476,7 +1476,7 @@ impl<'a> Checker<'a> {
                 Some(_) => Ok(self.unifier.fresh()),
                 None if m == self.module_name => Ok(self.unifier.fresh()),
                 None if self.lenient => {
-                    self.deferred = true;
+                    self.defer(Some(site));
                     Ok(self.unifier.fresh())
                 }
                 None => {
@@ -1535,7 +1535,7 @@ impl<'a> Checker<'a> {
             // A metaprogram-expansion round: the name may be injected by a
             // generator that has not run yet. Defer it as a fresh variable; the
             // final strict round rejects it if it is still unbound.
-            self.deferred = true;
+            self.defer(Some(site));
             Ok(self.unifier.fresh())
         } else {
             Err(self.unbound_name(name))
@@ -1974,7 +1974,7 @@ impl<'a> Checker<'a> {
             // by a generator that has not run yet (a derived `to_string` for a new
             // type); leave the result an unresolved variable rather than erroring.
             Match::None if self.lenient => {
-                self.deferred = true;
+                self.defer(site);
                 Ok(result)
             }
             Match::None => Err(self.no_overload(name, args, site)),
@@ -2039,7 +2039,7 @@ impl<'a> Checker<'a> {
                     }
                     // Lenient round: a still-unmatched overload may be satisfied by
                     // an about-to-be-injected definition; drop it rather than error.
-                    Match::None if self.lenient => self.deferred = true,
+                    Match::None if self.lenient => self.defer(p.site),
                     Match::None => return Err(self.no_overload(p.name, &p.args, p.site)),
                     Match::Ambiguous => still.push(p),
                 }

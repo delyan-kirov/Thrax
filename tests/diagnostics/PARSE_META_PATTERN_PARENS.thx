@@ -1,0 +1,5 @@
+$ @mod PARSE_META_PATTERN_PARENS
+
+# A pattern-position `@e` takes its operand in parentheses, so it ends at `)`.
+$ lit : @Int -> @Code = \n => @parse_str <| to_string n
+$ f : @Int -> @Int = \ | @e lit 3 => 1 | _ => 0  #~ error[UNEXPECTED_TOKEN]: expected '(' after '@e' in a pattern

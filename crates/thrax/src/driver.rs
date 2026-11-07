@@ -861,34 +861,25 @@ fn expand_all(
         // yet resolve. Unbound names are deferred (fresh vars) so the generators
         // can still run; the final strict compile below validates the result.
         let compiled = compile_sources(&loaded, true, want_entry)?;
-        // Gather every `@e` site this round: expression-position (`ct_evals`,
-        // embed the value) and item-position (`ct_runs`, `$ @e X`: inject `@Code`,
-        // apply a `BUILD` directive, or discard).
-        let expr_sites: Vec<(String, String, utilities::Span)> = compiled
+        // Gather every `@e` site this round, as `(module, qualified global, span,
+        // how its code is spliced)`: item position (`$ @e X`) replaces the
+        // directive with the items, expression and type position splice the code
+        // parenthesized to keep precedence, and pattern position (`@e (X)`) splices
+        // it bare, since a pattern has no parentheses.
+        let sites: Vec<(String, String, utilities::Span, Splice)> = compiled
             .0
             .iter()
             .flat_map(|p| {
-                p.ct_evals
-                    .iter()
-                    .map(move |(name, span)| (p.module.to_string(), format!("{}.{}", p.module, name), *span))
-            })
-            .collect();
-        let item_sites: Vec<(String, String, utilities::Span)> = compiled
-            .0
-            .iter()
-            .flat_map(|p| {
-                p.ct_runs
-                    .iter()
-                    .map(move |(name, span)| (p.module.to_string(), format!("{}.{}", p.module, name), *span))
-            })
-            .collect();
-        let type_sites: Vec<(String, String, utilities::Span)> = compiled
-            .0
-            .iter()
-            .flat_map(|p| {
-                p.ct_types
-                    .iter()
-                    .map(move |(name, span)| (p.module.to_string(), format!("{}.{}", p.module, name), *span))
+                let kinds = [
+                    (&p.ct_runs, Splice::Items),
+                    (&p.ct_evals, Splice::Parenthesized),
+                    (&p.ct_types, Splice::Parenthesized),
+                    (&p.ct_patterns, Splice::Bare),
+                ];
+                kinds.into_iter().flat_map(move |(list, how)| {
+                    list.iter()
+                        .map(move |(name, span)| (p.module.to_string(), format!("{}.{}", p.module, name), *span, how))
+                })
             })
             .collect();
         // `$ @build` sites: the synthetic `@build {}` call of every module whose
@@ -903,11 +894,7 @@ fn expand_all(
                     .map(|name| (p.module.to_string(), format!("{}.{}", p.module, name)))
             })
             .collect();
-        if expr_sites.is_empty()
-            && item_sites.is_empty()
-            && type_sites.is_empty()
-            && build_sites.is_empty()
-        {
+        if sites.is_empty() && build_sites.is_empty() {
             // No `@e` remains: re-check strictly so any name still unbound after
             // all injection, or a missing/ill-typed entry, is reported now.
             let final_compiled = compile_sources(&loaded, false, want_entry)?;
@@ -927,13 +914,7 @@ fn expand_all(
             let pending = build_sites
                 .iter()
                 .map(|(module, _)| (module, utilities::Span::at(0)))
-                .chain(
-                    expr_sites
-                        .iter()
-                        .chain(&item_sites)
-                        .chain(&type_sites)
-                        .map(|(module, _, span)| (module, *span)),
-                );
+                .chain(sites.iter().map(|(module, _, span, _)| (module, *span)));
             for (module, span) in pending {
                 let diag = utilities::Diagnostic::error(
                     utilities::Code::ExpansionLimit,
@@ -1033,9 +1014,24 @@ fn expand_all(
         // operators), which only exists once the round is spliced. Faults are
         // reported only when a round makes no progress at all.
         let mut faults: Vec<(utilities::Diagnostic, String, utilities::Span)> = Vec::new();
-        // Expression-position: replace the `@e X` with the code it returns
-        // (parenthesized to keep precedence).
-        for (module, qualified, span) in expr_sites {
+        // A site that reaches code the lenient check left unresolved waits without
+        // running. See Note [Deferred sites hold back generators] in `frontend::desugar`.
+        let deferred: HashSet<utilities::StrId> = compiled
+            .0
+            .iter()
+            .flat_map(|p| p.deferred.iter().map(move |n| utilities::StrId::intern(&format!("{}.{n}", p.module))))
+            .collect();
+        let code_of: HashMap<utilities::StrId, usize> = ir.globals.iter().copied().collect();
+        let mut held = 0;
+        let mut blocked = |qualified: &str| {
+            let hit = reaches_any(&ir, &code_of, qualified, &deferred);
+            held += hit as usize;
+            hit
+        };
+        for (module, qualified, span, how) in sites {
+            if blocked(&qualified) {
+                continue;
+            }
             enter(&module);
             let v = match interpreter::machine::eval_value(&ir, &qualified) {
                 Ok(v) => v,
@@ -1045,51 +1041,95 @@ fn expand_all(
                 }
             };
             let code = as_code_src(&v).expect("the checker requires an `@e` operand to be `@Code`");
-            edits.push((module, span, format!("({code})")));
-        }
-        // Item-position `$ @e X`: the whole directive is replaced by the item(s)
-        // its code holds, so empty code (a check, an `@link`) drops it.
-        for (module, qualified, span) in item_sites {
-            enter(&module);
-            let v = match interpreter::machine::eval_value(&ir, &qualified) {
-                Ok(v) => v,
-                Err(d) => {
-                    faults.push((d, module, span));
-                    continue;
-                }
+            let text = match how {
+                Splice::Items | Splice::Bare => code,
+                Splice::Parenthesized => format!("({code})"),
             };
-            // `span` is the whole `$ @e X` directive, so replacing it drops the
-            // directive: an `@Code` result becomes its item(s), anything else (a
-            // `@link` call, whose effect was already recorded, or a discarded
-            // value) becomes nothing.
-            let items = as_code_src(&v).expect("the checker requires an `@e` operand to be `@Code`");
-            edits.push((module, span, items));
-        }
-        // Type-position `@e X` (`Foo : @e X = ...`): the result must be an `@Code`
-        // denoting a type; splice its source in place of the `@e X`.
-        for (module, qualified, span) in type_sites {
-            enter(&module);
-            let v = match interpreter::machine::eval_value(&ir, &qualified) {
-                Ok(v) => v,
-                Err(d) => {
-                    faults.push((d, module, span));
-                    continue;
-                }
-            };
-            let ty_src = as_code_src(&v).expect("the checker requires an `@e` operand to be `@Code`");
-            edits.push((module, span, format!("({ty_src})")));
+            edits.push((module, span, text));
         }
         clear_meta_hosts();
         if edits.is_empty() {
-            assert!(!faults.is_empty(), "a round with sites and no edits must have faulted");
+            assert!(held + faults.len() > 0, "a round with sites and no edits must have faulted or waited");
             for (diag, module, span) in faults {
                 let diag = diag.with_note("raised while running this compile-time `@e`");
                 eprint!("{}", render_e_fault(diag, &module, span, &loaded.sources));
+            }
+            // Nothing will supply what the waiting sites lack any more, so what the
+            // lenient check deferred is an error: the strict check reports it.
+            if held > 0 {
+                compile_sources(&loaded, false, want_entry)?;
+                eprintln!("thrax: a compile-time `@e` waits on code that never resolved");
             }
             return Err(ExitCode::FAILURE);
         }
         splice_sources(&mut loaded.sources, edits);
     }
+}
+
+/// How the code an `@e` site returns replaces the site.
+#[derive(Clone, Copy)]
+enum Splice {
+    /// `$ @e X`: the whole directive becomes the items, so empty code (a check,
+    /// an `@link`) drops it.
+    Items,
+    /// Expression and type position: the code, parenthesized.
+    Parenthesized,
+    /// Pattern position: the code as written.
+    Bare,
+}
+
+/// Whether global `from` of `ir` is in `targets` or can reach one, through the
+/// globals and closures its code references. `code_of` maps each global to its
+/// code.
+fn reaches_any(
+    ir: &frontend::ir::IrProgram,
+    code_of: &HashMap<utilities::StrId, usize>,
+    from: &str,
+    targets: &HashSet<utilities::StrId>,
+) -> bool {
+    use frontend::ir::data::{Atom, IrExpr};
+    let from = utilities::StrId::intern(from);
+    if targets.contains(&from) {
+        return true;
+    }
+    if targets.is_empty() {
+        return false;
+    }
+    let Some(&start) = code_of.get(&from) else { return false };
+    let mut seen = HashSet::from([start]);
+    let mut todo = vec![start];
+    while let Some(code) = todo.pop() {
+        let mut hit = false;
+        ir.codes[code].body.any_node(&mut |e: &IrExpr| {
+            fn visit(
+                a: &Atom,
+                code_of: &HashMap<utilities::StrId, usize>,
+                targets: &HashSet<utilities::StrId>,
+                next: &mut Vec<usize>,
+            ) -> bool {
+                match a {
+                    Atom::Glob { name } if targets.contains(name) => true,
+                    Atom::Glob { name } => {
+                        next.extend(code_of.get(name));
+                        false
+                    }
+                    Atom::Clos { code, captures } => {
+                        next.push(*code);
+                        captures.iter().any(|c| visit(c, code_of, targets, next))
+                    }
+                    _ => false,
+                }
+            }
+            let mut next = Vec::new();
+            e.for_each_operand(&mut |a| hit = hit || visit(a, code_of, targets, &mut next));
+            todo.extend(next.into_iter().filter(|c| seen.insert(*c)));
+            hit
+        });
+        if hit {
+            return true;
+        }
+    }
+    false
 }
 
 /// Clear both compile-time hosts (`@eval` and type reflection) installed around an

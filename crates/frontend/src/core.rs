@@ -51,12 +51,21 @@ pub struct CoreProgram {
     /// splices the resulting `@Code`'s type source at the span, and re-compiles.
     /// See [`super::desugar_program`].
     pub ct_types: Vec<(StrId, Span)>,
+    /// Pattern-position `@e (X)` sites, `(synthetic global name, source span of
+    /// the `@e (X)`)`. The driver forces the global at compile time and splices
+    /// the resulting `@Code`'s pattern source at the span.
+    pub ct_patterns: Vec<(StrId, Span)>,
     /// The synthetic global holding the call `@build {}`, present when this module
     /// defines `$ @build`. The driver forces it once per module at compile time and
     /// appends the items of the `@Code` it returns to the module's source. Unlike
     /// the `@e` sites there is no span: `@build` is a definition, not a directive,
     /// so it stays where it was written and its output is added to the module.
     pub ct_build: Option<StrId>,
+    /// The globals (bare names, synthetic `@e` globals included) whose lowered
+    /// body holds a site the lenient check deferred. Running one would run code
+    /// lowered without what the site still lacks, so the driver holds back any
+    /// `@e` that reaches one. See Note [Deferred sites hold back generators].
+    pub deferred: Vec<StrId>,
     /// The De Bruijn index of each variable occurrence, filled by
     /// [`crate::passes::de_bruijn::assign_de_bruijn_indices`]: `0` (or no
     /// entry) marks a global, resolved by `module`/`name`, and a positive index
@@ -78,7 +87,9 @@ impl CoreProgram {
             ct_runs: Vec::new(),
             ct_evals: Vec::new(),
             ct_types: Vec::new(),
+            ct_patterns: Vec::new(),
             ct_build: None,
+            deferred: Vec::new(),
             de_bruijn: SecondaryMap::new(),
         }
     }

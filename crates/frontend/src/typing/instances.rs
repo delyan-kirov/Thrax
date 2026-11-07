@@ -351,7 +351,7 @@ impl<'a> Checker<'a> {
             let val = match resolved {
                 Ok(val) => val,
                 Err(_) if self.lenient => {
-                    self.deferred = true;
+                    self.defer(Some(p.site));
                     continue;
                 }
                 Err(d) => {

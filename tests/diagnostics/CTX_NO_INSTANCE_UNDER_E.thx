@@ -1,0 +1,7 @@
+$ @mod CTX_NO_INSTANCE_UNDER_E
+
+# A compile-time check that reaches an unresolved context does not run: the
+# type error is reported, not the fault running it would raise (#416).
+$ Money : @struct = c: @Int,
+$ m : Money = Money.{1} + Money.{2}  #~ error[TYPE_MISMATCH]: no value of type `IAdd Money` in scope to satisfy the context of `+`
+$ @e <| assert (m.c == 3) "m is 3"

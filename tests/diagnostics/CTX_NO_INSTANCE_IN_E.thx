@@ -1,0 +1,5 @@
+$ @mod CTX_NO_INSTANCE_IN_E
+
+# The unresolved context is in the compile-time code itself.
+$ Money : @struct = c: @Int,
+$ @e <| assert ((Money.{1} + Money.{2}).c == 3) "sum is 3"  #~ error[TYPE_MISMATCH]: no value of type `IAdd Money` in scope to satisfy the context of `+`

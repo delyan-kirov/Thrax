@@ -35,6 +35,14 @@ impl<'a> Checker<'a> {
                 self.bind(*name, expected);
                 Ok(())
             }
+            // The spliced pattern is unknown until the driver runs `X`, so it
+            // matches the scrutinee at any type and binds nothing here. Only a
+            // lenient round sees one; the final compile sees the spliced source.
+            Pattern::MetaE(e) => {
+                let e = *e;
+                self.infer_meta_e(e)?;
+                Ok(())
+            }
             Pattern::Int(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
             Pattern::Real(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
             Pattern::Str(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
@@ -395,6 +403,9 @@ impl<'a> Checker<'a> {
         if arms.is_empty() && self.is_variantless_union(scrut) {
             return Ok(());
         }
+        if arms.iter().any(|arm| self.ast.slice(arm.patterns).iter().any(|p| self.holds_meta_e(*p))) {
+            return Ok(());
+        }
         let rows: Vec<(Vec<usefulness::DPat>, bool)> = arms
             .iter()
             .map(|arm| {
@@ -450,9 +461,43 @@ impl<'a> Checker<'a> {
         ))
     }
 
+    /// Whether `pat` holds an `@e (X)` not spliced yet. Coverage is unknown until
+    /// it is, so only the final compile, which sees the spliced pattern, checks it.
+    fn holds_meta_e(&self, pat: Aol<Pattern>) -> bool {
+        let fields = |fields: utilities::Slice<FieldPat>| {
+            self.ast.slice(fields).iter().any(|f| match f {
+                FieldPat::Named { pat, .. } | FieldPat::Positional(pat) => self.holds_meta_e(*pat),
+                FieldPat::Shorthand(_) => false,
+            })
+        };
+        match self.pnode(pat) {
+            Pattern::MetaE(_) => true,
+            Pattern::List(ps) | Pattern::Tuple(ps) => self.ast.slice(*ps).iter().any(|p| self.holds_meta_e(*p)),
+            Pattern::Concat { pre, mid, suf } => self
+                .ast
+                .slice(*pre)
+                .iter()
+                .chain(mid.iter())
+                .chain(self.ast.slice(*suf).iter())
+                .any(|p| self.holds_meta_e(*p)),
+            Pattern::Struct { fields: fs, .. } | Pattern::Variant { fields: fs, .. } => fields(*fs),
+            Pattern::Record { fields: fs, rest } => fields(*fs) || rest.is_some_and(|r| self.holds_meta_e(r)),
+            Pattern::Wild
+            | Pattern::Var(_)
+            | Pattern::Int(_)
+            | Pattern::Real(_)
+            | Pattern::Str(_)
+            | Pattern::Bool(_)
+            | Pattern::Range { .. } => false,
+        }
+    }
+
     /// Reject a typed `let` or lambda-parameter pattern that some value of its
     /// type fails to match: there is no next arm to fall through to.
     pub(super) fn check_irrefutable(&mut self, pat: Aol<Pattern>, site: &str) -> Result<()> {
+        if self.holds_meta_e(pat) {
+            return Ok(());
+        }
         let report = usefulness::check(&[(vec![self.dpat(pat)], false)]);
         let Some(missing) = report.missing else {
             return Ok(());
@@ -541,6 +586,7 @@ impl<'a> Checker<'a> {
         use usefulness::{Ctor, DPat, ProductKind};
         match self.pnode(pat) {
             Pattern::Wild | Pattern::Var(_) => DPat::Wild,
+            Pattern::MetaE(_) => DPat::Opaque,
             Pattern::Int(_) | Pattern::Real(_) | Pattern::Str(_)
                 if self.literal_pattern_hooks.contains_key(&pat) =>
             {
