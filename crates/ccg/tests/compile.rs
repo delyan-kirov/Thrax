@@ -565,11 +565,11 @@ fn ffi_loads_from_c_memory() {
         $ str_at : { p: @Ptr, i: @Int } -> @Str = @extern \"load\"\n\
         $ le8 : @Int -> @Int -> @Str -> @Str = \\n k acc => if k == 8 => acc else le8 (n / 256) (k + 1) (@array_push acc (n % 256))\n\
         $ test : @Str =\n\
-        \x20   let buf = malloc 16, a = malloc 4, table = malloc 16 in\n\
+        \x20   let buf = malloc 16 in let a = malloc 4 in let table = malloc 16 in\n\
         \x20   fill { buf, \"\\x01\\x00\\x00\\x00\\x02\\x00\\x00\\x00\\x03\\x00\\x00\\x00\\xfe\\xff\\xff\\xff\", 16 };\n\
         \x20   fill { a, \"hi\\x00\", 3 };\n\
         \x20   fill { table, le8 (p2i a) 0 \"\" ++ le8 0 0 \"\", 16 };\n\
-        \x20   let p = pt_at { buf, 1 }, bytes = @ptr_bytes buf 16 in\n\
+        \x20   let p = pt_at { buf, 1 } in let bytes = @ptr_bytes buf 16 in\n\
         \x20   to_string ((@cast p.x : @Int) * 100 + (@cast p.y : @Int)) ++ \" \"\n\
         \x20       ++ to_string (@cast (i32_at { buf, 3 }) : @Int) ++ \" \"\n\
         \x20       ++ to_string (@cast (u8_at { buf, 12 }) : @Int) ++ \" \"\n\
@@ -1058,7 +1058,6 @@ fn effects_defer_finalization() {
     assert_example("FINALLY.thx", "r_abort");
     assert_example("FINALLY.thx", "r_nested");
     assert_example("FINALLY.thx", "r_stored");
-    assert_example("FINALLY.thx", "r_commas");
 }
 
 #[test]

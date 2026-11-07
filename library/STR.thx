@@ -32,11 +32,9 @@ $ substr : @Str -> @Int -> @Int -> @Str = \s from to => @array_slice s from to
 $ starts_with : @Str -> @Str -> @Bool = \s p => @array_match s 0 p
 
 $ ends_with : @Str -> @Str -> @Bool = \s p =>
-    let
-        n  = @array_len p,
-        sn = @array_len s
-    in
-        if n > sn => @false else @array_match s (sn - n) p
+    let n = @array_len p in
+    let sn = @array_len s in
+    if n > sn => @false else @array_match s (sn - n) p
 
 # The 256-byte mask `@array_scan` takes: 1 at each byte that occurs in `bytes`,
 # 0 elsewhere. `scan s from (byte_set "\n")` is the next newline.
@@ -233,7 +231,9 @@ $ mark_bytes : @Str -> @Int -> @Str -> @Int -> @Str = \bytes i mask to =>
 
 # `n` copies of byte `b`, by doubling.
 $ repeat_byte : @Int -> @Int -> @Str = \b n =>
-    if
-        n <= 0     => "",
-        n % 2 == 1 => @array_push (repeat_byte b (n - 1)) b,
-        else let half = repeat_byte b (n / 2) in half ++ half
+    if n <= 0 =>
+        ""
+    else if n % 2 == 1 =>
+        @array_push (repeat_byte b (n - 1)) b
+    else
+        let half = repeat_byte b (n / 2) in half ++ half

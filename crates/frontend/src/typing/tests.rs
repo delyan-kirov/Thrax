@@ -142,7 +142,7 @@ fn polymorphic_id_used_at_two_types() {
     // Using a generalized `id` at @Int and @Str must not conflict.
     let src = "$ @mod M\n\
                    $ id : a -> a = \\x => x\n\
-                   $ pair : {@Int, @Str} = let a = id 1, b = id \"s\" in {a, b}";
+                   $ pair : {@Int, @Str} = let a = id 1 in let b = id \"s\" in {a, b}";
     assert_eq!(type_of(src, "pair"), "{@Int, @Str}");
 }
 

@@ -71,12 +71,11 @@ $ ck_tensor : @Int =
 $ Emit : @effect = emit : @Int -> {},
 
 $ total : ({} -> <Emit> {}) -> @Int = \body =>
-    let
-        run =
-            do body {}
-            ctl k | Emit.emit n => \acc => k {} (acc + n) | u => \acc => acc
+    let run =
+        do body {}
+        ctl k | Emit.emit n => \acc => k {} (acc + n) | u => \acc => acc
     in
-        run 0
+    run 0
 
 $ emit_fibs : @Int -> <Emit> {} = \n => if n < 0 => {} else (Emit.emit (fib n); emit_fibs (n - 1))
 

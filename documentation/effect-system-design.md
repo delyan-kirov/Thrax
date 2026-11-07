@@ -95,7 +95,10 @@ the body directly and it becomes the thunk:
 
 ```
 $ counter : {} -> <State> @Int =
-    let x = get {}, _ = put <| x + 1, y = get {} in x + y
+    let x = get {} in
+    put <| x + 1;
+    let y = get {} in
+    x + y
 ```
 
 This is the same leading-parameter sugar as the record-parameter destructuring: a

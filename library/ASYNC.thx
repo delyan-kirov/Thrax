@@ -164,19 +164,18 @@ $ fd_list : @Vec (Waiter m e a) -> @Int -> @Vec { @Int, @Int } -> @Vec { @Int, @
 # Requeue the waiters at the `woken` indices (ascending), in order, and keep
 # the rest parked.
 $ wake : Sched m e a -> @Vec @Int -> Sched m e a = \s woken =>
-    let
-        go =
-            \i j ready rest =>
-                if i >= @vec_len s.waiting =>
-                    Sched.{ .ready = ready, .waiting = rest | s }
+    let go =
+        \i j ready rest =>
+            if i >= @vec_len s.waiting =>
+                Sched.{ .ready = ready, .waiting = rest | s }
+            else
+                let w = @vec_get s.waiting i in
+                if j < @vec_len woken && @vec_get woken j == i =>
+                    go (i + 1) (j + 1) (q_push ready w.k) rest
                 else
-                    let w = @vec_get s.waiting i in
-                    if j < @vec_len woken && @vec_get woken j == i =>
-                        go (i + 1) (j + 1) (q_push ready w.k) rest
-                    else
-                        go (i + 1) j ready (@vec_push rest w)
+                    go (i + 1) j ready (@vec_push rest w)
     in
-        go 0 0 s.ready (@vec_new {})
+    go 0 0 s.ready (@vec_new {})
 
 # Serve what a task stopped for. An operation that can complete at once resumes
 # the same task right away; one that cannot parks it.
@@ -189,16 +188,14 @@ $ serve : Step m e a -> Sched m e a -> <e> Option a = \st s =>
             serve (k {}) Sched.{ .ready = q_push s.ready (\u => step_child c) | s }
         | Step.Made.{ cap, k } =>
             let id = @vec_len s.chans in
-            let
-                ch = Channel.{
-                    .cap = if cap < 0 => 0 else cap,
-                    .size = 0,
-                    .buf = q_empty {},
-                    .senders = q_empty {},
-                    .receivers = q_empty {},
-                }
-            in
-                serve (k Chan.{ .id = id }) Sched.{ .chans = @vec_push s.chans ch | s }
+            let ch = Channel.{
+                .cap = if cap < 0 => 0 else cap,
+                .size = 0,
+                .buf = q_empty {},
+                .senders = q_empty {},
+                .receivers = q_empty {},
+            } in
+            serve (k Chan.{ .id = id }) Sched.{ .chans = @vec_push s.chans ch | s }
         | Step.Sent.{ c, v, k }    => send_to c.id v k s
         | Step.Wants.{ c, k }      => recv_from c.id k s
         | Step.Waits.{ fd, ev, k } => schedule

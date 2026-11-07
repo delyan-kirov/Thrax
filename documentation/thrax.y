@@ -293,42 +293,20 @@ expr
   ;
 
 ctrl_expr
-  : KW_LET let_bindings opt_comma KW_IN expr
-  | KW_WITH with_subjects opt_comma KW_IN expr  /* field-scoping: bring each
-                                subject struct's fields into scope unqualified
-                                for the body */
-  | KW_IF if_arms opt_comma KW_ELSE expr
+  /* Each form takes ONE binding, subject, arm or cleanup; several nest:
+   * `let x = a in let y = b in e`, `if a => b else if c => d else e`. */
+  : KW_LET let_binder EQ expr KW_IN expr
+  | KW_WITH expr KW_IN expr  /* field-scoping: bring the subject struct's
+                                fields into scope unqualified for the body */
+  | KW_IF expr FATARROW expr KW_ELSE expr
   | LAMBDA params FATARROW expr
   /* The multi-arm lambda: ONE argument matched against the arms, top to bottom.
    * It replaces `is`: a match is `s |> \ | p => a | q => b`, which the checker
    * elaborates as a match on `s`. An empty match is `x |> @absurd` (a CORE
    * function), not a lambda with no arms. */
   | LAMBDA arms
-  | KW_DEFER defer_cleanups opt_comma KW_IN expr
+  | KW_DEFER op_expr KW_IN expr
   | handle
-  ;
-
-/* One or more `cond => branch` arms, comma-separated (a trailing comma before
-   `else` is allowed). `if a => b, c => d else e` is the same expression as
-   `if a => b else if c => d else e` (right-nested). */
-if_arms
-  : expr FATARROW expr
-  | if_arms COMMA expr FATARROW expr
-  ;
-
-/* One or more subjects / cleanups, comma-separated, nesting right the way
-   `let_bindings` do: `with a, b in e` is `with a in with b in e`, and
-   `defer a, b in e` is `defer a in defer b in e` (so cleanups still run
-   innermost-first). A trailing comma before `in` is allowed. */
-with_subjects   : expr | with_subjects COMMA expr ;
-defer_cleanups  : op_expr | defer_cleanups COMMA op_expr ;
-
-/* One or more bindings, comma-separated (a trailing comma before `in` is
-   allowed). `let x = a, y = b in e` desugars to
-   `let x = a in let y = b in e` (right-nested; each binding scopes the rest). */
-let_bindings
-  : let_binder EQ expr
-  | let_bindings COMMA let_binder EQ expr
   ;
 
 let_binder

@@ -18,25 +18,23 @@ $ ck_bool : @Int =
 
 # `Some 40` hands 40 to the body and `None` skips it: 40 + 2 = 42.
 $ ck_option : @Int =
-    let
-        found =
-            sumY <| \u =>
-                when (Option.Some.{ 40 }) (\x => yield x);
-                when (Option.None : Option @Int) (\x => yield 1000);
-                yield 2
+    let found =
+        sumY <| \u =>
+            when (Option.Some.{ 40 }) (\x => yield x);
+            when (Option.None : Option @Int) (\x => yield 1000);
+            yield 2
     in
-        if found == 42 => 0 else 1
+    if found == 42 => 0 else 1
 
 # `Ok 7` hands 7 to the body and `Err` skips it: 7 + 2 = 9.
 $ ck_result : @Int =
-    let
-        found =
-            sumY <| \u =>
-                when (Result.Ok.{ 7 } : Result @Int @Str) (\x => yield x);
-                when (Result.Err.{ "no" } : Result @Int @Str) (\x => yield 1000);
-                yield 2
+    let found =
+        sumY <| \u =>
+            when (Result.Ok.{ 7 } : Result @Int @Str) (\x => yield x);
+            when (Result.Err.{ "no" } : Result @Int @Str) (\x => yield 1000);
+            yield 2
     in
-        if found == 9 => 0 else 1
+    if found == 9 => 0 else 1
 
 # Another effect entirely: `when` inside a `for` body can `break` the loop.
 $ ck_break : @Int =

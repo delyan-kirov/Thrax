@@ -1671,7 +1671,7 @@ fn let_bindings_chain_and_destructure() {
     assert_eq!(run("$ @mod M\n$ a : @Int = let x = 6 in x * 7", "a"), "42");
     assert_eq!(
         run(
-            "$ @mod M\n$ a : @Int = let x = 1, y = x + 10, z = y * 2 in x + y + z",
+            "$ @mod M\n$ a : @Int = let x = 1 in let y = x + 10 in let z = y * 2 in x + y + z",
             "a"
         ),
         "34"

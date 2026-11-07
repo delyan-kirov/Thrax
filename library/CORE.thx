@@ -890,15 +890,14 @@ $ forever : Stream {} = { .head = {}, .tail = forever }
 # Over a `Stream`, iteration is INDEFINITE: it runs until `break`, or forever
 # (`forever` and `count_from` are ready-made infinite sources).
 $ stream_for : Stream a -> (a -> <Loop | e> {}) -> <e> {} = \s body =>
-    let
-        more =
-            do body s.head
-            ctl k
-            | Loop.continue u => @true
-            | Loop.break u    => @false
-            | _               => @true
+    let more =
+        do body s.head
+        ctl k
+        | Loop.continue u => @true
+        | Loop.break u    => @false
+        | _               => @true
     in
-        if more => stream_for s.tail body else {}
+    if more => stream_for s.tail body else {}
 
 $ impl_IFor_for_Stream : IFor (Stream a) a e = .{ .each = stream_for }
 
@@ -908,15 +907,14 @@ $ list_for : List a -> (a -> <Loop | e> {}) -> <e> {} = \xs body =>
     xs |> \
         | List.Nil => {}
         | List.Cons.{ h, t } =>
-            let
-                more =
-                    do body h
-                    ctl k
-                    | Loop.continue u => @true
-                    | Loop.break u    => @false
-                    | _               => @true
+            let more =
+                do body h
+                ctl k
+                | Loop.continue u => @true
+                | Loop.break u    => @false
+                | _               => @true
             in
-                if more => list_for t body else {}
+            if more => list_for t body else {}
 
 $ impl_IFor_for_List : IFor (List a) a e = .{ .each = list_for }
 
@@ -1000,15 +998,14 @@ $ for_go : @Vec a -> (a -> <Loop | e> {}) -> @Int -> <e> {} = \xs body i =>
     if i >= @vec_len xs =>
         {}
     else
-        let
-            more =
-                do body (@vec_get xs i)
-                ctl k
-                | Loop.continue u => @true
-                | Loop.break u    => @false
-                | _               => @true
+        let more =
+            do body (@vec_get xs i)
+            ctl k
+            | Loop.continue u => @true
+            | Loop.break u    => @false
+            | _               => @true
         in
-            if more => for_go xs body (i + 1) else {}
+        if more => for_go xs body (i + 1) else {}
 
 $ formap_step : a -> (a -> <Loop | e> b) -> <e> LoopStep b = \x f =>
     do let y = f x in LoopStep.Keep.{ y }

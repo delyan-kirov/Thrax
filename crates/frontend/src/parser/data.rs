@@ -622,7 +622,8 @@ pub struct UseField {
     pub span: Span,
 }
 
-/// One binding of a (possibly comma-chained) `let`.
+/// One binding of a `let`. A `let` holds several only when the parser recovers
+/// from the removed comma chain.
 #[derive(Clone, Copy, Debug)]
 pub struct Binding {
     pub pat: Aol<Pattern>,

@@ -41,10 +41,6 @@ pub(super) enum Node {
     Hang { flat: D, head: D, tail: D },
     /// The group `D`, always broken.
     Broken(D),
-    /// Prints nothing. Decided flat when this many columns fit from where it
-    /// is printed, so a [`Node::Cond`] after it can pick a layout by the width
-    /// of a line that is not the first.
-    Fits(usize),
     /// `D` indented from the indentation of the line it starts on, so a
     /// lambda opened at the end of a line nests one level under that line.
     LineIndent(D),
@@ -144,7 +140,6 @@ pub(super) fn print(docs: &Docs, root: D, style: &Style) -> String {
                 let x = if decided[*group] == Some(Mode::Break) { *broken } else { *flat };
                 stack.push((ind, mode, x));
             }
-            Node::Fits(w) => decided[d] = Some(if col + w <= style.width { Mode::Flat } else { Mode::Break }),
             Node::Hang { flat, head, tail } => {
                 if mode == Mode::Flat || fits(docs, &decided, style.width.saturating_sub(col), (ind, Mode::Flat, *flat), &stack) {
                     stack.push((ind, Mode::Flat, *flat));
@@ -268,7 +263,6 @@ pub(super) fn fits_up_to(
                 Mode::Flat => room -= isize::from(matches!(docs.nodes[d], Node::Line)),
             },
             Node::Nest(x) => work.push((ind, mode, *x, after, later)),
-            Node::Fits(_) => {}
             Node::FillLine => match mode {
                 Mode::Break => return true,
                 Mode::Flat => room -= 1,

@@ -22,11 +22,10 @@ $ len: @Vec t -> @Int =
     \l => helper l 0
 
 $ to: @Int -> @Int -> @Vec @Int = \a b =>
-    let
-        helper: @Int -> @Int -> @Vec @Int -> @Vec @Int =
-            \a b xs => if a < b => helper (a + 1) b (a :: xs) else xs
+    let helper: @Int -> @Int -> @Vec @Int -> @Vec @Int =
+        \a b xs => if a < b => helper (a + 1) b (a :: xs) else xs
     in
-        helper a b []
+    helper a b []
 
 $ sample : @Vec @Int = to 0 3
 $ len3 : @Int = len sample |> \ | 3 => 0 | _ => 1

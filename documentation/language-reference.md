@@ -448,9 +448,9 @@ $ safe : @Int -> @Bool = \n => n > 0 && 100 / n > 5
 ```
 
 ## 4.7 Conditional `if ... => ... else`
-`if c => t else e`. The condition is a `@Bool`. Chains with `else if`, or with a
-comma between arms (one `if`, one `else`); a trailing comma before `else` is
-allowed. It is lazy (only the taken branch runs) and is not a pattern match.
+`if c => t else e`. The condition is a `@Bool`. One `if` has one arm; several
+chain with `else if`. It is lazy (only the taken branch runs) and is not a
+pattern match.
 
 Simple:
 ```thrax
@@ -465,18 +465,9 @@ $ sign : @Int -> @Int = \n =>
 	else -1
 ```
 
-The same chain with comma-separated arms:
-```thrax
-$ sign2 : @Int -> @Int = \n =>
-	if
-		n == 0 => 0,
-		n > 0  => 1,
-	else -1
-```
-
 ## 4.8 Local bindings `let ... in`
-`let pat = e in body`. Multiple bindings chain with `,` (one `in`; each scopes
-the next). A binding is recursive exactly when its name occurs in its own body
+`let pat = e in body`. One `let` has one binding; several nest, each scoping
+the rest (`let a = 1 in let b = a + 1 in b`). A binding is recursive exactly when its name occurs in its own body
 (no `let rec`). A binder may carry a type annotation.
 
 Simple:
@@ -484,9 +475,12 @@ Simple:
 $ x : @Int = let a = 6 in a * 7
 ```
 
-Involved (comma chain, destructuring, recursion, annotation):
+Involved (chain, destructuring, recursion, annotation):
 ```thrax
-$ r : @Int = let {a, b} = {3, 4}, s = a + b in s * 2
+$ r : @Int =
+	let {a, b} = {3, 4} in
+	let s = a + b in
+	s * 2
 $ len : @Vec @Int -> @Int =
 	let go : @Vec @Int -> @Int -> @Int = \l n =>
 		l |> \ | _ :: t => go t (n + 1) | _ => n
@@ -1144,15 +1138,14 @@ $ useFile : @Str -> @Int = \path =>
 		read f
 ```
 
-Several cleanups may share one `defer`, separated by commas (a trailing comma
-before `in` is allowed). They nest exactly as separate `defer`s do, so they still
-run innermost-first:
+Several cleanups nest as separate `defer`s, and run innermost-first (here
+`close g`, then `close f`):
 ```thrax
 $ useTwo : @Str -> @Str -> @Int = \a b =>
-	let f = open a, g = open b in
-	defer close f,
-	      close g,
-	in
+	let f = open a in
+	let g = open b in
+	defer close f in
+	defer close g in
 	read f + read g
 ```
 

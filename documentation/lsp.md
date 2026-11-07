@@ -187,8 +187,10 @@ group into `width` or breaks it. Indentation is 4 spaces.
 The rules, in short: a group fits on one line or breaks at every one of its
 line points; a multi-arm lambda or handler with more than two arms puts each
 arm on its own line, a multi-arm lambda's one level under the line its `\`
-ends; `let ... in` ends its line with `in`; `else if` chains
-stay flat; a list written across lines with a trailing comma stays one entry
+ends; `let ... in` ends its line with `in` and the body starts the next line
+at the `let`'s level, so a chain of lets reads as a sequence (a value too long
+for the line goes one level under `=`, with `in` alone below it); `else if`
+chains stay flat; a list written across lines with a trailing comma stays one entry
 per line; blank lines between items collapse to one; comments stay where they
 were written.
 

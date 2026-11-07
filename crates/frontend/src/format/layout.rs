@@ -464,7 +464,7 @@ impl Layout<'_, '_> {
         ts[pos + 1..]
             .iter()
             .filter_map(|t| self.tok_of(t))
-            .take_while(|t| !halt(t) || matches!(t.kind, Kind::Comma))
+            .take_while(|t| !halt(t))
             .any(|t| matches!(t.kind, Kind::In))
     }
 
@@ -556,7 +556,7 @@ impl Layout<'_, '_> {
         match &self.docs.nodes[d] {
             Node::Text(s) => (!s.contains('\n')).then(|| s.chars().count()),
             Node::Line | Node::FillLine => Some(1),
-            Node::Soft | Node::Fits(_) => Some(0),
+            Node::Soft => Some(0),
             Node::Hard | Node::Fresh | Node::HangTail(_) | Node::Broken(_) | Node::Group(_, true) => None,
             Node::Nest(x) | Node::LineIndent(x) | Node::Group(x, false) => self.flat_width(*x),
             Node::Cat(xs) => xs.iter().map(|x| self.flat_width(*x)).sum(),
@@ -666,81 +666,51 @@ impl Layout<'_, '_> {
         self.join(&ps).expect("a lambda has its backslash")
     }
 
-    /// `let a = x, b = y in body` (and `with`, `defer`). One short binding
-    /// stays on the keyword's line, `in` ending it. Several bindings, or one that
-    /// does not fit there, make a block: the keyword alone, the bindings
-    /// indented with their `=` lined up, then `in` alone and the body indented.
+    /// `let p = v in body` (and `with s in`, `defer c in`). The head stays on
+    /// one line if it fits; otherwise the value goes one level under `=` (or
+    /// the keyword) with `in` alone below it. A bracketed value opens on the
+    /// keyword's line and keeps `in` beside its closing bracket. The body
+    /// starts the next line at the keyword's level, so a chain of lets reads
+    /// as a sequence.
     fn binding_form(&mut self, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
         let is_let = matches!(self.tok_of(&ts[*pos]).map(|t| t.kind), Some(Kind::Let));
         let kw = self.tok(Self::first_tok(&ts[*pos]));
         *pos += 1;
-        let sep = |t: &Tok| halt(t) || matches!(t.kind, Kind::Comma | Kind::In);
+        let sep = |t: &Tok| halt(t) || matches!(t.kind, Kind::In);
         let lhs_end = |t: &Tok| sep(t) || matches!(t.kind, Kind::Eq);
-        // Per binding: its leading comments, its left side, and `=` with the value.
-        let mut binds: Vec<(Vec<P>, P, Option<(P, P)>)> = Vec::new();
-        let mut trailing = false;
-        loop {
-            let cs = self.comments(ts, pos);
-            let lhs = self.expr(ts, pos, if is_let { &lhs_end } else { &sep }, false);
-            let rhs = match self.expect(ts, pos, |t| is_let && matches!(t.kind, Kind::Eq)) {
-                Some(eq) => Some((eq, self.expr(ts, pos, &sep, false))),
-                None => None,
-            };
-            binds.push((cs, lhs, rhs));
-            match self.expect(ts, pos, |t| matches!(t.kind, Kind::Comma)) {
-                Some(_) => {
-                    trailing = true;
-                    if matches!(self.peek_tok(ts, *pos).map(|t| t.kind), Some(Kind::In)) {
-                        break;
-                    }
-                    trailing = false;
-                }
-                None => break,
+        let cs = self.comments(ts, pos);
+        let lhs = self.expr(ts, pos, if is_let { &lhs_end } else { &sep }, false);
+        let lhs = self.with_comments(cs, lhs);
+        let bind = match self.expect(ts, pos, |t| is_let && matches!(t.kind, Kind::Eq)) {
+            Some(eq) => {
+                let value = self.expr(ts, pos, &sep, false);
+                let head = self.join(&[kw, lhs, eq]).expect("non-empty");
+                self.hang(head, value)
             }
-        }
-        let several = binds.len() > 1;
-        let widths: Vec<Option<usize>> = binds.iter().map(|b| self.left_width(b.1, b.2.map(|r| r.1))).collect();
-        let to = if several { self.align_width(&widths) } else { None };
-        let mut items: Vec<D> = Vec::new();
-        for (k, (cs, lhs, rhs)) in binds.iter().enumerate() {
-            let mut piece = match rhs {
-                Some((eq, value)) => {
-                    let pad = self.pad(widths[k], to);
-                    let space = self.docs.text(" ");
-                    let head = self.docs.cat(vec![lhs.d, pad, space, eq.d]);
-                    self.hang(P { d: head, first: lhs.first, last: eq.last }, *value)
-                }
-                None => *lhs,
-            };
-            piece = self.with_comments(cs.clone(), piece);
-            if k + 1 < binds.len() || trailing {
-                let comma = self.docs.text(",");
-                piece.d = self.docs.cat(vec![piece.d, comma]);
-            }
-            if k > 0 {
-                items.push(self.docs.add(Node::Line));
-            }
-            items.push(piece.d);
-        }
-        let last = binds[binds.len() - 1].2.as_ref().map_or(binds[binds.len() - 1].1.last, |r| r.1.last);
-        let lead = self.docs.add(Node::Line);
-        let list = self.docs.cat(std::iter::once(lead).chain(items).collect());
-        let list = self.docs.nest(list);
-        let explode = trailing || several;
-        let Some(in_kw) = self.expect(ts, pos, |t| matches!(t.kind, Kind::In)) else {
-            let d = self.docs.cat(vec![kw.d, list]);
-            let g = self.docs.group(d, explode);
-            return P { d: g, first: kw.first, last };
+            None => self.hang(kw, lhs),
         };
-        let head = self.docs.reserve();
-        let line = self.docs.add(Node::Line);
-        let d = self.docs.cat(vec![kw.d, list, line, in_kw.d]);
-        self.docs.fill_group(head, d, explode);
+        let Some(in_kw) = self.expect(ts, pos, |t| matches!(t.kind, Kind::In)) else {
+            return bind;
+        };
+        let in_d = match self.docs.nodes[bind.d] {
+            Node::Group(..) => {
+                let space = self.docs.text(" ");
+                let beside = self.docs.cat(vec![space, in_kw.d]);
+                let line = self.docs.add(Node::Hard);
+                let below = self.docs.cat(vec![line, in_kw.d]);
+                self.docs.add(Node::Cond { group: bind.d, flat: beside, broken: below })
+            }
+            _ => {
+                let space = self.docs.text(" ");
+                self.docs.cat(vec![space, in_kw.d])
+            }
+        };
+        let head = self.docs.cat(vec![bind.d, in_d]);
         let outer = self.docs.reserve();
         let mut body = self.expr(ts, pos, halt, false);
         // A chain of lets breaks as one: once this one ends its line with `in`,
         // so does every let after it.
-        if matches!(self.toks[body.first].kind, Kind::Let) {
+        if matches!(self.toks[body.first].kind, Kind::Let | Kind::With | Kind::Defer) {
             while let Node::Cat(xs) = &self.docs.nodes[body.d] {
                 let [x] = xs[..] else { break };
                 body.d = x;
@@ -751,146 +721,48 @@ impl Layout<'_, '_> {
             }
         }
         let line = self.docs.add(Node::Line);
-        let flat = self.docs.cat(vec![line, body.d]);
-        let line = self.docs.add(Node::Line);
-        let broken = self.docs.cat(vec![line, body.d]);
-        let broken = self.docs.nest(broken);
-        let after = self.docs.add(Node::Cond { group: head, flat, broken });
-        let d = self.docs.cat(vec![head, after]);
+        let d = self.docs.cat(vec![head, line, body.d]);
         self.docs.fill_group(outer, d, false);
         P { d: outer, first: kw.first, last: body.last }
     }
 
     /// `if c => t else e` on one line, or broken: every body on a line of its
     /// own one level under its `=>` or `else`, each `else` (or `else if`)
-    /// starting a line at the level of the first `if`. A keyword with several
-    /// comma-separated arms makes a block: the keyword alone, then the arms and
-    /// the `else` indented, either each on one line with their `=>` lined up
-    /// or, when one of them does not fit so, every body under its arm.
+    /// starting a line at the level of the first `if`.
     fn if_form(&mut self, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
         let arrow_or = |t: &Tok| halt(t) || matches!(t.kind, Kind::FatArrow);
-        let branch_end = |t: &Tok| halt(t) || matches!(t.kind, Kind::Comma | Kind::Else);
+        let branch_end = |t: &Tok| halt(t) || matches!(t.kind, Kind::Else);
         let mut kw = self.tok(Self::first_tok(&ts[*pos]));
         *pos += 1;
         let mut lines: Vec<P> = Vec::new();
-        let mut explode = false;
         loop {
-            // Per arm: the condition, `=>` with the branch, and its comma.
-            let mut arms: Vec<(P, Option<(P, P)>, bool)> = Vec::new();
-            let mut trailing = false;
-            loop {
-                let cond = self.expr(ts, pos, &arrow_or, false);
-                let then = match self.expect(ts, pos, |t| matches!(t.kind, Kind::FatArrow)) {
-                    Some(arrow) => Some((arrow, self.expr(ts, pos, &branch_end, false))),
-                    None => None,
-                };
-                let comma = self.expect(ts, pos, |t| matches!(t.kind, Kind::Comma)).is_some();
-                arms.push((cond, then, comma));
-                if !comma {
-                    break;
+            let cond = self.expr(ts, pos, &arrow_or, false);
+            let head = self.join(&[kw, cond]).expect("non-empty");
+            lines.push(match self.expect(ts, pos, |t| matches!(t.kind, Kind::FatArrow)) {
+                Some(arrow) => {
+                    let branch = self.expr(ts, pos, &branch_end, false);
+                    let space = self.docs.text(" ");
+                    let d = self.docs.cat(vec![head.d, space, arrow.d]);
+                    self.under(P { d, first: head.first, last: arrow.last }, branch)
                 }
-                if matches!(self.peek_tok(ts, *pos).map(|t| t.kind), Some(Kind::Else)) {
-                    trailing = true;
-                    break;
-                }
-            }
-            let else_kw = self.expect(ts, pos, |t| matches!(t.kind, Kind::Else));
-            let chained = else_kw.is_some() && matches!(self.peek_tok(ts, *pos).map(|t| t.kind), Some(Kind::If));
-            if arms.len() > 1 || trailing {
-                explode = true;
-                let widths: Vec<Option<usize>> = arms.iter().map(|a| self.left_width(a.0, a.1.map(|t| t.1))).collect();
-                let to = self.align_width(&widths).filter(|_| widths.iter().all(Option::is_some));
-                // Lined up only if every arm's line fits, decided where the arms start.
-                let probe = to.map(|to| {
-                    let w = arms
-                        .iter()
-                        .filter_map(|(_, then, comma)| {
-                            let (_, b) = then.as_ref()?;
-                            let r = self.flat_width(b.d).unwrap_or_else(|| self.opening_width(*b));
-                            Some(to + 4 + r + usize::from(*comma))
-                        })
-                        .max()
-                        .unwrap_or(0);
-                    self.docs.add(Node::Fits(w))
-                });
-                let mut inner = Vec::new();
-                for (k, (cond, then, comma)) in arms.iter().enumerate() {
-                    let mut entry = match then {
-                        Some((arrow, branch)) => {
-                            let space = self.docs.text(" ");
-                            let head = self.docs.cat(vec![cond.d, space, arrow.d]);
-                            let below = self.under(P { d: head, first: cond.first, last: arrow.last }, *branch);
-                            match probe {
-                                Some(group) => {
-                                    let pad = self.pad(widths[k], to);
-                                    let (s1, s2) = (self.docs.text(" "), self.docs.text(" "));
-                                    let beside = self.docs.cat(vec![cond.d, pad, s1, arrow.d, s2, branch.d]);
-                                    let beside = self.docs.group(beside, false);
-                                    let d = self.docs.add(Node::Cond { group, flat: beside, broken: below.d });
-                                    P { d, ..below }
-                                }
-                                None => below,
-                            }
-                        }
-                        None => *cond,
-                    };
-                    if *comma {
-                        let c = self.docs.text(",");
-                        entry.d = self.docs.cat(vec![entry.d, c]);
-                    }
-                    inner.push(self.docs.add(Node::Line));
-                    if k == 0 {
-                        inner.extend(probe);
-                    }
-                    inner.push(entry.d);
-                }
-                let mut last = arms[arms.len() - 1].1.map_or(arms[arms.len() - 1].0.last, |t| t.1.last);
-                if let Some(e) = else_kw.filter(|_| !chained) {
-                    let body = self.expr(ts, pos, halt, false);
-                    let below = self.under(e, body);
-                    let d = match probe {
-                        Some(group) => {
-                            let beside = self.hang_below(e, body, false);
-                            self.docs.add(Node::Cond { group, flat: beside.d, broken: below.d })
-                        }
-                        None => below.d,
-                    };
-                    inner.push(self.docs.add(Node::Line));
-                    inner.push(d);
-                    last = body.last;
-                }
-                let inner = self.docs.cat(inner);
-                let inner = self.docs.nest(inner);
-                let d = self.docs.cat(vec![kw.d, inner]);
-                lines.push(P { d, first: kw.first, last });
-            } else {
-                let (cond, then, _) = arms[0];
-                let head = self.join(&[kw, cond]).expect("non-empty");
-                lines.push(match then {
-                    Some((arrow, branch)) => {
-                        let space = self.docs.text(" ");
-                        let d = self.docs.cat(vec![head.d, space, arrow.d]);
-                        self.under(P { d, first: head.first, last: arrow.last }, branch)
-                    }
-                    None => head,
-                });
-                if let Some(e) = else_kw.filter(|_| !chained) {
-                    let body = self.expr(ts, pos, halt, false);
-                    lines.push(self.under(e, body));
-                }
-            }
-            if !chained {
+                None => head,
+            });
+            let Some(else_kw) = self.expect(ts, pos, |t| matches!(t.kind, Kind::Else)) else {
                 break;
-            }
-            let if_kw = self.expect(ts, pos, |t| matches!(t.kind, Kind::If)).expect("peeked");
-            kw = self.join(&[else_kw.expect("chained"), if_kw]).expect("non-empty");
+            };
+            let Some(if_kw) = self.expect(ts, pos, |t| matches!(t.kind, Kind::If)) else {
+                let body = self.expr(ts, pos, halt, false);
+                lines.push(self.under(else_kw, body));
+                break;
+            };
+            kw = self.join(&[else_kw, if_kw]).expect("non-empty");
         }
         let mut acc = lines[0];
         for &l in &lines[1..] {
             acc = self.line_join(acc, l, Node::Line);
         }
         let commented = (acc.first..=acc.last).any(|i| matches!(self.toks[i].kind, Kind::Comment));
-        let g = self.docs.group(acc.d, explode || commented);
+        let g = self.docs.group(acc.d, commented);
         P { d: g, ..acc }
     }
 
