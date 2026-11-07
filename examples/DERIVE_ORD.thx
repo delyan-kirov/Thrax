@@ -43,6 +43,7 @@ $ ck_op_eq : @Int = if Coord.{ .x = 4, .y = 5 } == Coord.{ .x = 4, .y = 5 } => 0
 $ ck_mixed : @Int = if (2 < 3) && (Geom.Dot < Geom.Rect.{ 0, 0 }) => 0 else 2048
 
 $ test : @Int =
-    ck_lt + ck_gt + ck_eq + ck_le + ck_ge + ck_tag + ck_pay + ck_cmp + ck_op_lt + ck_op_ge + ck_op_eq + ck_mixed
+    ck_lt + ck_gt + ck_eq + ck_le + ck_ge + ck_tag + ck_pay + ck_cmp + ck_op_lt + ck_op_ge
+        + ck_op_eq + ck_mixed
 
 $ @e <| assert (test == 0) "DERIVE_ORD: a check failed"

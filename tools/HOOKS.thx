@@ -539,12 +539,34 @@ $ push_lines : @Str -> <@IO, Fail> {} = \line =>
                     )
             else if STR.starts_with sha "0000000000" =>
                 {}
-            else if is_some (branch_issue branch) =>
-                spawn_open_pr branch sha
             else
-                {}
+                check_pushed sha "applications";
+                check_pushed sha editors;
+                if is_some (branch_issue branch) => spawn_open_pr branch sha else {}
         );
         push_lines (read_line {})
+
+# The submodule commit `sha` pins must be on the submodule's remote, or no
+# checkout of `sha` (CI's included) can fetch it. A commit missing here came
+# from elsewhere, so it is not checked.
+$ check_pushed : @Str -> @Str -> <@IO, Fail> {} = \sha path =>
+    let rev = output ("git rev-parse " ++ sha ++ ":" ++ path ++ " 2>/dev/null") in
+    let git = "git -C " ++ path in
+    if STR.is_empty rev
+        || not (succeeds (git ++ " cat-file -e " ++ rev ++ "^{commit} 2>/dev/null"))
+        || not (STR.is_empty (output (git ++ " branch -r --contains " ++ rev))) =>
+        {}
+    else
+        Fail.fail
+            (
+                path
+                    ++ " is pinned at "
+                    ++ rev
+                    ++ ", which is not on its remote\n"
+                    ++ "help: push it first with `git -C "
+                    ++ path
+                    ++ " push`; `git push --no-verify` pushes anyway"
+            )
 
 # The pull request can only be opened once the branch is on the remote, which
 # is after this hook returns, so a detached helper waits for it.

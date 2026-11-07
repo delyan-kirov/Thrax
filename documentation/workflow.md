@@ -32,12 +32,15 @@ The hooks are one-line shims in `tools/hooks/`; their logic is
 | `pre-commit` | formats the staged `.thx` files; `cargo check` when Rust is staged; the grammar check when `documentation/thrax.y` is; refuses a staged `tools/editors` whose Zed extension pins an older grammar commit |
 | `commit-msg` | requires `#N` (an open issue) on `master`, opens the issue for `#new`, adds the branch's `#N` elsewhere |
 | `post-commit` | moves a `master` commit to its issue's branch; rebuilds what an installed Zed or Helix compiles when it is stale (tools/editors has hooks of its own, see its README) |
-| `pre-push` | refuses pushes to `master`, opens the pull request of a pushed issue branch |
+| `pre-push` | refuses pushes to `master`, and pushes of a commit pinning an `applications` or `tools/editors` commit not on its remote; opens the pull request of a pushed issue branch |
 | `post-checkout`, `post-merge` | arriving on `master`: fast-forward it, delete merged branches; the same rebuild |
 
 Only the message's first line is checked. Merges, reverts and
 `fixup!`/`squash!` commits are left alone. Since a subject starts with `#`,
 git's comment character is set to `;`.
+
+`pre-commit`, `commit-msg` and `pre-push` refuse to run outside the nix shell
+(`nix develop`), where the tools they need are; the other hooks skip.
 
 ## Overriding
 

@@ -38,6 +38,8 @@ $ ck_parts_n: @Int = if (length (parts "")) == 0 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @Int =
-    ck_base + ck_base_sl + ck_base_n + ck_base_r + ck_dir + ck_dir_sl + ck_dir_n + ck_dir_a + ck_dir_r + ck_ext + ck_ext_n + ck_ext_dot + ck_strip + ck_strip_n + ck_join + ck_join_sl + ck_join_r + ck_join_ab + ck_join_mt + ck_abs + ck_parts + ck_parts_n
+    ck_base + ck_base_sl + ck_base_n + ck_base_r + ck_dir + ck_dir_sl + ck_dir_n + ck_dir_a
+        + ck_dir_r + ck_ext + ck_ext_n + ck_ext_dot + ck_strip + ck_strip_n + ck_join + ck_join_sl
+        + ck_join_r + ck_join_ab + ck_join_mt + ck_abs + ck_parts + ck_parts_n
 
 $ @e <| assert (test == 0) "STDLIB_PATH: a check failed"
