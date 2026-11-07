@@ -20,11 +20,11 @@ $ who : Named = Named.{ .name = "Bo", .age = 41 }
 $ chk_fields : @Int = with who in (if age == 41 => (if name == "Bo" => 0 else 1) else 1)
 
 # A `with` in a function body, over a parameter.
-$ sum : Point -> @Int = \q = with q in x + y
+$ sum : Point -> @Int = \q => with q in x + y
 $ chk_param : @Int = if sum Point.{ .x = 10, .y = 20 } == 30 => 0 else 1
 
 # The subject may be an arbitrary expression, evaluated once.
-$ mk : @Int -> Point = \n = Point.{ .x = n, .y = n + 1 }
+$ mk : @Int -> Point = \n => Point.{ .x = n, .y = n + 1 }
 $ chk_expr : @Int = with mk 10 in (if x + y == 21 => 0 else 1)
 
 # `with`s nest; both structs' fields are in scope in the inner body.
@@ -33,15 +33,17 @@ $ chk_nested : @Int = with p in with who in (if x + y + age == 48 => 0 else 1)
 # One `with` may list several subjects, separated by commas: the same nesting,
 # so a later subject's fields shadow an earlier one's.
 $ chk_commas : @Int =
-    with p,
-         who in
-    (if x + y + age == 48 => 0 else 1)
+    with
+        p,
+        who
+    in
+        (if x + y + age == 48 => 0 else 1)
 
 # A bound field shadows an outer local of the same name.
 $ chk_shadow : @Int = let x = 1 in with p in (if x == 3 => 0 else 1)
 
 # `with` in a signature: `{with q: Point}` takes a Point parameter `q` whose
-# fields are scoped into the body, the same as `\q = with q in ..`. The
+# fields are scoped into the body, the same as `\q => with q in ..`. The
 # parameter `q` itself stays usable alongside its scoped fields.
 $ diag : { with q: Point } -> @Int = x + y + q.x
 $ chk_sig : @Int = if diag Point.{ .x = 3, .y = 4 } == 10 => 0 else 1
@@ -52,6 +54,7 @@ $ tagged : { k: @Int, with q: Point } -> @Int = k + x + y
 $ chk_sig_mixed : @Int = if tagged { 100, Point.{ .x = 3, .y = 4 } } == 107 => 0 else 1
 
 $ test : @Int =
-    chk_basic + chk_fields + chk_param + chk_expr + chk_nested + chk_commas + chk_shadow + chk_sig + chk_sig_mixed
+    chk_basic + chk_fields + chk_param + chk_expr + chk_nested + chk_commas + chk_shadow + chk_sig
+        + chk_sig_mixed
 
 $ @e <| assert (test == 0) "WITH_SCOPE: a check failed"

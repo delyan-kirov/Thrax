@@ -5,5 +5,5 @@ $ Log : @effect = log : @Str -> {},
 $ Gpu : @effect = draw : @Int -> {},
 $ App : @alias = <Gpu, Log>
 
-$ frame : @Int -> <App> @Int = \x = log "frame"; draw x; x
-$ g : @Int -> <Gpu> @Int = \x = frame x  #~ error[TYPE_MISMATCH]: effect `Log` (part of `App`) is performed but not handled
+$ frame : @Int -> <App> @Int = \x => log "frame"; draw x; x
+$ g : @Int -> <Gpu> @Int = \x => frame x  #~ error[TYPE_MISMATCH]: effect `Log` (part of `App`) is performed but not handled

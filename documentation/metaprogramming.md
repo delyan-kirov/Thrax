@@ -394,7 +394,7 @@ interpreter performs the IO for real (its FFI is the same one the program uses).
 
 ```
 $ @e <| IO.read_dir "."     # error: effect `@IO` is performed but not handled
-$ @build : {} -> <@Meta, @IO> @Code = \_ = ... IO.read_dir "." ...   # fine
+$ @build : {} -> <@Meta, @IO> @Code = \_ => ... IO.read_dir "." ...   # fine
 ```
 
 **There is no compile-time IO primitive, and deliberately so.** Compile-time IO
@@ -514,7 +514,7 @@ a fixpoint rather than a manual `while` over `compiler_get_message`.
 ### Status: the function has LANDED; the message loop has not
 
 ```
-$ @build : {} -> <@Meta, @IO> @Code = \_ = @parse_items "$ answer : @Int = 42"
+$ @build : {} -> <@Meta, @IO> @Code = \_ => @parse_items "$ answer : @Int = 42"
 ```
 
 **One name, one signature**, exactly as for `@main`: `{} -> <@Meta, @IO> @Code`

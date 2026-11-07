@@ -1,0 +1,67 @@
+$ @mod MULTI_ARM_LAMBDA
+
+# \file multi_arm_lambda.thx
+# \info The multi-arm lambda `\ | p => e | q => f` takes ONE argument and
+#       matches it against the arms, top to bottom, with the usual arms:
+#       or-patterns, guards, exhaustiveness. A match is the multi-arm lambda
+#       applied to the scrutinee, `s |> \ | ...`. Several arguments are matched
+#       as a tuple. Each `chk*` is 0 when correct and 1 otherwise.
+
+# --- Literal arms and a catch-all ----------------------------------------------
+$ classify : @Int -> @Str = \
+    | 0 => "zero"
+    | 1 => "one"
+    | _ => "many"
+
+$ chk_classify : @Int =
+    if classify 0 == "zero" && classify 1 == "one" && classify 7 == "many" => 0 else 1
+
+# --- Guards and or-patterns ----------------------------------------------------
+$ sign : @Int -> @Int = \
+    | 0          => 0
+    | n if n > 0 => 1
+    | _          => -1
+$ small : @Int -> @Bool = \ | 0 | 1 | 2 => @true | _ => @false
+
+$ chk_sign : @Int = if sign 0 == 0 && sign 5 == 1 && sign (0 - 5) == -1 => 0 else 1
+$ chk_small : @Int = if small 2 && !(small 3) => 0 else 1
+
+# --- A match is `s |> \ | ...` -------------------------------------------------
+$ yes_no : @Str -> @Int = \s =>
+    s |> \
+        | "yes" => 1
+        | "no"  => 0
+        | _     => 99
+
+$ chk_yes_no : @Int = if yes_no "yes" == 1 && yes_no "no" == 0 && yes_no "?" == 99 => 0 else 1
+
+# --- Exhaustive over a union, no catch-all ---------------------------------------
+$ Color : @union =
+    Red: {},
+    Green: {},
+    Blue: {},
+
+$ warm : Color -> @Int = \ | Color.Red.{} | Color.Green.{} => 1 | Color.Blue.{} => 0
+
+$ chk_warm : @Int = if warm Color.Red.{} == 1 && warm Color.Blue.{} == 0 => 0 else 1
+
+# --- Recursion over a vector, and several arguments as a tuple -------------------
+$ sum : @Vec @Int -> @Int = \ | [] => 0 | h :: t => h + sum t
+$ count_down : { @Int, @Int } -> @Int =
+    \ | { 0, acc } => acc | { n, acc } => count_down { n - 1, acc + n }
+
+$ chk_sum : @Int = if sum [1, 2, 3] == 6 => 0 else 1
+$ chk_count_down : @Int = if count_down { 4, 0 } == 10 => 0 else 1
+
+# --- Nested: parenthesize the inner one ------------------------------------------
+$ both_zero : @Int -> @Int -> @Bool = \a =>
+    \ | 0 => (a |> \ | 0 => @true | _ => @false) | _ => @false
+
+$ chk_both_zero : @Int = if both_zero 0 0 && !(both_zero 1 0) && !(both_zero 0 1) => 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : @Int =
+    chk_classify + chk_sign + chk_small + chk_yes_no + chk_warm + chk_sum + chk_count_down
+        + chk_both_zero
+
+$ @e <| assert (test == 0) "MULTI_ARM_LAMBDA: a check failed"

@@ -1,0 +1,5 @@
+$ @mod USE_ARG_POSITION
+
+# An explicit `@use` argument goes where its parameter stands in the signature.
+$ late : t -> @use {d: IEq t} -> t -> @Bool = \x y => d.eq x y
+$ r : @Bool = late @use {.d = impl_IEq_for_int} 1 2  #~ error[TYPE_MISMATCH]: `@use` field `d` of `late` goes after 1 explicit argument(s), not 0

@@ -131,7 +131,7 @@ pub enum AltKind {
 }
 
 /// One handler clause: its operation (optionally effect-qualified) and the
-/// closure of its `\arg = \k = body` (a 2-parameter [`Code`]: the operation
+/// closure of its `\arg => \k => body` (a 2-parameter [`Code`]: the operation
 /// argument is `Local 0`, the continuation is `Local 1`).
 #[derive(Clone, Debug)]
 pub struct HandleClause {
@@ -222,7 +222,7 @@ pub enum IrExpr {
     },
     MkTuple(Vec<Atom>),
     /// Install a handler around `body`. `els` is the closure of the value clause
-    /// `\x = e` (identity when no `else` was written), run on the body's normal
+    /// `\x => e` (identity when no `else` was written), run on the body's normal
     /// result (a deep handler).
     Handle {
         body: Box<IrExpr>,

@@ -1,0 +1,4 @@
+$ @mod PARSE_CTX_RESERVED
+
+# `@ctx` is kept for dependent types; an instance parameter is a `@use` field.
+$ f : @ctx IEq t -> t -> @Bool = \d x => d.eq x x  #~ error[UNEXPECTED_TOKEN]: `@ctx` is reserved

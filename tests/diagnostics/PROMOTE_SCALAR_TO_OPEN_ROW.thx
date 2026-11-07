@@ -1,5 +1,5 @@
 $ @mod PROMOTE_SCALAR_TO_OPEN_ROW
 
 # An open row has no known field names, so there is nothing to promote a scalar into.
-$ area : { x: @Int, y: @Int | r } -> @Int = \p = p.x * p.y
+$ area : { x: @Int, y: @Int | r } -> @Int = \p => p.x * p.y
 $ a : @Int = area 5  #~ error[TYPE_MISMATCH]: a numeric literal cannot be used where `{ x: @Int, y: @Int | a }` is expected

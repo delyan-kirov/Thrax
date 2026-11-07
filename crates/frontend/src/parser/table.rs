@@ -3,7 +3,7 @@
 //! The per-operator binding powers live in [`crate::lexer::data::OPERATORS`],
 //! the one table shared with the lexer, so an operator cannot lex yet be unknown
 //! here. This module reads that table and adds only the fixed binding powers of
-//! application, the `@ctx` override, and the unary prefixes. A left-associative
+//! application, the `@use` override, and the unary prefixes. A left-associative
 //! operator uses `left < right`, a right-associative one `left > right`.
 
 use crate::lexer::data::{op_role, OpRole};
@@ -57,7 +57,7 @@ pub fn ends_expr(op: &str) -> bool {
 
 /// True if `a op b` is rewritten into some other form (a lazy `if`, a `let`, a
 /// bare application, a lambda) instead of a call to a global named `op`. Such an
-/// operator has no binding of its own, so `(op)` eta-expands to `\l r = l op r` and
+/// operator has no binding of its own, so `(op)` eta-expands to `\l r => l op r` and
 /// reuses the rewrite, unless [`infix_global`] names a binding for it.
 pub fn desugared(op: &str) -> bool {
     matches!(op, "&&" | "||" | ";" | "|>" | "<|" | "<|>")

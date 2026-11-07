@@ -114,7 +114,8 @@ $ ck_rou : @Int =
         && near (@vec_get fourth 2) (Cpx.{ -1.0, 0.0 })
         && near (@vec_get fourth 3) (Cpx.{ 0.0, -1.0 }) =>
         0
-    else 1
+    else
+        1
 
 # Every `n`th root really is one: raising it back gives `z`.
 $ cubes : @Vec Cpx = CPX.roots a 3
@@ -123,7 +124,8 @@ $ ck_roots : @Int =
         && near (CPX.powi (@vec_get cubes 0) 3) a
         && near (CPX.powi (@vec_get cubes 2) 3) a =>
         0
-    else 1
+    else
+        1
 
 # ---- complex tensors ----
 # LA passes the element arithmetic as a `@ctx` dictionary, so a complex tensor
@@ -137,13 +139,17 @@ $ ck_dot : @Int = if near (dot xs ys) (Cpx.{ 1.0, 3.0 }) => 0 else 1
 # ---- aggregate ----
 
 $ test : @Int =
-    ck_lit + ck_whole + ck_frac + ck_sci + ck_sum + ck_int + ck_bare + ck_add + ck_sub + ck_mul + ck_div + ck_neg + ck_rl + ck_rr + ck_fl + ck_fr + ck_smith + ck_re + ck_im + ck_conj + ck_abs + ck_norm + ck_recip + ck_arg + ck_real + ck_show + ck_show2 + ck_euler + ck_log + ck_sqrt + ck_sqr + ck_powi + ck_pow + ck_powneg + ck_hatc + ck_hatint + ck_trig + ck_tan + ck_hyp + ck_tanh + ck_polar + ck_rou + ck_roots + ck_dot
+    ck_lit + ck_whole + ck_frac + ck_sci + ck_sum + ck_int + ck_bare + ck_add + ck_sub + ck_mul
+        + ck_div + ck_neg + ck_rl + ck_rr + ck_fl + ck_fr + ck_smith + ck_re + ck_im + ck_conj
+        + ck_abs + ck_norm + ck_recip + ck_arg + ck_real + ck_show + ck_show2 + ck_euler + ck_log
+        + ck_sqrt + ck_sqr + ck_powi + ck_pow + ck_powneg + ck_hatc + ck_hatint + ck_trig + ck_tan
+        + ck_hyp + ck_tanh + ck_polar + ck_rou + ck_roots + ck_dot
 
 $ @e <| assert (test == 0) "COMPLEX: a check failed"
 
 $ @private
 
 # Floating-point results need a tolerance, not `==`.
-$ near_real : Real -> Real -> @Bool = \x y = MATH.abs (x - y) < 0.000000001
+$ near_real : Real -> Real -> @Bool = \x y => MATH.abs (x - y) < 0.000000001
 
-$ near : Cpx -> Cpx -> @Bool = \p q = CPX.abs (p - q) < 0.000000001
+$ near : Cpx -> Cpx -> @Bool = \p q => CPX.abs (p - q) < 0.000000001

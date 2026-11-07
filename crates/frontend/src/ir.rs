@@ -106,7 +106,7 @@ fn passes_on(merged: &mut CoreProgram) {
 // closed under imports. The shell lowers the standard library once and each
 // entry onto it.
 //
-// Context specialization is the exception: it clones `@ctx` functions across
+// Context specialization is the exception: it clones `@use` functions across
 // the whole program, so the second part is not specialized against the first.
 // Its code is the unspecialized form, equal in meaning and slower; the prefix
 // itself is specialized, and its lifted methods still fold through `prims`.

@@ -2,7 +2,7 @@
 //!
 //! Tokens are first grouped into bracket trees ([`trees`]). [`Layout`] then
 //! reads the shapes the formatter cares about off the token stream with a small
-//! recursive descent (items, `let`/`if`/`is`/`\`/`do` forms, match arms,
+//! recursive descent (items, `let`/`if`/`\`/`do` forms, match arms,
 //! operator chains) and emits a [`super::wadler`] document for each item:
 //! where lines may break, what indents, which runs align.
 //!
@@ -82,7 +82,7 @@ pub(super) const MAX_ALIGNED: usize = 40;
 
 /// The keywords and marks that start a layout form.
 pub(super) fn starts_form(t: &Tok) -> bool {
-    matches!(t.kind, Kind::Let | Kind::If | Kind::Is | Kind::Lambda | Kind::Defer | Kind::Do)
+    matches!(t.kind, Kind::Let | Kind::If | Kind::Lambda | Kind::Defer | Kind::Do)
 }
 
 pub(super) fn is_bar(t: &Tok) -> bool {
@@ -403,6 +403,19 @@ impl Layout<'_, '_> {
             let at = ts.get(*pos).map_or(0, Self::first_tok);
             return P { d, first: at, last: at };
         }
+        // `s |> \ | p => a ...`: the arms hang off the line the pipe ends,
+        // whatever the head before them does.
+        if run.len() > 1 && run.last().is_some_and(|&p| self.is_arms_lambda(p)) {
+            let arms = run.pop().expect("non-empty");
+            let head = self.lay_run(run, breaks, fills);
+            return self.beside(head, arms);
+        }
+        self.lay_run(run, breaks, fills)
+    }
+
+    /// An expression's pieces, broken after `;` (same level) and before `|>`
+    /// (nested), with fill breaks between applied arguments.
+    fn lay_run(&mut self, run: Vec<P>, mut breaks: Vec<(usize, bool)>, fills: Vec<usize>) -> P {
         // A lone operator, as in `$ (;) : ...`, has nothing on one side to break from.
         breaks.retain(|&(at, _)| 0 < at && at < run.len());
         let segment = |l: &mut Self, from: usize, to: usize| {
@@ -467,26 +480,26 @@ impl Layout<'_, '_> {
         Some(self.with_comments(cs, p))
     }
 
-    /// A `let`/`with`/`defer`/`if`/`is`/`\`/`do` form, which runs to the end of
+    /// A `let`/`with`/`defer`/`if`/`\`/`do` form, which runs to the end of
     /// the enclosing expression.
     fn form(&mut self, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
         let kw = self.tok_of(&ts[*pos]).copied().expect("a form starts with a token");
         match kw.kind {
+            Kind::Lambda if self.peek_tok(ts, *pos + 1).is_some_and(|t| is_bar(&t)) => {
+                let head = self.tok(Self::first_tok(&ts[*pos]));
+                *pos += 1;
+                self.arms_under(head, ts, pos, halt)
+            }
             Kind::Lambda => {
                 let head = self.lambda_head(ts, pos, halt);
                 let body = self.expr(ts, pos, halt, false);
+                if self.is_arms_lambda(body) {
+                    return self.beside(head, body);
+                }
                 self.hang_below(head, body, true)
             }
             Kind::Let | Kind::With | Kind::Defer => self.binding_form(ts, pos, halt),
             Kind::If => self.if_form(ts, pos, halt),
-            Kind::Is => {
-                let k = self.tok(Self::first_tok(&ts[*pos]));
-                *pos += 1;
-                let bar_or = |t: &Tok| halt(t) || is_bar(t);
-                let scrut = self.expr(ts, pos, &bar_or, false);
-                let head = self.join(&[k, scrut]).expect("non-empty");
-                self.arms(head, ts, pos, halt, true)
-            }
             Kind::Do => {
                 let k = self.tok(Self::first_tok(&ts[*pos]));
                 *pos += 1;
@@ -523,7 +536,7 @@ impl Layout<'_, '_> {
     }
 
     /// `head` then `body`, the body on its own indented line when the two do
-    /// not fit on one: a lambda's body never starts beside `\x =` unless it
+    /// not fit on one: a lambda's body never starts beside `\x =>` unless it
     /// fits there whole. A lambda's body (`by_line`) goes one level under the
     /// line its head ends, however deep the expression around it wrapped.
     fn hang_below(&mut self, head: P, body: P, by_line: bool) -> P {
@@ -619,7 +632,7 @@ impl Layout<'_, '_> {
     }
 
     /// Whether the bar at `pos` starts a handler's operation clause
-    /// (`| op x`, `| Eff.op x`), which ends an `is` nested in the clause before.
+    /// (`| op x`, `| Eff.op x`), which ends a multi-arm lambda nested in the clause before.
     fn at_op_clause(&self, ts: &[Tree], pos: usize) -> bool {
         let Some((i, _)) = self.peek(ts, pos) else { return false };
         let kinds: Vec<Option<Tok>> = (i..i + 4).map(|k| ts.get(k).and_then(|t| self.tok_of(t)).copied()).collect();
@@ -635,12 +648,12 @@ impl Layout<'_, '_> {
         }
     }
 
-    /// `\p q =`, as one piece.
+    /// `\p q =>`, as one piece.
     fn lambda_head(&mut self, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
         let mut ps = Vec::new();
         while *pos < ts.len() {
             let tree = &ts[*pos];
-            let done = matches!(self.tok_of(tree).map(|t| t.kind), Some(Kind::Eq));
+            let done = matches!(self.tok_of(tree).map(|t| t.kind), Some(Kind::FatArrow));
             if !done && self.tok_of(tree).is_some_and(|t| halt(t)) {
                 break;
             }
@@ -918,12 +931,12 @@ impl Layout<'_, '_> {
     }
 
     /// The width of `p` up to where its last group opens: `f x {`, or through
-    /// the `=` of `f (\x =`.
+    /// the `=>` of `f (\x =>`.
     fn opening_width(&self, p: P) -> usize {
         let open = (p.first..=p.last).find(|&i| self.closes[i] == Some(p.last)).unwrap_or(p.last);
         let lambda = self.toks.get(open + 1).is_some_and(|t| matches!(t.kind, Kind::Lambda));
         let end = if lambda {
-            (open..p.last).find(|&i| matches!(self.toks[i].kind, Kind::Eq)).unwrap_or(open)
+            (open..p.last).find(|&i| matches!(self.toks[i].kind, Kind::FatArrow)).unwrap_or(open)
         } else {
             open
         };
@@ -931,9 +944,44 @@ impl Layout<'_, '_> {
     }
 
     /// `head | p => e | q if g => f`: on one line, or the arms one per line
-    /// under the head with their `=>` lined up. An `is` (`clauses_end`) stops
+    /// under the head with their `=>` lined up. A multi-arm lambda (`clauses_end`) stops
     /// at a handler's operation clause, as the parser does.
+    /// Whether `p` is a multi-arm lambda `\ | p => e ...`.
+    fn is_arms_lambda(&self, p: P) -> bool {
+        matches!(self.toks[p.first].kind, Kind::Lambda) && self.toks.get(p.first + 1).is_some_and(is_bar)
+    }
+
+    /// `head body`, the body starting on the head's line and its own breaks
+    /// deciding the rest, so a long body never wraps the head.
+    fn beside(&mut self, head: P, body: P) -> P {
+        let space = self.docs.text(" ");
+        let flat = self.docs.cat(vec![head.d, space, body.d]);
+        let tail = self.docs.add(Node::HangTail(body.d));
+        let d = self.docs.add(Node::Hang { flat, head: head.d, tail });
+        P { d, first: head.first, last: body.last }
+    }
+
+    /// `\ | p => a | q => b`: on one line, or the `\` where it stands and the
+    /// arms one per line, one level under it, with their `=>` lined up.
+    fn arms_under(&mut self, head: P, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
+        self.arms_laid(head, ts, pos, halt, true, true)
+    }
+
     fn arms(&mut self, head: P, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool, clauses_end: bool) -> P {
+        self.arms_laid(head, ts, pos, halt, clauses_end, false)
+    }
+
+    /// [`Self::arms`], the arms either after the head on its line's level, or
+    /// (`under`) nested one level below it.
+    fn arms_laid(
+        &mut self,
+        head: P,
+        ts: &[Tree],
+        pos: &mut usize,
+        halt: &dyn Fn(&Tok) -> bool,
+        clauses_end: bool,
+        under: bool,
+    ) -> P {
         let group = self.docs.reserve();
         // Per arm: its patterns and guard, then `=>` with the body.
         let mut arms: Vec<(P, Option<(P, P)>)> = Vec::new();
@@ -972,7 +1020,7 @@ impl Layout<'_, '_> {
         }
         let widths: Vec<Option<usize>> = arms.iter().map(|a| self.left_width(a.0, a.1.map(|b| b.1))).collect();
         let to = self.align_width(&widths);
-        let mut acc = head;
+        let mut acc: Option<P> = None;
         for (k, (lead, body)) in arms.iter().enumerate() {
             let arm = match body {
                 Some((arrow, body)) => {
@@ -985,10 +1033,22 @@ impl Layout<'_, '_> {
                 }
                 None => *lead,
             };
-            acc = self.line_join(acc, arm, Node::Line);
+            acc = Some(match acc {
+                Some(acc) => self.line_join(acc, arm, Node::Line),
+                None => arm,
+            });
         }
-        self.docs.fill_group(group, acc.d, arms.len() > MAX_FLAT_ARMS);
-        P { d: group, ..acc }
+        let Some(acc) = acc else { return head };
+        let d = if under {
+            let line = self.docs.add(Node::Line);
+            let inner = self.docs.cat(vec![line, acc.d]);
+            let nested = self.docs.nest(inner);
+            self.docs.cat(vec![head.d, nested])
+        } else {
+            self.line_join(head, acc, Node::Line).d
+        };
+        self.docs.fill_group(group, d, arms.len() > MAX_FLAT_ARMS);
+        P { d: group, first: head.first, last: acc.last }
     }
 
     /// One top-level item: its leading comments, then `$ head = body`.
@@ -1038,7 +1098,9 @@ impl Layout<'_, '_> {
         let eq_tok = Self::first_tok(&ts[eq]);
         let mut head_ps: Vec<P> = ts[..=eq].iter().map(|t| self.tree(t)).collect();
         let mut pos = eq + 1;
-        while matches!(self.peek_tok(ts, pos).map(|t| t.kind), Some(Kind::Lambda)) {
+        while matches!(self.peek_tok(ts, pos).map(|t| t.kind), Some(Kind::Lambda))
+            && !self.peek_tok(ts, pos + 1).is_some_and(|t| is_bar(&t))
+        {
             let cs = self.comments(ts, &mut pos);
             head_ps.extend(cs);
             head_ps.push(self.lambda_head(ts, &mut pos, &|_| false));
@@ -1069,6 +1131,9 @@ impl Layout<'_, '_> {
         let beside = self.flat_width(head.d).is_some_and(|w| w + 1 + self.opening_width(body) <= self.width);
         if elems.len() == 1 && !exploded && !head_comment && self.opens_block(body) && beside {
             return self.hang(head, body).d;
+        }
+        if elems.len() == 1 && !exploded && !head_comment && self.is_arms_lambda(body) {
+            return self.beside(head, body).d;
         }
         let line = self.docs.add(Node::Line);
         let inner = self.docs.cat(vec![line, body.d]);

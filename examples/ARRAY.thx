@@ -16,7 +16,7 @@ $ buf3 : @Array = @Array.{ n * 4 }
 
 # `@Array` is an expression, so it nests like any other -- here behind a `let`,
 # and as the body of a function that computes its size from an argument.
-$ make : @Int -> @Array = \k = let extra = 16 in @Array.{ k + extra }
+$ make : @Int -> @Array = \k => let extra = 16 in @Array.{ k + extra }
 $ buf4 : @Array = make 32
 
 $ Count: @alias = @Int

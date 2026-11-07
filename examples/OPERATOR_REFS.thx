@@ -8,7 +8,7 @@ $ @mod OPERATOR_REFS
 
 $ with VEC
 
-$ apply2 : (@Int -> @Int -> @Int) -> @Int -> @Int -> @Int = \f a b = f a b
+$ apply2 : (@Int -> @Int -> @Int) -> @Int -> @Int -> @Int = \f a b => f a b
 
 $ added : @Int = (+) 1 1
 $ diff : @Int = (-) 10 4
@@ -33,12 +33,12 @@ $ summed : @Int = foldl (+) 0 [1, 2, 3]
 # through this instance, `+` on an `@Int` through CORE's.
 $ Money : @struct = cents: @Int
 
-$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
+$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b => Money.{ .cents = a.cents + b.cents } }
 
 $ pooled : Money = (+) Money.{ .cents = 150 } Money.{ .cents = 900 }
 
 # An operator the parser rewrites rather than calls (`&&`, `||`, `;`, the pipes,
-# `::`) has no binding of its own, so its reference is the function `\l r = l op r`.
+# `::`) has no binding of its own, so its reference is the function `\l r => l op r`.
 # Referenced this way, `&&` evaluates both sides: short-circuiting is a property
 # of the infix form, not of the function.
 $ both : @Bool = (&&) @true @true

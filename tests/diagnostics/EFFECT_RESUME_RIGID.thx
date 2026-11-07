@@ -4,7 +4,7 @@ $ @mod EFFECT_RESUME_RIGID
 # value of its own (#290: an `@Int` would reach a use at `@Str`).
 $ Box : @effect = take : @Int -> a,
 
-$ use : {} -> <Box> @Int = \u =
+$ use : {} -> <Box> @Int = \u =>
 	let s : @Str = Box.take 0 in
 	let n : @Int = Box.take 1 in
 	n

@@ -1,4 +1,4 @@
-//! Static exhaustiveness and redundancy checking for `is` matches, after
+//! Static exhaustiveness and redundancy checking for matches, after
 //! Maranget, "Warnings for pattern matching" (JFP 2007).
 //!
 //! The checker translates each arm's patterns into a [`DPat`], a pattern over a

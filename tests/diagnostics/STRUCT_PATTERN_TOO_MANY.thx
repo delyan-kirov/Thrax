@@ -2,4 +2,4 @@ $ @mod STRUCT_PATTERN_TOO_MANY
 
 # A pattern may bind fewer fields than the struct has, never more.
 $ P : @struct = x: @Int, y: @Int,
-$ f : P -> @Int = \p = is p | P.{a, b, c} => a  #~ error[TYPE_MISMATCH]: struct `P` has 2 field(s), so there is no field 2
+$ f : P -> @Int = \p => p |> \ | P.{a, b, c} => a  #~ error[TYPE_MISMATCH]: struct `P` has 2 field(s), so there is no field 2

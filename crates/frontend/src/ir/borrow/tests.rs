@@ -45,7 +45,7 @@ fn let_(slot: usize, rhs: IrExpr, body: IrExpr) -> IrExpr {
     }
 }
 
-/// `is x | true => 1 | _ => 0`: reads its parameter only.
+/// `x |> \ | true => 1 | _ => 0`: reads its parameter only.
 fn inspects() -> IrExpr {
     IrExpr::Case {
         scrut: Atom::Local(0),

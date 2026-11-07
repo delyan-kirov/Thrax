@@ -1,4 +1,4 @@
 $ @mod PROMOTE_TUPLE_TO_OPEN_ROW
 
-$ area : { x: @Int, y: @Int | r } -> @Int = \p = p.x * p.y
+$ area : { x: @Int, y: @Int | r } -> @Int = \p => p.x * p.y
 $ a : @Int = area {2, 3}  #~ error[TYPE_MISMATCH]: expected { x: @Int, y: @Int | a }, found {a, b}

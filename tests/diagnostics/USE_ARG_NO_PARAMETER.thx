@@ -1,0 +1,4 @@
+$ @mod USE_ARG_NO_PARAMETER
+
+$ inc : @Int -> @Int = \x => x + 1
+$ r : @Int = inc @use {.d = 1} 2  #~ error[TYPE_MISMATCH]: a `@use` argument, but `inc` declares no `@use` parameter

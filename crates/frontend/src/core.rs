@@ -31,7 +31,7 @@ pub struct CoreProgram {
     /// struct values across the `@extern` boundary. Same across every module (the
     /// resolver aggregates them); the IR lowering merges duplicates by name.
     pub crepr_layouts: Vec<(StrId, utilities::CLayout)>,
-    /// The globals that declare a `@ctx` parameter, which is the leading lambda
+    /// The globals that declare `@use` fields, which is the leading lambda
     /// of their body. Bare names in a module's own program, `MOD.name` keys once
     /// [`crate::ir::lower_modules`] has merged the modules. Read by
     /// [`crate::passes::specialize`].
@@ -133,7 +133,7 @@ pub enum Term {
         body: Aol<Term>,
     },
     /// The one branching form: force `scrut`, take the first arm whose pattern
-    /// matches (and whose guard, if any, holds), else `default`. `if` and `is`
+    /// matches (and whose guard, if any, holds), else `default`. `if` and a match
     /// both lower here. See Note [Case is never lowered to application].
     Case {
         scrut: Aol<Term>,
@@ -197,7 +197,7 @@ pub enum Term {
 }
 
 /// One arm of a [`Term::Case`]: a pattern, an optional guard, and a body. Surface
-/// or-patterns (`is p1 is p2 then e`) expand into one arm per alternative sharing
+/// or-patterns (`| p1 | p2 => e`) expand into one arm per alternative sharing
 /// the guard and body.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CoreArm {
@@ -284,7 +284,7 @@ pub struct CoreHandler {
     pub default: Option<(StrId, Aol<Term>)>,
 }
 
-/// One `is Effect.op arg = body` handler clause.
+/// One `| Effect.op arg => body` handler clause.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CoreClause {
     pub effect: Option<StrId>,
@@ -344,7 +344,7 @@ impl Terms {
         self.app(partial, r)
     }
 
-    /// `\param = body`.
+    /// `\param => body`.
     pub fn lam(&mut self, param: StrId, body: Aol<Term>) -> Aol<Term> {
         self.add(Term::Lam { param, body })
     }

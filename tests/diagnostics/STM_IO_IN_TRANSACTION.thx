@@ -5,5 +5,5 @@ $ @mod STM_IO_IN_TRANSACTION
 $ with IO
 $ with STM
 
-$ bump : TVar @Int -> {} -> <@IO> {} = \t u =
-	atomically (\w = println "bump"; modify t (\x = x + 1))  #~ error[TYPE_MISMATCH]: effect `@IO` is performed but not handled
+$ bump : TVar @Int -> {} -> <@IO> {} = \t u =>
+	atomically (\w => println "bump"; modify t (\x => x + 1))  #~ error[TYPE_MISMATCH]: effect `@IO` is performed but not handled

@@ -1,11 +1,11 @@
-//! Specialize `@ctx` functions on the instances their call sites pass them.
+//! Specialize `@use` functions on the instances their call sites pass them.
 //!
 //! An interface method call costs a global lookup, a field read and a closure
 //! application, and a generic function pays it on every method call because its
 //! instance arrives as a runtime parameter. When the instance is known
 //! statically, none of that is necessary:
 //!
-//! 1. A call `f K` of a `@ctx` global `f = \d = V` whose argument `K` is a KNOWN
+//! 1. A call `f K` of a `@use` global `f = \d => V` whose argument `K` is a KNOWN
 //!    instance becomes a reference to the clone `f#sN = V[d := K]`, memoized per
 //!    `(f, K)`. A known instance is a global whose body is a struct literal (an
 //!    instance), a tuple of known instances (a context bundle, which is lifted to
@@ -18,7 +18,7 @@
 //!
 //! The clone body is rewritten the same way, so the generic code inside calls
 //! the methods directly, `eta_fold` then reduces the primitive ones, and a call
-//! the clone makes to another `@ctx` function with the same instance chains into
+//! the clone makes to another `@use` function with the same instance chains into
 //! that function's clone. A recursive call hits the memo and calls the clone
 //! itself.
 //!
@@ -149,7 +149,7 @@ impl Specializer {
         self.added.push(key);
     }
 
-    /// The `@ctx` global `t` references.
+    /// The `@use` global `t` references.
     fn ctx_head(&mut self, terms: &Terms, t: Aol<Term>) -> Option<Global> {
         let (g, key) = self.global_of(terms, t)?;
         self.ctx.contains(&key).then_some(g)

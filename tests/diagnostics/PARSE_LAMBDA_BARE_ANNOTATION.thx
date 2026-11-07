@@ -1,0 +1,4 @@
+$ @mod PARSE_LAMBDA_BARE_ANNOTATION
+
+# An annotated parameter is parenthesized, even a lone one.
+$ f : @Int -> @Int = \x: @Int => x  #~ error[UNEXPECTED_TOKEN]: an annotated lambda parameter must be parenthesized

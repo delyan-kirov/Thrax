@@ -9,25 +9,25 @@ $ with STR
 # `@parse_items`/`@parse_str` (which trap on a syntax error), so
 # `$ @e <| validate <| @parse_items ..` VALIDATES the items without inserting them
 # (a bare `$ @e <| @parse_items ..` would insert).
-$ validate : @Code -> @Code = \_ = @parse_items ""
+$ validate : @Code -> @Code = \_ => @parse_items ""
 
 # `s` spelled as a Thrax string literal. `?` is escaped because `?(` opens an
 # interpolation.
-$ quote : @Str -> @Str = \s =
-    let esc = \needle repl t = STR.replace t needle repl in
+$ quote : @Str -> @Str = \s =>
+    let esc = \needle repl t => STR.replace t needle repl in
     "\"" ++ (s |> esc "\\" "\\\\" |> esc "\"" "\\\"" |> esc "\n" "\\n" |> esc "?" "\\?") ++ "\""
 
 # Validate the items `src`, then define `name` as their text laid out by
 # `@format`, so the README shows each snippet as `thrax fmt` writes it.
-$ formatted : @Str -> @Str -> @Code = \name src =
+$ formatted : @Str -> @Str -> @Code = \name src =>
     validate (@parse_items src);
     @parse_items ("$ " ++ name ++ " : @Str = " ++ quote (STR.trim_right (@format src)))
 
 # ---- Markdown helpers -----------------------------------------------------
 
 $ nl : @Str = "\n"
-$ fence : @Str -> @Str = \code = "```thrax\n" ++ code ++ "\n```\n"
-$ sh : @Str -> @Str = \code = "```sh\n" ++ code ++ "\n```\n"
+$ fence : @Str -> @Str = \code => "```thrax\n" ++ code ++ "\n```\n"
+$ sh : @Str -> @Str = \code => "```sh\n" ++ code ++ "\n```\n"
 
 # ---- Examples (the source of truth) ---------------------------------------
 
@@ -59,18 +59,18 @@ $ ex_splice_union : @Str =
         ++ "$ Color : @union = with Base, Blue: {}   # Red, Green, then Blue"
 
 $ ex_match : @Str =
-    "$ grade : Maybe @Int -> @Int = \\m =\n"
-        ++ "\tis m\n"
+    "$ grade : Maybe @Int -> @Int = \\m =>\n"
+        ++ "\tm |> \\\n"
         ++ "\t\t| .Just.{ v } if v > 100 => 3\n"
         ++ "\t\t| .Just.{ v } if v > 0   => 2\n"
         ++ "\t\t| .Just.{ _ }             => 1\n"
         ++ "\t\t| .None                   => 0"
 
 $ ex_split : @Str =
-    "$ ext : @Str -> @Str = \\s = is s | name ++ \".thx\" => name | _ => s\n"
+    "$ ext : @Str -> @Str = \\s => s |> \\ | name ++ \".thx\" => name | _ => s\n"
         ++ "\n"
-        ++ "$ ends : @Vec @Int -> @Int = \\xs =\n"
-        ++ "\tis xs\n"
+        ++ "$ ends : @Vec @Int -> @Int = \\xs =>\n"
+        ++ "\txs |> \\\n"
         ++ "\t\t| [a] ++ mid ++ [z] => a + z\n"
         ++ "\t\t| [a]               => a\n"
         ++ "\t\t| _                 => 0"
@@ -79,7 +79,7 @@ $ ex_effect : @Str =
     "$ Yield : @effect = yield : @Int -> {},\n"
         ++ "\n"
         ++ "# The handler resumes once per yield, summing every value it produces.\n"
-        ++ "$ sumGen : ({} -> <Yield> {}) -> @Int = \\gen =\n"
+        ++ "$ sumGen : ({} -> <Yield> {}) -> @Int = \\gen =>\n"
         ++ "\tdo gen {}\n"
         ++ "\tctl k | Yield.yield v => v + k {}\n"
         ++ "\t      | _ => 0"
@@ -88,12 +88,12 @@ $ ex_interface : @Str =
     "$ IArea : @struct t = area: t -> Real,\n"
         ++ "\n"
         ++ "$ Rect : @struct = w: Real, h: Real,\n"
-        ++ "$ impl_IArea_for_Rect : IArea Rect = .{ .area = \\r = r.w * r.h }\n"
+        ++ "$ impl_IArea_for_Rect : IArea Rect = .{ .area = \\r => r.w * r.h }\n"
         ++ "\n"
-        ++ "# `d` is the CONTEXT parameter: ordinary in every respect, except that call\n"
-        ++ "# sites do not write it. The compiler finds it by type.\n"
-        ++ "$ total : @ctx IArea t -> @Vec t -> Real = \\d xs =\n"
-        ++ "\tVEC.foldl (\\acc x = acc + d.area x) 0.0 xs\n"
+        ++ "# `d` is a `@use` field: in scope by name in the body, and call sites do not\n"
+        ++ "# write it. The compiler finds it by type.\n"
+        ++ "$ total : @use {d: IArea t} -> @Vec t -> Real = \\xs =>\n"
+        ++ "\tVEC.foldl (\\acc x => acc + d.area x) 0.0 xs\n"
         ++ "\n"
         ++ "$ sum : Real = total [Rect.{ 2.0, 3.0 }, Rect.{ 1.0, 4.0 }]   # 10.0"
 
@@ -101,15 +101,15 @@ $ ex_operator : @Str =
     "$ Money : @struct = cents: @Int,\n"
         ++ "\n"
         ++ "# `+` is an ordinary CORE function over `IAdd`, so a type joins it with a value.\n"
-        ++ "$ impl_IAdd_for_Money : IAdd Money = .{ .add = \\a b = Money.{ .cents = a.cents + b.cents } }\n"
+        ++ "$ impl_IAdd_for_Money : IAdd Money = .{ .add = \\a b => Money.{ .cents = a.cents + b.cents } }\n"
         ++ "$ paid : Money = Money.{ .cents = 150 } + Money.{ .cents = 99 }"
 
 # A self-contained expression we can actually RUN and check at build time.
-$ ex_expr : @Str = "let sq = \\x = x * x in sq 3 + sq 4"
+$ ex_expr : @Str = "let sq = \\x => x * x in sq 3 + sq 4"
 
 $ ex_ffi : @Str =
     "$ puts : @Str -> <@IO> @Int = @extern \"C\" \"puts\" \"libc\"\n"
-        ++ "$ @main : @Vec @Str -> <@IO> @Int = \\args = puts \"Hello world\"; 0"
+        ++ "$ @main : @Vec @Str -> <@IO> @Int = \\args => puts \"Hello world\"; 0"
 
 # ---- Compile-time validation ("unit tests") -------------------------------
 # A malformed declaration or a wrong expected value fails the build here. Each
@@ -164,7 +164,7 @@ $ building : @Str =
         ++ "[documentation/platforms.md](documentation/platforms.md).\n"
 
 $ ex_entry : @Str =
-    "$ @main : @Vec @Str -> <@IO> @Int = \\args =\n" ++ "\tC.puts \"hello\";\n" ++ "\t0"
+    "$ @main : @Vec @Str -> <@IO> @Int = \\args =>\n" ++ "\tC.puts \"hello\";\n" ++ "\t0"
 
 $ compiling : @Str =
     "\n## Compiling and running\n\n"
@@ -210,7 +210,7 @@ $ features : @Str =
         ++ "- **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.\n"
         ++ "- **C FFI with no ceremony**: `@extern \"C\" \"sym\" \"lib\"` binds a foreign function; C structs pass by value both ways.\n"
         ++ "- **WebAssembly**: cross-compile with `--target=wasm32-wasi`, or run the whole compiler in the browser.\n"
-        ++ "- **Interfaces resolved by type**: an interface is a struct, an implementation is a value of it, and a function takes one as an inferred `@ctx` parameter. One mechanism; no overloading, so a name's printed type is its contract.\n"
+        ++ "- **Interfaces resolved by type**: an interface is a struct, an implementation is a value of it, and a function takes one as a named `@use` field the compiler infers. One mechanism; no overloading, so a name's printed type is its contract.\n"
         ++ "- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`@e` inserts generated code, plus a `@build` entry that generates part of a module from what is on disk).\n"
 
 $ tour : @Str =
@@ -229,9 +229,10 @@ $ tour : @Str =
         ++ fence fmt_union
         ++ nl
         ++ fence fmt_splice_union
-        ++ "\n`is scrut | pat => e ...` matches top to bottom; each arm may carry an\n"
-        ++ "`if <guard>` that falls through to the next arm on failure. There is no\n"
-        ++ "default branch: a catch-all is just an arm, `| _ => d`.\n\n"
+        ++ "\nA multi-arm lambda `\\ | pat => e ...` takes one argument and matches it\n"
+        ++ "top to bottom; a match is one applied to its scrutinee, `s |> \\ | ...`. Each\n"
+        ++ "arm may carry an `if <guard>` that falls through to the next arm on failure.\n"
+        ++ "There is no default branch: a catch-all is just an arm, `| _ => d`.\n\n"
         ++ fence fmt_match
         ++ "\n`++` splits a sequence (a string, vector, array, or a type of your own) into\n"
         ++ "fixed pieces around one part of any length, from either end; `h :: t` is\n"
@@ -250,9 +251,10 @@ $ tour : @Str =
         ++ "\n### Interfaces\n\n"
         ++ "An interface is an ordinary struct whose fields are its operations;\n"
         ++ "implementing it is defining a value of that type. A function that needs one\n"
-        ++ "declares it as a `@ctx` FIRST parameter, which call sites do not write: the\n"
-        ++ "compiler finds it by type, taking the nearest binder in scope and otherwise\n"
-        ++ "the one instance in scope.\n\n"
+        ++ "declares it as a named `@use` field, in scope in its body, which call sites do\n"
+        ++ "not write: the compiler finds it by type, taking the nearest binder in scope\n"
+        ++ "and otherwise the one instance in scope. `f @use {.d = e} x` passes one by\n"
+        ++ "hand.\n\n"
         ++ fence fmt_interface
         ++ "\nEvery operator works this way, so there is nothing special about `+`: it is a\n"
         ++ "function over `IAdd`, and a type joins it by defining an instance.\n\n"
@@ -294,8 +296,8 @@ $ readme : @Str =
 
 # ---- Write the file via the C library (fopen/fputs/fclose) ----------------
 
-$ write_all : @Str -> @Str -> <@IO> @Int = \path content =
+$ write_all : @Str -> @Str -> <@IO> @Int = \path content =>
     let f = C.fopen { path, "wb" } in if f == 0 => 0 - 1 else C.fputs { content, f }; C.fclose f
 
-$ @main : @Vec @Str -> <@IO> @Int = \args =
+$ @main : @Vec @Str -> <@IO> @Int = \args =>
     let rc = write_all "README.md" readme in if rc == 0 => 0 else 1

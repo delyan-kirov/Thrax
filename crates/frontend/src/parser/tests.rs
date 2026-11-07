@@ -14,7 +14,7 @@ fn type_names_must_be_capitalized() {
     };
     assert!(err("$ @mod M\n$ point : @struct = a: @Int,").contains("capital letter"));
     // A lowercase name in type-use position is a type variable and parses.
-    assert!(parse("$ @mod M\n$ id : a -> a = \\x = x").is_ok());
+    assert!(parse("$ @mod M\n$ id : a -> a = \\x => x").is_ok());
     // A capitalized type also parses.
     assert!(parse("$ @mod M\n$ n : @Int = 5").is_ok());
 }
@@ -28,7 +28,7 @@ fn value_and_function_names_must_be_lowercase() {
     // A capitalized value or function name is a type/constructor spelling, rejected.
     assert!(err("$ @mod M\n$ Foo : @Int = 3").contains("lowercase letter"));
     assert!(err("$ @mod M\n$ Bar = 3").contains("lowercase letter"));
-    assert!(err("$ @mod M\n$ GetRandomValue : @Int -> @Int = \\x = x").contains("lowercase letter"));
+    assert!(err("$ @mod M\n$ GetRandomValue : @Int -> @Int = \\x => x").contains("lowercase letter"));
     // Lowercase values/functions parse; capitalized names stay for type decls.
     assert!(parse("$ @mod M\n$ foo : @Int = 3").is_ok());
     assert!(parse("$ @mod M\n$ Point : @struct = a: @Int,").is_ok());
@@ -101,7 +101,7 @@ fn application_is_left_associative_and_tight() {
 
 #[test]
 fn lambda_if_and_comparison() {
-    let p = prog("$ @mod M\n$ f = \\n = if n == 0 => 1 else n");
+    let p = prog("$ @mod M\n$ f = \\n => if n == 0 => 1 else n");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -113,7 +113,7 @@ fn comma_arms_nest_if_defer_and_with() {
     // A comma-separated list is the surface for the nested form: `if` arms nest
     // as `else if`, `defer` cleanups and `with` subjects nest outward-in. A
     // trailing comma before `else`/`in` is allowed.
-    let p = prog("$ @mod M\n$ f = \\n = if n == 0 => 1, n > 0 => 2, else 3");
+    let p = prog("$ @mod M\n$ f = \\n => if n == 0 => 1, n > 0 => 2, else 3");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -125,7 +125,7 @@ fn comma_arms_nest_if_defer_and_with() {
     };
     assert!(matches!(p.ast.expr(*alt), Expr::Int(3)));
 
-    let p = prog("$ @mod M\n$ f = \\a b c = defer a, b, in c");
+    let p = prog("$ @mod M\n$ f = \\a b c => defer a, b, in c");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -134,7 +134,7 @@ fn comma_arms_nest_if_defer_and_with() {
     };
     assert!(matches!(p.ast.expr(*body), Expr::Defer { .. }));
 
-    let p = prog("$ @mod M\n$ f = \\a b = with a, b in 1");
+    let p = prog("$ @mod M\n$ f = \\a b => with a, b in 1");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -215,7 +215,7 @@ fn declared_type_params() {
 
 #[test]
 fn sized_tensor_type_parses() {
-    let p = prog("$ @mod M\n$ v : [3]@Int = [1, 2, 3]\n$ f : [n]a -> a = \\t = t.[0]");
+    let p = prog("$ @mod M\n$ v : [3]@Int = [1, 2, 3]\n$ f : [n]a -> a = \\t => t.[0]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Sized { size, elem, .. } => {
@@ -231,7 +231,7 @@ fn sized_tensor_type_parses() {
 #[test]
 fn axis_variance_parses() {
     // `[@contra m, @co n]T` desugars to nested `Sized`, outer axis contra, inner co.
-    let p = prog("$ @mod M\n$ f : [@contra 2, @co 3]@Int -> @Int = \\m = 0");
+    let p = prog("$ @mod M\n$ f : [@contra 2, @co 3]@Int -> @Int = \\m => 0");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Arrow { from, .. } => match p.ast.ty(*from) {
@@ -282,7 +282,7 @@ fn shape_sugar_nests() {
 
 #[test]
 fn inclusive_range_pattern_parses() {
-    let src = "$ @mod M\n$ f = \\n = is n | 1 ... 5 => 0 | _ => 1";
+    let src = "$ @mod M\n$ f = \\ | 1 ... 5 => 0 | _ => 1";
     let p = prog(src);
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
@@ -301,7 +301,7 @@ fn inclusive_range_pattern_parses() {
     }
     // A non-literal upper bound is a parse error: `1 ...` closes as an open range,
     // so the trailing `x` has nowhere to go.
-    parse("$ @mod M\n$ f = \\n = is n | 1 ... x => 0 | _ => 1")
+    parse("$ @mod M\n$ f = \\ | 1 ... x => 0 | _ => 1")
         .err()
         .expect("expected a parse error");
 }
@@ -309,7 +309,7 @@ fn inclusive_range_pattern_parses() {
 #[test]
 fn open_range_pattern_parses() {
     // `lo ...` with no upper bound is an open range pattern.
-    let p = prog("$ @mod M\n$ f = \\n = is n | 0 ... => 0 | _ => 1");
+    let p = prog("$ @mod M\n$ f = \\ | 0 ... => 0 | _ => 1");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -353,7 +353,7 @@ fn range_builder_parses_to_range_node() {
 
 #[test]
 fn variant_literal_and_when_match() {
-    let src = "$ @mod M\n$ f = \\l = is l | Lst.Nil => 0 | Lst.Cons.{_, xs} => 1 | _ => 2";
+    let src = "$ @mod M\n$ f = \\ | Lst.Nil => 0 | Lst.Cons.{_, xs} => 1 | _ => 2";
     let p = prog(src);
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
@@ -372,7 +372,7 @@ fn variant_literal_and_when_match() {
 
 #[test]
 fn cons_and_list_and_function_type() {
-    let src = "$ @mod M\n$ g : @Vec t -> @Int = \\xs = 0\n$ xs = 1 :: [2, 3]";
+    let src = "$ @mod M\n$ g : @Vec t -> @Int = \\xs => 0\n$ xs = 1 :: [2, 3]";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
     assert!(matches!(
@@ -461,7 +461,7 @@ fn pipes_and_sequencing() {
 
 #[test]
 fn composition_becomes_a_lambda_and_binds_tightest() {
-    // `f <|> g` is the lambda `\x = f (g x)`, so the composed function's effect row
+    // `f <|> g` is the lambda `\x => f (g x)`, so the composed function's effect row
     // is inferred (the union of both) and each operand is an application head.
     let p = prog("$ @mod M\n$ h = f <|> g");
     let Expr::Lambda { params, body } = p.ast.expr(only_def_body(&p)) else {
@@ -552,9 +552,9 @@ fn blessed_interface_prefix_rule() {
     // A blessed interface is a declarable `@`-name, as a one-field `@struct`.
     assert!(parse("$ @mod M\n$ @IIndex : @struct s i t = index: s -> i -> t,").is_ok());
     // It is a TYPE, so a value signature on the same name is rejected.
-    assert!(err("$ @mod M\n$ @IIndex : a -> @Int -> a = \\t i = t").contains("one-field '@struct'"));
+    assert!(err("$ @mod M\n$ @IIndex : a -> @Int -> a = \\t i => t").contains("one-field '@struct'"));
     // Any other `@`-name is a compiler intrinsic, not extensible in user code.
-    assert!(err("$ @mod M\n$ @my_hook : @Int -> @Int = \\x = x").contains("not extensible"));
+    assert!(err("$ @mod M\n$ @my_hook : @Int -> @Int = \\x => x").contains("not extensible"));
     // ...except a builtin declaration, which the checker confines to CORE.
     let p = prog("$ @mod M\n$ @iadd : t -> t -> t = @extern \"thrax\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Builtin));
@@ -564,7 +564,7 @@ fn blessed_interface_prefix_rule() {
 /// were effect-row delimiters that ended the expression.
 #[test]
 fn angle_brackets_are_comparisons_in_expressions() {
-    for src in ["$ @mod M\n$ f = \\a b = a < b", "$ @mod M\n$ f = \\a b = a > b"] {
+    for src in ["$ @mod M\n$ f = \\a b => a < b", "$ @mod M\n$ f = \\a b => a > b"] {
         let p = prog(src);
         let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
             panic!("expected a lambda")
@@ -578,14 +578,14 @@ fn angle_brackets_are_comparisons_in_expressions() {
 #[test]
 fn effect_rows_still_parse_in_type_position() {
     for sig in ["<E> @Int", "<E | e> @Int", "<| e> @Int", "<> @Int"] {
-        let src = format!("$ @mod M\n$ E : @effect = op : @Int -> @Int\n$ f : @Int -> {sig} = \\n = n");
+        let src = format!("$ @mod M\n$ E : @effect = op : @Int -> @Int\n$ f : @Int -> {sig} = \\n => n");
         assert!(parse(&src).is_ok(), "signature `{sig}` failed to parse");
     }
 }
 
 #[test]
 fn row_alias_body_and_applied_entries_parse() {
-    let p = prog("$ @mod M\n$ W : @alias e = <Log, App | e>\n$ f : @Int -> <W r, @IO> @Int = \\n = n");
+    let p = prog("$ @mod M\n$ W : @alias e = <Log, App | e>\n$ f : @Int -> <W r, @IO> @Int = \\n => n");
     let items = p.ast.slice(p.program.items);
     let Item::Alias { ty, .. } = &items[0] else {
         panic!("expected an alias")
@@ -657,7 +657,7 @@ fn operator_in_parens_is_a_function_reference() {
 
 #[test]
 fn lambda_parameters_are_juxtaposed_and_take_annotations() {
-    let p = prog("$ @mod M\n$ f = \\i: @Int = i");
+    let p = prog("$ @mod M\n$ f = \\(i: @Int) => i");
     let Expr::Lambda { params, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -665,7 +665,7 @@ fn lambda_parameters_are_juxtaposed_and_take_annotations() {
     assert_eq!(params.len(), 1);
     assert!(params[0].sig.is_some());
 
-    let p = prog("$ @mod M\n$ g = \\(i: @Int) y (s: @Str) {a, b} = i");
+    let p = prog("$ @mod M\n$ g = \\(i: @Int) y (s: @Str) {a, b} => i");
     let Expr::Lambda { params, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -676,10 +676,15 @@ fn lambda_parameters_are_juxtaposed_and_take_annotations() {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
-    // A bare annotation would swallow the next parameter as a type argument.
-    let e = err("$ @mod M\n$ k = \\a b: @Int = a");
-    assert!(e.contains("parenthesize"), "{e}");
-    let e = err("$ @mod M\n$ k = \\a, b = a");
+    // A bare annotation, even on a lone parameter, is parenthesized, so the
+    // type ends at `)`.
+    let e = err("$ @mod M\n$ k = \\a: @Int => a");
+    assert!(e.contains("parenthesized"), "{e}");
+    let e = err("$ @mod M\n$ k = \\a b: @Int => a");
+    assert!(e.contains("parenthesized"), "{e}");
+    let e = err("$ @mod M\n$ k = \\a = a");
+    assert!(e.contains("expected '=>'"), "{e}");
+    let e = err("$ @mod M\n$ k = \\a, b => a");
     assert!(e.contains("juxtaposed"), "{e}");
 }
 
@@ -716,13 +721,13 @@ fn a_binding_site_annotation_takes_any_pattern() {
     // The type describes the whole binding, so `let` accepts it on a destructuring
     // pattern exactly as a lambda parameter does.
     assert!(parse("$ @mod M\n$ y = let {a, b} : {@Int, @Int} = {1, 2} in a").is_ok());
-    assert!(parse("$ @mod M\n$ y = \\{a, b}: {@Int, @Int} = a").is_ok());
+    assert!(parse("$ @mod M\n$ y = \\({a, b}: {@Int, @Int}) => a").is_ok());
     assert!(parse("$ @mod M\n$ y = let x : @Int = 1 in x").is_ok());
     // Several bindings still separate on the comma; a type runs only to the `=`.
     assert!(parse("$ @mod M\n$ y = let a : @Int = 1, b : @Int = 2 in a").is_ok());
 
     // A match arm takes no annotation: the scrutinee fixes the pattern's type.
-    let err = match parse("$ @mod M\n$ y = is 1 | n: @Int => n | _ => 0") {
+    let err = match parse("$ @mod M\n$ y = 1 |> \\ | n: @Int => n | _ => 0") {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error"),
     };
@@ -786,13 +791,15 @@ fn a_lone_binder_value_arm_binds_directly() {
 }
 
 #[test]
-fn an_is_in_a_clause_ends_at_the_next_operation_clause() {
-    let p = prog("$ @mod M\n$ f = do g {} ctl k | E.op x => is x | 1 => 0 | _ => 1 | E.other y => 2 | put n => 3");
+fn a_match_in_a_clause_ends_at_the_next_operation_clause() {
+    let p = prog("$ @mod M\n$ f = do g {} ctl k | E.op x => x |> \\ | 1 => 0 | _ => 1 | E.other y => 2 | put n => 3");
     let h = only_handler(&p);
     assert_eq!(h.clauses.len(), 3);
     assert!(h.value.is_none());
     let first = p.ast.slice(h.clauses)[0].body;
-    let Expr::Match { arms, .. } = p.ast.expr(first) else {
+    let Expr::BinOp { rhs, .. } = p.ast.expr(first) else { panic!("expected `x |> ...`") };
+    let Expr::Lambda { body, .. } = p.ast.expr(*rhs) else { panic!("expected a multi-arm lambda") };
+    let Expr::Match { arms, .. } = p.ast.expr(*body) else {
         panic!("expected the first clause body to be a match")
     };
     assert_eq!(arms.len(), 2);
@@ -800,7 +807,7 @@ fn an_is_in_a_clause_ends_at_the_next_operation_clause() {
 
 #[test]
 fn else_no_longer_ends_a_match_or_a_handler() {
-    assert!(parse("$ @mod M\n$ f = \\n = is n | 1 => 0 else 1").is_err());
+    assert!(parse("$ @mod M\n$ f = \\ | 1 => 0 else 1").is_err());
     assert!(parse("$ @mod M\n$ f = do g {} ctl k | op x => 0 else r => r").is_err());
 }
 
@@ -815,7 +822,7 @@ fn effect_operation_names_must_be_lowercase() {
 
 #[test]
 fn negative_literal_patterns() {
-    let p = prog("$ @mod M\n$ f = \\n = is n | -1 => 0 | -5 ... -2 => 1 | -1.5 => 2 | 3 ... => 3");
+    let p = prog("$ @mod M\n$ f = \\ | -1 => 0 | -5 ... -2 => 1 | -1.5 => 2 | 3 ... => 3");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -855,17 +862,17 @@ fn a_rest_left_unnamed_or_a_dotted_string_prefix_says_how_to_write_it() {
         Err(e) => e.render(src, "t.thx"),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
-    let text = err("$ @mod M\n$ y = is r | { .a = 1, .. } => 1 | _ => 2");
+    let text = err("$ @mod M\n$ y = r |> \\ | { .a = 1, .. } => 1 | _ => 2");
     assert!(text.contains("expected a pattern after '..'"), "{text}");
     assert!(text.contains("help: write `.._` to ignore the remaining fields"), "{text}");
 
-    let text = err("$ @mod M\n$ y = is xs | [x, ..rest] => x | _ => 2");
+    let text = err("$ @mod M\n$ y = xs |> \\ | [x, ..rest] => x | _ => 2");
     assert!(text.contains("help: a list pattern lists exactly its elements"), "{text}");
 
-    let text = err("$ @mod M\n$ y = is s | \"A\" ++ _ ++ r => 1 | _ => 2");
+    let text = err("$ @mod M\n$ y = s |> \\ | \"A\" ++ _ ++ r => 1 | _ => 2");
     assert!(text.contains("can have only one part of unknown length"), "{text}");
 
-    let text = err("$ @mod M\n$ y = is s | \"a\".. => 1 | _ => 2");
+    let text = err("$ @mod M\n$ y = s |> \\ | \"a\".. => 1 | _ => 2");
     assert!(text.contains("help: a string prefix pattern is written `\"abc\" ++ rest`"), "{text}");
 
     let text = err("$ @mod M\n$ y = {1, 2 | e}");
@@ -873,13 +880,13 @@ fn a_rest_left_unnamed_or_a_dotted_string_prefix_says_how_to_write_it() {
     assert!(text.contains("help: `| base` updates a record"), "{text}");
 
     for ok in [
-        "$ @mod M\n$ y = is r | { .a = 1, .._ } => 1 | _ => 2",
-        "$ @mod M\n$ y = is r | { .a = 1, ..rest } => 1 | _ => 2",
-        "$ @mod M\n$ y = is xs | [x] ++ rest => x | _ => 2",
-        "$ @mod M\n$ y = is s | \"a\" ++ rest => 1 | _ => 2",
-        "$ @mod M\n$ y = is s | rest ++ \"a\" => 1 | _ => 2",
-        "$ @mod M\n$ y = is s | \"a\" ++ rest ++ \"b\" => 1 | _ => 2",
-        "$ @mod M\n$ y = is xs | [a] ++ m ++ [y, z] => 1 | _ => 2",
+        "$ @mod M\n$ y = r |> \\ | { .a = 1, .._ } => 1 | _ => 2",
+        "$ @mod M\n$ y = r |> \\ | { .a = 1, ..rest } => 1 | _ => 2",
+        "$ @mod M\n$ y = xs |> \\ | [x] ++ rest => x | _ => 2",
+        "$ @mod M\n$ y = s |> \\ | \"a\" ++ rest => 1 | _ => 2",
+        "$ @mod M\n$ y = s |> \\ | rest ++ \"a\" => 1 | _ => 2",
+        "$ @mod M\n$ y = s |> \\ | \"a\" ++ rest ++ \"b\" => 1 | _ => 2",
+        "$ @mod M\n$ y = xs |> \\ | [a] ++ m ++ [y, z] => 1 | _ => 2",
     ] {
         assert!(parse(ok).is_ok(), "{ok}");
     }
@@ -890,7 +897,7 @@ fn ext_is_an_ordinary_name() {
     // #312: `ext` was a keyword no parser rule consumed, so it could not name
     // anything and the error did not say why.
     prog("$ @mod KW\n$ S : @struct = a : @Str, ext : @Str,");
-    prog("$ @mod KW\n$ ext : @Int -> @Int = \\ext = ext");
+    prog("$ @mod KW\n$ ext : @Int -> @Int = \\ext => ext");
 }
 
 #[test]
@@ -909,4 +916,22 @@ fn every_keyword_is_consumed_by_the_parser() {
             "keyword `{lexeme}` lexes as {needle}, which the parser never consumes"
         );
     }
+}
+
+#[test]
+fn a_multi_arm_lambda_is_a_lambda_over_a_match() {
+    for src in ["$ @mod M\n$ f = \\ | 0 => 1 | n if n > 0 => n | _ => 0", "$ @mod M\n$ f = \\| 0 => 1 | n if n > 0 => n | _ => 0"] {
+        let p = prog(src);
+        let Expr::Lambda { params, body } = p.ast.expr(only_def_body(&p)) else {
+            panic!("expected a lambda")
+        };
+        let params = p.ast.slice(*params);
+        assert_eq!(params.len(), 1);
+        let Pattern::Var(x) = p.ast.pat(params[0].pat) else { panic!("expected a variable parameter") };
+        let Expr::Match { scrut, arms } = p.ast.expr(*body) else { panic!("expected a match body") };
+        assert!(matches!(p.ast.expr(*scrut), Expr::Var { module: None, name } if name == x));
+        assert_eq!(p.ast.slice(*arms).len(), 3);
+    }
+    // A handler's operation clause still ends the arms of a multi-arm lambda.
+    prog("$ @mod M\n$ E : @effect = op: @Int -> @Int\n$ f = \\u => do u {} ctl k | op x => \\ | 0 => 1 | _ => 2 | v => v");
 }

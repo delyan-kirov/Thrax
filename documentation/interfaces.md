@@ -1,7 +1,8 @@
-# Interfaces and the `@ctx` context parameter
+# Interfaces and `@use` parameters
 
-Status: **implemented** (issue #213). This replaces both the old by-name `@ctx`
-design and function overloading, which is gone.
+Status: **implemented** (issue #213; `@use` replaced the earlier `@ctx` form in
+#410). This replaces both the old by-name `@ctx` design and function overloading,
+which is gone.
 
 Thrax has two polymorphism mechanisms: generics, and interfaces resolved by type.
 There used to be a third, function overloading, and it made a name's type
@@ -12,79 +13,90 @@ one type.
 ## The whole mechanism
 
 An interface is an ordinary `@struct` whose fields are its operations. Implementing
-it is defining a value of that type. A function that needs one declares it as a
-`@ctx` FIRST parameter: ordinary in every respect (it has a type, the body binds
-it, `:type` prints it), except that call sites do not write it.
+it is defining a value of that type. A function that needs one declares a `@use`
+parameter: a record of named fields, each an instance the function needs. The
+fields are in scope by name in the body, and call sites do not write them.
 
 ```
-$ Ito_string : @struct t = show: t -> @Str,
+$ IToString : @struct t = show: t -> @Str,
 
-$ to_string : @ctx Ito_string t -> t -> @Str = \d x = d.show x
+$ to_string : @use {d: IToString t} -> t -> @Str = \x => d.show x
 
-$ impl_IToString_for_int : Ito_string @Int = .{ .show = int_to_str }
+$ impl_IToString_for_int : IToString @Int = .{ .show = int_to_str }
 
-$ a : @Str = to_string 1                 # the context is found by type
-$ b : @Str = to_string (@ctx show_hex) 255   # or written by hand
+$ a : @Str = to_string 1                         # the field is found by type
+$ b : @Str = to_string @use {.d = show_hex} 255  # or written by hand
 ```
 
-`:type to_string` prints `@ctx Ito_string a -> a -> @Str`. The caller-visible type
-is the arrow with that parameter stripped, so `to_string 1` is a complete call.
+`:type to_string` prints `@use {d: IToString a} -> a -> @Str`. The caller-visible
+type is the arrow without the `@use` parameter, so `to_string 1` is a complete call.
 
 Rules, all of them:
 
-1. **One context parameter, and it is first.** More than one, or one that is not
-   first, is a declaration error. Several requirements travel as one tuple:
-   `@ctx {IOrd t, ISub t, IZero t} -> t -> t`, and the call site BUILDS the tuple,
-   so no global of the bundled type has to exist.
-2. **The head must be nominal.** `@ctx t`, `@ctx @Int` and
-   `@ctx (a -> a -> Ordering)` are declaration errors: once grounded, `@ctx t`
-   means "any value of this type in scope", which is a search over every value.
-   Wrapping costs one line and moves the error to the declaration.
+1. **Any number of `@use` parameters, anywhere on the signature's arrows**, each
+   with one or more named fields: `@use {o: IOrd t, s: ISub t, z: IZero t} -> t -> t`
+   or `t -> @use {d: IEq t} -> t -> @Bool`. Field names are unique across the
+   signature, and `@use {}` is an error. Internally every field travels in ONE
+   leading bundle (the field itself, or a tuple of them) that the call site BUILDS,
+   so no global of the bundled type has to exist. `@use` stands only on a global
+   definition's own signature, not inside a parameter's type, an annotation or a
+   field type (no higher-rank instance parameters), and not yet on a local `let`.
+2. **A field's type must be nominal.** `@use {d: t}`, `@use {d: @Int}` and
+   `@use {d: a -> a -> Ordering}` are declaration errors: once grounded, a bare
+   type means "any value of this type in scope", which is a search over every
+   value. Wrapping costs one line and moves the error to the declaration.
 3. **Resolution happens at the enclosing definition's boundary**, after numeric
    defaulting, so `1 + 2` has `t` pinned to `@Int` before any search runs.
 4. **Search order**: the innermost matching local binder first (this includes the
-   enclosing definition's own `@ctx` parameter, which is what makes generic code
-   chain), then the instances in scope. Exactly one must match: zero and two are
-   both errors, because global scope is flat.
-5. **Recursive resolution.** A matching instance may itself carry a context
-   (`$ impl_IEq_for_vec : @ctx IEq t -> IEq (@Vec t)`), so resolution recurses
-   into its requirement, bounded at 32 steps.
+   enclosing definition's own `@use` fields, which is what makes generic code
+   chain without writing anything), then the instances in scope. Exactly one must
+   match: zero and two are both errors, because global scope is flat.
+5. **Recursive resolution.** A matching instance may itself take `@use` fields
+   (`$ impl_IEq_for_vec : @use {d: IEq t} -> IEq (@Vec t)`), so resolution recurses
+   into them, bounded at 32 steps.
 6. **No overlapping instances.** A ground instance and a generic one that both
    match is an ambiguity error, not most-specific-wins.
 7. **Partial grounding is allowed.** The search unifies, so a unique match may pin
    the requirement's remaining variables. This is how `[lo ... hi]` finds its
    target type. Rule 2 keeps it from degenerating.
-8. **Explicit form**: `f (@ctx e) x`, in argument position, first argument. The
-   `@ctx` keyword is required there because the parameter is otherwise not
-   addressable.
+8. **Explicit form**: `f @use {.d = e} x`. It names the fields it supplies, by
+   name; omitted fields are still searched (an exception to the struct-literal
+   "every field" rule). It goes where its parameter stands in the signature,
+   before the explicit argument that follows it, and a field it does not know is
+   an error with a did-you-mean.
+9. **`@ctx` is reserved** for dependent types (#406), where it becomes the binder
+   of parameters solved by unification. Writing it today is an error.
 
 Four diagnostics, each with its own escape:
 
 - *not determined here*: the requirement is still open at the boundary
-  (`$ g : a -> a = \x = foo x`). Annotate the call, or declare the same `@ctx`
-  parameter on `g` so chaining applies. The constraint is never inferred and added
+  (`$ g : a -> a = \x => foo x`). Annotate the call, or declare a `@use` field
+  of that type on `g` so chaining applies. The constraint is never inferred and added
   to `g`'s type silently; that would reintroduce the dishonesty.
 - *no value of type `I T` is in scope*: define an instance.
 - *ambiguous*: two instances of one grounded type. Annotation cannot help, so the
-  note offers the explicit `(@ctx e)` form, or removing one.
+  note offers the explicit `f @use {.d = e}` form, or removing one.
 - *non-nominal head*: rule 2, at the declaration.
 
 ## Elaboration
 
-`Desugarer::def` leaves the body alone (the author wrote the parameter), and every
-use site injects the resolved value as a leading argument (`apply_ctx`). A resolved
+The parser gathers a signature's `@use` fields into one leading parameter and
+binds them by name ahead of the body's own parameters (`\x y => e` becomes
+`\d x y => e`, or `\{o, s, z} x => e` for several fields). `Desugarer::def`
+then treats it as an ordinary first parameter, and every use site injects the
+resolved value as a leading argument (`apply_ctx`). A resolved
 context is a `CtxVal`: a bare local name, a qualified global, an instance applied to
 the context resolved for it, a tuple built here, a projection out of a bundle
 already in scope, or an explicit expression. The backends need no support at all.
 
 The middle end then removes the dispatch wherever the instance is known
-statically (`passes/specialize.rs`, issue #383). A call that passes a `@ctx`
+statically (`passes/specialize.rs`, issue #383). A call that passes a `@use`
 function a global instance, a bundle of them, or an instance function applied to
 one, calls a clone of the function with that instance substituted, memoized per
 (function, instance). Inside the clone, `d.method` reads the known literal: a
 lambda method is lifted to a global (`impl_IEq_for_Pt#f_eq`) and called directly,
 and `eta_fold` turns a primitive one (`impl_IAdd_for_int#f_add`) into the
-intrinsic. A generic function's calls to other `@ctx` functions with the same
+intrinsic. A generic function's calls to other `@use` functions with the same
 instance chain into their clones, and a recursive call reaches the clone itself.
 Only a clone whose body is a value is made (it becomes a global, evaluated once),
 and the instance nesting depth and the number of clones are capped.
@@ -101,7 +113,7 @@ Comparison is `IEq` and `IOrd`. There is no structural fallback for `==`: a type
 needs an `IEq` instance, by hand or from `DERIVE.derive_eq` / `derive_ord`. CORE has
 instances for the base types, tuples, `@Vec`, `@Array` and `Cpx`.
 
-The rest: `Ito_string` / `Ifrom_string` (which `"?(e)"` interpolation uses), `ICat`
+The rest: `IToString` / `IFromString` (which `"?(e)"` interpolation uses), `ICat`
 (`++`), `ICons` (`::`), `IFor` / `IFormap` (`for` / `formap`, whose effect row is an
 ordinary interface parameter: `$ IFor : @struct s a e = ...`), and `DERIVE`'s
 three-way `ICmp`.
@@ -119,7 +131,7 @@ the compiler needs the type name and never the method name.
 ```
 $ @IRange : @struct b t = range: b -> b -> t,          # in CORE
 
-$ range_span : @IRange @Int Span = .{ .range = \lo hi = Span.{ lo, hi } }
+$ range_span : @IRange @Int Span = .{ .range = \lo hi => Span.{ lo, hi } }
 ```
 
 The set and what reaches it:

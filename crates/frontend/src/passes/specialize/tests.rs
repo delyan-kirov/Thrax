@@ -17,7 +17,7 @@ fn lams(t: &mut Terms, params: &[&str], body: Aol<Term>) -> Aol<Term> {
     params.iter().rev().fold(body, |b, p| t.lam(id(p), b))
 }
 
-/// `IEq.{ .eq = \a b = @ieq a b }`.
+/// `IEq.{ .eq = \a b => @ieq a b }`.
 fn int_eq(t: &mut Terms) -> Aol<Term> {
     let (ieq, a, b) = (t.var("@ieq"), t.var("a"), t.var("b"));
     let call = apps(t, ieq, &[a, b]);
@@ -25,7 +25,7 @@ fn int_eq(t: &mut Terms) -> Aol<Term> {
     t.add(Term::Struct { name: id("IEq"), base: None, fields: vec![(id("eq"), method)] })
 }
 
-/// `\d x = d.eq x x`.
+/// `\d x => d.eq x x`.
 fn same(t: &mut Terms) -> Aol<Term> {
     let d = t.var("d");
     let eq = t.field(d, "eq");
@@ -34,7 +34,7 @@ fn same(t: &mut Terms) -> Aol<Term> {
     lams(t, &["d", "x"], call)
 }
 
-/// A program of `globals`; `ctx` names the `@ctx` ones.
+/// A program of `globals`; `ctx` names the `@use` ones.
 fn prog(globals: Vec<(&str, fn(&mut Terms) -> Aol<Term>)>, ctx: &[&str]) -> CoreProgram {
     let mut p = CoreProgram::new(id("M"));
     for (name, build) in globals {
@@ -136,7 +136,7 @@ fn an_instance_function_applied_to_a_known_instance_is_known() {
     assert_eq!(body(&p, "M.same#s1"), "(Lam x (App (App (Var M.boxed#s0#f_eq) (Var x)) (Var x)))");
 }
 
-/// `\ds x = ds.1.eq x x` over a bundle built at the call site.
+/// `\ds x => ds.1.eq x x` over a bundle built at the call site.
 #[test]
 fn a_bundle_of_known_instances_projects_its_components() {
     let mut p = prog(

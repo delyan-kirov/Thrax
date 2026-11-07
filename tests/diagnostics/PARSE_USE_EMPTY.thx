@@ -1,0 +1,4 @@
+$ @mod PARSE_USE_EMPTY
+
+# A `@use` parameter names at least one field.
+$ f : @use {} -> @Int = 1  #~ error[UNEXPECTED_TOKEN]: a `@use` parameter names at least one

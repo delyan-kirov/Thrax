@@ -3,9 +3,9 @@ $ @mod POWER
 # \file power.thx
 # \info Exponentiation by recursion: powers of two, and a general base^exp.
 
-$ pow2 : @Int -> @Int = \n = if n == 0 => 1 else 2 * (pow2 (n - 1))
+$ pow2 : @Int -> @Int = \n => if n == 0 => 1 else 2 * (pow2 (n - 1))
 
-$ pow : @Int -> @Int -> @Int = \base exp = if exp == 0 => 1 else base * (pow base (exp - 1))
+$ pow : @Int -> @Int -> @Int = \base exp => if exp == 0 => 1 else base * (pow base (exp - 1))
 
 $ pow2_8 : @Int = pow2 8
 $ pow2_10 : @Int = pow2 10

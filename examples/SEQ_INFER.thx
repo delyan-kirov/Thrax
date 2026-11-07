@@ -10,7 +10,7 @@ $ ck_a1 : @Int = if (@array_get bytes 1) == 20 => 0 else 1
 
 # @Vec context -> the blessed @Vec.
 $ nums : @Vec @Int = [1, 2, 3, 4]
-$ sum : @Vec @Int -> @Int = \xs = is xs | [] => 0 | h :: t => h + sum t
+$ sum : @Vec @Int -> @Int = \xs => xs |> \ | [] => 0 | h :: t => h + sum t
 $ ck_sum : @Int = if (sum nums) == 10 => 0 else 1
 
 # Empty literal in each context.

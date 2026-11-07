@@ -145,7 +145,7 @@ impl<'a> Checker<'a> {
         }
         // The body's leading lambdas bind the last k of the m signature parameters,
         // so the record-parameter sugar only applies when the lambdas do not reach
-        // this one (`k < m`). `\p = p.x` then names a record parameter itself.
+        // this one (`k < m`). `\p => p.x` then names a record parameter itself.
         if self.leading_lam_params(body) >= self.arrow_arity_ty(sig) {
             return self.check(body, sig_ty);
         }
@@ -155,7 +155,7 @@ impl<'a> Checker<'a> {
                 // `{ x | r }` is a real row-polymorphic record value, bound as-is.
                 Ty::Record { fields, tail: None } => self.ast.slice(*fields),
                 // A unit parameter takes no fields: the sugar just introduces the
-                // (unused) thunk parameter, so `f : {} -> T = <body>` needs no `\u =`.
+                // (unused) thunk parameter, so `f : {} -> T = <body>` needs no `\u =>`.
                 Ty::Unit => &[],
                 _ => return self.check(body, sig_ty),
             },
@@ -232,7 +232,7 @@ impl<'a> Checker<'a> {
         }
         // A variable an unresolved context still mentions must stay monomorphic:
         // generalizing it would quantify the very type the search is waiting for,
-        // and a `let square = \x = x * x` would then resolve `IArith` against a
+        // and a `let square = \x => x * x` would then resolve `IArith` against a
         // quantified variable instead of the `@Int` its use site supplies.
         for p in &self.ctx_pending {
             self.unifier.collect_vars(p.req, &mut out);
@@ -389,7 +389,7 @@ impl<'a> Checker<'a> {
             // A branch does not produce a value of its own, so the expectation
             // passes THROUGH it to each result. Without this, an arm body is only
             // ever inferred, which is why a construction that needs its type from
-            // context had to be written `(e : T)` inside `is` or `if`.
+            // context had to be written `(e : T)` inside a match or `if`.
             Expr::If { cond, then, alt } => {
                 let (cond, then, alt) = (*cond, *then, *alt);
                 let tc = self.infer(cond)?;
@@ -676,6 +676,8 @@ impl<'a> Checker<'a> {
                 match op.as_str() {
                     "<|" if self.is_meta_e(lhs) => return self.infer_meta_e(rhs),
                     "|>" if self.is_meta_e(rhs) => return self.infer_meta_e(lhs),
+                    "|>" if self.is_lambda(rhs) => return self.infer_applied_lambda(rhs, lhs),
+                    "<|" if self.is_lambda(lhs) => return self.infer_applied_lambda(lhs, rhs),
                     _ => {}
                 }
                 // An operator that takes a context (`(+)` over `IArith t`) plans it
@@ -687,7 +689,7 @@ impl<'a> Checker<'a> {
                 let ctx_sig = self.global_ctx.get(&op).copied();
                 if let Some(sig) = ctx_sig {
                     let (req, exposed) = self.ctx_use_type(sig);
-                    self.plan_ctx(e, op, req)?;
+                    self.plan_ctx(e, op, req, Some(sig))?;
                     let owner = self.owner_of(op);
                     self.record_call(Some(e), owner);
                     // Take the operand types from the OPERATOR's signature rather
@@ -758,7 +760,7 @@ impl<'a> Checker<'a> {
                 let op_ty = match self.global_ctx.get(&op).copied() {
                     Some(sig) => {
                         let (req, exposed) = self.ctx_use_type(sig);
-                        self.plan_ctx(e, op, req)?;
+                        self.plan_ctx(e, op, req, Some(sig))?;
                         let owner = self.owner_of(op);
                         self.record_call(Some(e), owner);
                         exposed
@@ -983,13 +985,12 @@ impl<'a> Checker<'a> {
                 Ok(t)
             }
 
-            // A `(@ctx e)` reaching inference on its own is misplaced: it is only
-            // meaningful as the first argument of an application, which `infer_app`
-            // peels off before the head is inferred.
-            Expr::CtxArg(_) => Err(diag!(
-                Code::TypeMismatch, Span::at(0), 0,
-                "`(@ctx ...)` must be the FIRST argument of a call to a function that \
-                 declares a `@ctx` parameter"
+            // A `@use {...}` reaching inference on its own is misplaced: it is only
+            // meaningful as an argument of a call, which `infer_app` takes off the
+            // spine before the head is inferred.
+            Expr::UseArg(_) => Err(diag!(
+                Code::TypeMismatch, self.ast.expr_span(e).unwrap_or(Span::at(0)), 0,
+                "a `@use {{...}}` argument stands only among a call's arguments"
             )),
         }
     }
@@ -1201,6 +1202,25 @@ impl<'a> Checker<'a> {
         d
     }
 
+    fn is_lambda(&self, e: Aol<Expr>) -> bool {
+        matches!(self.node(e), Expr::Lambda { .. })
+    }
+
+    /// A lambda applied where it is written, `x |> \ | p => a ...`: the
+    /// argument is inferred first and the lambda CHECKED against its type, so a
+    /// multi-arm lambda's match (and an `@absurd`) sees the scrutinee's type
+    /// while its arms are typed and its coverage is decided.
+    fn infer_applied_lambda(&mut self, f: Aol<Expr>, x: Aol<Expr>) -> Result<Type> {
+        let tx = self.infer(x)?;
+        let result = self.unifier.fresh();
+        let eff = self.unifier.fresh();
+        let want = self.unifier.types.arrow_eff(tx, result, eff);
+        self.check(f, want)?;
+        let amb = self.ambient;
+        self.unifier.subrow(eff, amb, "in an application")?;
+        Ok(result)
+    }
+
     pub(super) fn infer_app(&mut self, e: Aol<Expr>) -> Result<Type> {
         let mut args_rev = Vec::new();
         let mut head = e;
@@ -1209,24 +1229,23 @@ impl<'a> Checker<'a> {
             head = *f;
         }
         args_rev.reverse();
-        let mut args = args_rev;
+        let args = args_rev;
 
-        // An explicit `(@ctx e)` is the first argument. Peel it off and register it
-        // against the head's reference site, which is where the context is planned,
-        // then let the rest of the call proceed as an ordinary application.
-        if let Some(first) = args.first().copied() {
-            if let Expr::CtxArg(value) = self.node(first) {
-                let value = *value;
-                args.remove(0);
-                self.ctx_override.insert(head, value);
+        // Explicit `@use {.f = e}` arguments come off the spine and are registered
+        // against the head's reference site, which is where the context is planned.
+        // Each remembers how many explicit arguments precede it, which must be
+        // where its fields' parameters stand.
+        let mut uses = Vec::new();
+        let mut explicit = Vec::with_capacity(args.len());
+        for a in args {
+            match self.node(a) {
+                Expr::UseArg(inits) => uses.push(UseOverride { at: explicit.len() as u32, inits: *inits, site: a }),
+                _ => explicit.push(a),
             }
         }
-        if let Some(stray) = args.iter().find(|a| matches!(self.node(**a), Expr::CtxArg(_))) {
-            let span = self.ast.expr_span(*stray).unwrap_or_else(|| Span::at(0));
-            return Err(diag!(
-                Code::TypeMismatch, span, 0,
-                "`(@ctx ...)` must be the FIRST argument of the call"
-            ));
+        let args = explicit;
+        if !uses.is_empty() {
+            self.ctx_override.insert(head, uses);
         }
         let args = args;
 
@@ -1281,6 +1300,9 @@ impl<'a> Checker<'a> {
         }
 
         let mut tf = self.infer(head)?;
+        if let Some(uses) = self.ctx_override.remove(&head) {
+            return Err(self.use_without_fields(head, &uses));
+        }
         let mut callee = head;
         for a in &args {
             if self.unifier.resolve(tf) == self.unifier.types.error() {
@@ -1429,7 +1451,7 @@ impl<'a> Checker<'a> {
                            CORE declares it as a one-field `@struct`"
                 ));
             };
-            self.plan_ctx(site, name, req)?;
+            self.plan_ctx(site, name, req, None)?;
             self.blessed_sites.insert(site, field);
             return Ok(field_ty);
         }
@@ -1441,12 +1463,12 @@ impl<'a> Checker<'a> {
                     "`{m}.{name}` is private to module `{m}` and cannot be used from another module"
                 ));
             }
-            // A qualified reference to a `@ctx`-bearing function plans its context
+            // A qualified reference to a `@use`-bearing function plans its context
             // just like a bare one, so `LA.dot u v` injects its dictionary rather
             // than staying an under-applied function.
             if let Some(sig) = self.qualified_ctx.get(&(m, name)).copied() {
                 let (req, exposed) = self.ctx_use_type(sig);
-                self.plan_ctx(site, name, req)?;
+                self.plan_ctx(site, name, req, Some(sig))?;
                 return Ok(exposed);
             }
             return match self.qualified_candidates(m, name) {
@@ -1475,14 +1497,14 @@ impl<'a> Checker<'a> {
                 self.resolved_calls.insert(site, m);
             }
         }
-        // A reference to a `@ctx`-bearing global (not shadowed by a local of the
+        // A reference to a `@use`-bearing global (not shadowed by a local of the
         // same name): instantiate its signature and requirement type with one shared
         // variable map and plan the context. The returned type is the plain arrow, so
         // callers apply only the explicit parameters.
         if !self.shadowed_locally(name) {
             if let Some(sig) = self.global_ctx.get(&name).copied() {
                 let (req, exposed) = self.ctx_use_type(sig);
-                self.plan_ctx(site, name, req)?;
+                self.plan_ctx(site, name, req, Some(sig))?;
                 return Ok(exposed);
             }
         }
@@ -1698,7 +1720,7 @@ impl<'a> Checker<'a> {
 
         // Pin the instantiated parameters to the expected type BEFORE checking the
         // fields, so a field's declared type (e.g. `a`) is the actual parameter
-        // variable rather than a fresh placeholder. This lets a value-position `@ctx`
+        // variable rather than a fresh placeholder. This lets a value-position `@use`
         // dictionary in a field resolve by type (`.fst = blank` picks `blank : a`).
         if let Some(exp) = expected {
             self.unifier.unify_expected(result, exp, "against the expected type")?;

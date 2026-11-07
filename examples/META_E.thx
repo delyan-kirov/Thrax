@@ -13,33 +13,33 @@ $ @mod META_E
 #       link directive) returns `@parse_items ""`.
 
 # Ordinary functions, run here at compile time by the generators below.
-$ fib : @Int -> @Int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
-$ dbl : @Int -> @Int = \x = x * 2
-$ inc : @Int -> @Int = \x = x + 1
+$ fib : @Int -> @Int = \n => if n < 2 => n else fib (n - 1) + fib (n - 2)
+$ dbl : @Int -> @Int = \x => x * 2
+$ inc : @Int -> @Int = \x => x + 1
 
 # A generator that computes at build time and inserts the result as a literal.
-$ lit : @Int -> @Code = \n = @parse_str <| to_string n
+$ lit : @Int -> @Code = \n => @parse_str <| to_string n
 
 # --- expression position ---------------------------------------------------
 $ ten : @Int = 10
-$ fib10 : @Int = @e <| lit <| fib ten # inserts `55`
-$ via_pipe : @Int = fib ten |> lit |> @e # the same, left to right
+$ fib10 : @Int = @e <| lit <| fib ten               # inserts `55`
+$ via_pipe : @Int = fib ten |> lit |> @e            # the same, left to right
 $ chained : @Int = @e <| lit <| (compose inc dbl) 5 # inc (dbl 5): inserts `11`
 
 # The code is source, not a value: this inserts `1 + 2 * 3`, which yields 7.
 $ spliced : @Int = @e <| @parse_str "1 + 2 * 3"
 
 # --- type position: `@e` computes the annotation ---------------------------
-$ pick_ty : {} -> @Code = \_ = @parse_str "@Int"
+$ pick_ty : {} -> @Code = \_ => @parse_str "@Int"
 $ typed : @e <| pick_ty {} = 42
 
 # --- item position: `$ @e X` inserts top-level definitions -----------------
-$ gen_def : {} -> @Code = \_ = @parse_items "$ injected : @Int = 99"
+$ gen_def : {} -> @Code = \_ => @parse_items "$ injected : @Int = 99"
 $ @e <| gen_def {}
 
 # --- compile-time operations -------------------------------------------------
 # `gen_meta` performs `@emit`, a `<@Meta>` op, so it declares `<@Meta>`.
-$ gen_meta : @Int -> <@Meta> @Code = \n = @emit "computing at build time"; lit (n * 2)
+$ gen_meta : @Int -> <@Meta> @Code = \n => @emit "computing at build time"; lit (n * 2)
 $ from_meta : @Int = @e <| gen_meta 21 # inserts `42`
 
 # --- checks ----------------------------------------------------------------

@@ -576,6 +576,7 @@ impl<'a> Parser<'a> {
                 let (sig, ctx) = self.parse_signature()?;
                 expect!(self, Kind::Eq, "expected '=' after the type signature");
                 let body = self.parse_expr(0)?;
+                let body = self.bind_uses(sig, body);
                 Ok(Item::Def {
                     name,
                     sig: Some(sig),
@@ -662,6 +663,7 @@ impl<'a> Parser<'a> {
         let (sig, ctx) = self.parse_signature()?;
         expect!(self, Kind::Eq, "expected '=' after the type signature");
         let body = self.parse_expr(0)?;
+        let body = self.bind_uses(sig, body);
         Ok(Item::Def {
             name: op,
             sig: Some(sig),
@@ -825,6 +827,7 @@ impl<'a> Parser<'a> {
         let (sig, ctx) = self.parse_signature()?;
         expect!(self, Kind::Eq, "expected '=' after the type signature");
         let body = self.parse_expr(0)?;
+        let body = self.bind_uses(sig, body);
         Ok(Item::Def {
             name,
             sig: Some(sig),
@@ -833,28 +836,153 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse a definition's type signature, which may open with a context
-    /// parameter: `@ctx C -> rest`. A context parameter is an ordinary first
-    /// parameter that call sites do not write; it is returned alongside the full
-    /// signature (of which it is the first `from`), so the signature stays exactly
-    /// what the user wrote.
+    /// Parse a definition's type signature. `@use {f: T, ...} ->` parameters may
+    /// stand anywhere on its arrow spine. They are gathered into ONE leading
+    /// context parameter (the field's type alone, or the tuple of several), which
+    /// is how the checker and both backends pass instances; the fields, with the
+    /// place each was written, go in [`Ast::use_params`] under the returned
+    /// signature, whose first `from` is that context parameter.
     fn parse_signature(&mut self) -> Result<(Aol<Ty>, Option<Aol<Ty>>)> {
-        if !self.at_ctx()? {
-            return Ok((self.parse_type()?, None));
+        let start = self.here()?;
+        let mut fields: Vec<UseField> = Vec::new();
+        let mut params: Vec<(usize, Aol<Ty>, Option<EffectRow>)> = Vec::new();
+        let result = loop {
+            if self.at_ctx()? {
+                return Err(self.ctx_reserved()?);
+            }
+            if self.at_intrinsic("use")? {
+                self.bump()?; // '@use'
+                self.parse_use_fields(params.len() as u32, &mut fields)?;
+                let t = self.peek()?;
+                if !matches!(t.kind, Kind::Arrow) {
+                    return Err(self.unexpected(&t, "expected '->' after the `@use` parameter"));
+                }
+                self.bump()?; // '->'
+                if self.parse_effect_row_opt()?.is_some() {
+                    return Err(Diagnostic::error(
+                        Code::UnexpectedToken,
+                        Span::new(t.span.start, self.last_end),
+                        t.line,
+                        "a `@use` parameter's arrow cannot carry an effect row",
+                    )
+                    .with_note("call sites never apply a `@use` parameter, so nothing can perform it"));
+                }
+                continue;
+            }
+            let at = self.here()?;
+            let from = self.parse_type_app()?;
+            if !matches!(self.peek_kind()?, Kind::Arrow) {
+                break from;
+            }
+            self.bump()?; // '->'
+            let effect = self.parse_effect_row_opt()?;
+            params.push((at, from, effect));
+        };
+        let mut to = result;
+        for (at, from, effect) in params.into_iter().rev() {
+            let node = self.ty(Ty::Arrow { from, effect, to });
+            to = self.stamp_ty(at, node);
         }
-        let at = self.bump()?; // '@ctx'
-        let ctx = self.parse_type_app()?;
-        if !matches!(self.peek_kind()?, Kind::Arrow) {
-            return Err(self.unexpected(
-                &at,
-                "expected '->' after the '@ctx' parameter type: a context parameter is the \
-                 function's first parameter, as in `@ctx Ito_string t -> t -> @Str`",
-            ));
+        let (Some(first), Some(last)) = (fields.first().copied(), fields.last().copied()) else {
+            return Ok((to, None));
+        };
+        let ctx = match fields.as_slice() {
+            [one] => one.ty,
+            many => {
+                let tys: Vec<Aol<Ty>> = many.iter().map(|f| f.ty).collect();
+                let tys = self.ast.make_slice(tys);
+                let node = self.ty(Ty::Tuple(tys));
+                self.ast.ty_spans.insert(node, Span::new(first.span.start, last.span.end));
+                node
+            }
+        };
+        let node = self.ty(Ty::Arrow { from: ctx, effect: None, to });
+        let sig = self.stamp_ty(start, node);
+        let fields = self.ast.make_slice(fields);
+        self.ast.use_params.insert(sig, fields);
+        Ok((sig, Some(ctx)))
+    }
+
+    /// The `{name: Type, ...}` of a `@use` parameter, after the keyword. A field
+    /// name is unique across the whole signature, and there is at least one.
+    fn parse_use_fields(&mut self, before: u32, fields: &mut Vec<UseField>) -> Result<()> {
+        expect!(self, Kind::LBrace, "expected `{` after `@use`: its fields are named, as in `@use {d: IOrd t}`");
+        if matches!(self.peek_kind()?, Kind::RBrace) {
+            let t = self.peek()?;
+            return Err(self.unexpected(&t, "expected a `name: Type` field: a `@use` parameter names at least one"));
         }
-        self.bump()?; // '->'
-        let effect = self.parse_effect_row_opt()?;
-        let to = self.parse_type()?;
-        Ok((self.ty(Ty::Arrow { from: ctx, effect, to }), Some(ctx)))
+        loop {
+            let t = self.peek()?;
+            let name = self.expect_word("expected a `name: Type` field in the `@use` parameter")?;
+            if !matches!(self.peek_kind()?, Kind::Colon) {
+                let at = self.peek()?;
+                return Err(self
+                    .unexpected(&at, "expected ':' after the `@use` field name")
+                    .with_help("a `@use` field is named, as in `@use {d: IOrd t}`"));
+            }
+            self.bump()?; // ':'
+            let ty = self.parse_type()?;
+            if fields.iter().any(|f| f.name == name) {
+                return Err(Diagnostic::error(
+                    Code::DuplicateSymbol,
+                    t.span,
+                    t.line,
+                    format!("`@use` field `{name}` is declared twice in this signature"),
+                ));
+            }
+            fields.push(UseField { name, ty, before, span: Span::new(t.span.start, self.last_end) });
+            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::RBrace) {
+                break;
+            }
+        }
+        expect!(self, Kind::RBrace, "expected '}' to close the `@use` parameter");
+        Ok(())
+    }
+
+    /// The error for `@ctx`, which dependent types (#406) will give its own meaning.
+    fn ctx_reserved(&mut self) -> Result<Diagnostic> {
+        let t = self.peek()?;
+        Ok(Diagnostic::error(Code::UnexpectedToken, t.span, t.line, "`@ctx` is reserved")
+            .with_note("it becomes the binder of parameters solved by unification (#406)")
+            .with_help("an instance parameter is a named `@use` field: `@use {d: IOrd t} -> ...`, with `d` in scope in the body"))
+    }
+
+    /// The body of a definition whose signature declares `@use` fields: the
+    /// fields are bound by name, as the context parameter's pattern, ahead of the
+    /// parameters the body's lambda declares (`\x y => e` becomes
+    /// `\d x y => e`, and with several fields `\{a, b} x y => e`).
+    fn bind_uses(&mut self, sig: Aol<Ty>, body: Aol<Expr>) -> Aol<Expr> {
+        let Some(fields) = self.ast.use_params.get(sig).copied() else {
+            return body;
+        };
+        let fields = self.ast.slice(fields).to_vec();
+        let pat = match fields.as_slice() {
+            [one] => self.pat(Pattern::Var(one.name)),
+            many => {
+                let parts: Vec<Aol<Pattern>> = many.iter().map(|f| self.pat(Pattern::Var(f.name))).collect();
+                let parts = self.ast.make_slice(parts);
+                self.pat(Pattern::Tuple(parts))
+            }
+        };
+        let param = LamParam { pat, sig: None };
+        let span = self.ast.expr_span(body);
+        let node = match self.ast.expr(body) {
+            Expr::Lambda { params, body: inner } => {
+                let (params, inner) = (*params, *inner);
+                let mut all = vec![param];
+                all.extend_from_slice(self.ast.slice(params));
+                let params = self.ast.make_slice(all);
+                self.expr(Expr::Lambda { params, body: inner })
+            }
+            _ => {
+                let params = self.ast.make_slice(vec![param]);
+                self.expr(Expr::Lambda { params, body })
+            }
+        };
+        if let Some(span) = span {
+            self.ast.expr_spans.insert(node, span);
+        }
+        node
     }
 
     /// Is the next token the `@ctx` keyword?
@@ -993,12 +1121,17 @@ impl<'a> Parser<'a> {
 
     fn parse_type(&mut self) -> Result<Aol<Ty>> {
         if self.at_ctx()? {
+            return Err(self.ctx_reserved()?);
+        }
+        if self.at_intrinsic("use")? {
             let at = self.peek()?;
-            return Err(self.unexpected(
-                &at,
-                "a '@ctx' context parameter may only be the FIRST parameter of a definition's \
-                 signature, and there may be only one",
-            ));
+            return Err(Diagnostic::error(
+                Code::UnexpectedToken,
+                at.span,
+                at.line,
+                "a `@use` parameter stands only on the arrows of a definition's signature",
+            )
+            .with_note("not inside a parameter's type, an annotation, or a field type"));
         }
         let start = self.here()?;
         let from = self.parse_type_app()?;
@@ -1027,9 +1160,9 @@ impl<'a> Parser<'a> {
         if self.at_tyvar()? {
             return Ok(true);
         }
-        // `@ctx` opens a definition's context parameter; it is not a type atom, so
+        // `@use` opens a signature's instance parameter; it is not a type atom, so
         // type application must not swallow it.
-        if self.at_ctx()? {
+        if self.at_ctx()? || self.at_intrinsic("use")? {
             return Ok(false);
         }
         Ok(matches!(
@@ -1364,7 +1497,6 @@ impl<'a> Parser<'a> {
                 | Kind::LParen
                 | Kind::Let
                 | Kind::If
-                | Kind::Is
                 | Kind::Lambda
                 | Kind::With
                 | Kind::LBrace
@@ -1386,7 +1518,7 @@ impl<'a> Parser<'a> {
                 let then = self.expr(Expr::Bool(true));
                 self.expr(Expr::If { cond: lhs, then, alt: rhs })
             }
-            // Composition becomes the lambda it means, `\x = f (g x)`, so the
+            // Composition becomes the lambda it means, `\x => f (g x)`, so the
             // composed function's effect row is inferred as the UNION of the two
             // rows (a definition with one signature could only share one row, and a
             // row union is not expressible), and a context-bearing operand
@@ -1756,7 +1888,7 @@ impl<'a> Parser<'a> {
         Ok(self.expr(Expr::Var { module: None, name }))
     }
 
-    /// `\l r = l op r`, the function form of an operator whose infix use is
+    /// `\l r => l op r`, the function form of an operator whose infix use is
     /// desugared rather than lowered to a call. The binder names carry a `#`, a
     /// comment character, so they cannot collide with a source name.
     fn eta_operator(&mut self, lexeme: &str) -> Aol<Expr> {
@@ -1776,16 +1908,11 @@ impl<'a> Parser<'a> {
 
     fn parse_group(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '('
-        // `(@ctx e)`: an explicit value for the callee's context parameter.
+        // `(@ctx e)` was the explicit context; it is `@use {.d = e}` now.
         if self.at_ctx()? {
-            self.bump()?; // '@ctx'
-            let value = self.parse_expr(0)?;
-            expect!(
-                self,
-                Kind::RParen,
-                "expected ')' to close the '@ctx' argument"
-            );
-            return Ok(self.expr(Expr::CtxArg(value)));
+            return Err(self
+                .ctx_reserved()?
+                .with_help("an explicit instance is a `@use` argument naming the field: `f @use {.d = e} x`"));
         }
         let e = self.parse_expr(0)?;
         // A trailing `: T` ascribes the group's type, e.g. `([] : List Int)`. The
@@ -2038,6 +2165,14 @@ impl<'a> Parser<'a> {
                 self.bump()?;
                 Ok(self.expr(Expr::Bool(false)))
             }
+            // `x |> @absurd`, the empty match: a lambda over a match with no arms,
+            // so exhaustiveness accepts it only when `x`'s type is uninhabited.
+            "absurd" => {
+                self.bump()?;
+                let arms = self.ast.make_slice(Vec::new());
+                Ok(self.match_lambda(arms))
+            }
+            "use" => self.parse_use_arg(),
             "Array" => self.parse_array(),
             "extern" => self.parse_extern(),
             // Any other lowercase `@name` is a reference to a compiler intrinsic
@@ -2055,6 +2190,38 @@ impl<'a> Parser<'a> {
                 Err(self.unexpected(&at, &format!("'@{other}' is not valid in an expression")))
             }
         }
+    }
+
+    /// `@use {.f = e, ...}`: explicit values for some of the callee's `@use`
+    /// fields, by name. At least one.
+    fn parse_use_arg(&mut self) -> Result<Aol<Expr>> {
+        let start = self.here()?;
+        self.bump()?; // '@use'
+        expect!(self, Kind::LBrace, "expected `{` after `@use`, as in `f @use {.d = e} x`");
+        let mut inits = Vec::new();
+        loop {
+            let t = self.peek()?;
+            if !matches!(t.kind, Kind::Dot) {
+                let what = if inits.is_empty() {
+                    "expected a `.field = value`: a `@use` argument supplies at least one field"
+                } else {
+                    "expected a `.field = value`"
+                };
+                return Err(self.unexpected(&t, what));
+            }
+            self.bump()?; // '.'
+            let name = self.expect_word("expected a field name after '.'")?;
+            expect!(self, Kind::Eq, "expected '=' after the `@use` field name");
+            let value = self.parse_expr(0)?;
+            inits.push(FieldInit::Named { name, value });
+            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::RBrace) {
+                break;
+            }
+        }
+        expect!(self, Kind::RBrace, "expected '}' to close the `@use` argument");
+        let inits = self.ast.make_slice(inits);
+        let node = self.expr(Expr::UseArg(inits));
+        Ok(self.stamp(start, node))
     }
 
     /// `@Array.{ n }` or `@Array.{ .field = n }`.
@@ -2177,20 +2344,24 @@ impl<'a> Parser<'a> {
         Ok(node)
     }
 
+    /// `is s | ...`, removed: a match is `s |> \ | ...`. Parse the scrutinee so
+    /// the fix-it can move it in front of the arms.
     fn parse_match(&mut self) -> Result<Aol<Expr>> {
-        self.bump()?; // 'is'
-        let scrut = self.parse_expr(0)?;
-        let mut arms = Vec::new();
-        // An `is` nested in a handler clause ends at the next operation clause.
-        while self.at_op("|")? && !self.at_op_clause()? {
-            arms.push(self.parse_arm()?);
-        }
-        let arms = self.ast.make_slice(arms);
-        Ok(self.expr(Expr::Match { scrut, arms }))
+        let is = self.bump()?; // 'is'
+        let start = self.here()?;
+        self.parse_expr(0)?;
+        let end = self.last_end;
+        Err(Diagnostic::error(Code::UnexpectedToken, is.span, is.line, "`is` was removed")
+            .with_note("a match is a multi-arm lambda applied to the scrutinee")
+            .with_fix(
+                "write `s |> \\ | ...`",
+                vec![Edit::new(Span::new(is.span.start, start), ""), Edit::new(Span::at(end), " |> \\")],
+                Applicability::MaybeIncorrect,
+            ))
     }
 
-    /// One `| p1 | p2 if guard => body` arm, shared by `is` and a handler's value
-    /// arms.
+    /// One `| p1 | p2 if guard => body` arm, shared by a multi-arm lambda and a
+    /// handler's value arms.
     fn parse_arm(&mut self) -> Result<Arm> {
         let mut patterns = Vec::new();
         while self.at_op("|")? {
@@ -2205,6 +2376,12 @@ impl<'a> Parser<'a> {
         };
         // No `: T` here, unlike `let` and a lambda parameter: the scrutinee's
         // type already fixes every arm's pattern, so there is nothing to pin.
+        let t = self.peek()?;
+        if matches!(t.kind, Kind::Word) {
+            return Err(self
+                .unexpected(&t, "expected '=>' after the match pattern")
+                .with_help("an arm matches one value; match several as a tuple, `| { a, b } => ...`"));
+        }
         expect!(self, Kind::FatArrow, "expected '=>' after the match pattern");
         let body = self.parse_expr(0)?;
         let patterns = self.ast.make_slice(patterns);
@@ -2234,40 +2411,89 @@ impl<'a> Parser<'a> {
         Ok(!is_upper(self.text(op)))
     }
 
-    /// `\p1 p2 = body`. Parameters are juxtaposed pattern atoms. An annotated
-    /// parameter is parenthesized, `\(i: @Int) (j: @Float32) = ...`, because a
-    /// lowercase name in a type is a type variable and a bare annotation would
-    /// swallow the next parameter as its argument. A lone parameter may drop the
-    /// parens (`\x: @Int = ...`), since `=` ends its type.
+    /// `\p1 p2 => body`. Parameters are juxtaposed pattern atoms. An annotated
+    /// parameter is always parenthesized, `\(i: @Int) (j: @Float32) => ...`,
+    /// even a lone one, so its type ends at `)`: a lowercase name in a type is
+    /// a type variable, and a bare annotation would swallow the next parameter
+    /// as its argument.
     fn parse_lambda(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '\'
-        let mut params = vec![self.parse_lambda_param()?];
-        if params[0].sig.is_none() && self.eat(|k| matches!(k, Kind::Colon))? {
-            params[0].sig = Some(self.parse_type()?);
-        } else {
-            while !matches!(self.peek_kind()?, Kind::Eq) {
-                if matches!(self.peek_kind()?, Kind::Colon) {
+        if self.at_op("|")? {
+            return self.parse_arms_lambda();
+        }
+        let mut params = Vec::new();
+        loop {
+            let start = self.here()?;
+            params.push(self.parse_lambda_param()?);
+            match self.peek_kind()? {
+                Kind::FatArrow => break,
+                Kind::Eq => {
+                    let t = self.peek()?;
+                    return Err(self
+                        .unexpected(&t, "expected '=>' after the lambda parameters")
+                        .with_fix(
+                            "a lambda's body follows `=>`",
+                            vec![Edit::new(t.span, "=>")],
+                            Applicability::MachineApplicable,
+                        ));
+                }
+                Kind::Colon => {
+                    let t = self.peek()?;
+                    self.bump()?;
+                    self.parse_type()?;
+                    let end = self.last_end;
+                    return Err(Diagnostic::error(
+                        Code::UnexpectedToken,
+                        Span::new(start, end),
+                        t.line,
+                        "an annotated lambda parameter must be parenthesized",
+                    )
+                    .with_fix(
+                        "parenthesize it, so the type ends at `)`",
+                        vec![Edit::new(Span::at(start), "("), Edit::new(Span::at(end), ")")],
+                        Applicability::MachineApplicable,
+                    ));
+                }
+                Kind::Comma => {
                     let t = self.peek()?;
                     return Err(self.unexpected(
                         &t,
-                        "only a lone lambda parameter takes a bare `: T`; \
-                         parenthesize each annotated one, as in `\\(a: T) b = ...`",
+                        "lambda parameters are juxtaposed, as in `\\a b => ...`",
                     ));
                 }
-                if matches!(self.peek_kind()?, Kind::Comma) {
-                    let t = self.peek()?;
-                    return Err(self.unexpected(
-                        &t,
-                        "lambda parameters are juxtaposed, as in `\\a b = ...`",
-                    ));
-                }
-                params.push(self.parse_lambda_param()?);
+                _ => {}
             }
         }
-        expect!(self, Kind::Eq, "expected '=' after the lambda parameters");
+        self.bump()?; // '=>'
         let body = self.parse_expr(0)?;
         let params = self.ast.make_slice(params);
         Ok(self.expr(Expr::Lambda { params, body }))
+    }
+
+    /// `\ | p => a | q => b`: a lambda of ONE argument, matched against the arms
+    /// top to bottom. It is the lambda `\#arg => <match #arg with the arms>`, so
+    /// the checker, exhaustiveness and both backends see an ordinary match. The
+    /// arms end at a handler's next operation clause.
+    fn parse_arms_lambda(&mut self) -> Result<Aol<Expr>> {
+        // The first arm is never a handler's operation clause: a lambda needs
+        // an arm, so `\ | a b => e` is a malformed arm, not a clause.
+        let mut arms = vec![self.parse_arm()?];
+        while self.at_op("|")? && !self.at_op_clause()? {
+            arms.push(self.parse_arm()?);
+        }
+        let arms = self.ast.make_slice(arms);
+        Ok(self.match_lambda(arms))
+    }
+
+    /// `\#arg => <match #arg with arms>`, the lambda a multi-arm lambda and
+    /// `@absurd` (no arms) both are.
+    fn match_lambda(&mut self, arms: Slice<Arm>) -> Aol<Expr> {
+        let x = self.intern("#arg");
+        let scrut = self.expr(Expr::Var { module: None, name: x });
+        let body = self.expr(Expr::Match { scrut, arms });
+        let param = self.pat(Pattern::Var(x));
+        let params = self.ast.make_slice(vec![LamParam { pat: param, sig: None }]);
+        self.expr(Expr::Lambda { params, body })
     }
 
     /// One lambda parameter: a pattern atom, or `(pat)` / `(pat: T)`.
@@ -2338,7 +2564,7 @@ impl<'a> Parser<'a> {
 
     /// Fold a handler's value arms into its return clause. A lone unguarded
     /// binder or `_` binds the value directly; anything else matches on a fresh
-    /// binder, exactly as `is` would.
+    /// binder, exactly as a multi-arm lambda would.
     fn value_clause(&mut self, start: usize, arms: Vec<Arm>) -> Option<(StrId, Aol<Expr>)> {
         if let [arm] = arms.as_slice() {
             let pats = self.ast.slice(arm.patterns);
@@ -2737,7 +2963,7 @@ impl<'a> Parser<'a> {
         if let Some(d) = self.stray_annotation(
             "expected '}' to close the tuple pattern",
             "a pattern carries no types, so annotate the binding instead, as in \
-             `let {a, b} : {@Int32, @Int32} = ...` or `\\{a, b}: {@Int32, @Int32} = ...`",
+             `let {a, b} : {@Int32, @Int32} = ...` or `\\({a, b}: {@Int32, @Int32}) => ...`",
         )? {
             return Err(d);
         }

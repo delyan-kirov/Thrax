@@ -54,6 +54,11 @@ pub struct Ast {
     items: Store<Item>,
     item_spans: Store<ItemSpan>,
     slice_slots: Store<SliceSlot>,
+    use_fields: Store<UseField>,
+    /// The `@use` fields of a definition's signature, keyed by the signature (the
+    /// handle `Item::Def::sig` and the checker's context table carry), in the
+    /// order written. Present only when the signature declares `@use`.
+    pub use_params: SecondaryMap<Ty, Slice<UseField>>,
     /// Source span of each `Expr` node, for diagnostics. Populated by the parser;
     /// a node absent here (e.g. one synthesized by a later pass) has no span.
     pub expr_spans: SecondaryMap<Expr, Span>,
@@ -99,6 +104,7 @@ sliced! {
     Item => items,
     ItemSpan => item_spans,
     SliceSlot => slice_slots,
+    UseField => use_fields,
 }
 
 impl Ast {
@@ -174,7 +180,7 @@ pub struct ItemSpan {
 /// A top-level `$ ...` declaration.
 #[derive(Clone, Debug)]
 pub enum Item {
-    /// `$ name [: [@ctx C ->] ty] = body`. `ctx` is the context parameter's type
+    /// `$ name [: ty] = body`. `ctx` is the context parameter's type
     /// when the signature declares one: an ordinary first parameter that call
     /// sites do not write, resolved by type and passed as a leading argument. It
     /// is the same handle as the signature arrow's first `from`, so `sig` stays
@@ -547,13 +553,14 @@ pub enum Expr {
         then: Aol<Expr>,
         alt: Aol<Expr>,
     },
-    /// `is scrut | p => e ...`. There is no default arm; a catch-all is written
-    /// as an ordinary `| _ => d` or `| x => d` arm.
+    /// A match on `scrut`: the body of a multi-arm lambda `\ | p => e ...`, or of
+    /// `@absurd` (no arms). There is no default arm; a catch-all is written as an
+    /// ordinary `| _ => d` or `| x => d` arm.
     Match {
         scrut: Aol<Expr>,
         arms: Slice<Arm>,
     },
-    /// `\p1 p2 = body`.
+    /// `\p1 p2 => body`.
     Lambda {
         params: Slice<LamParam>,
         body: Aol<Expr>,
@@ -590,10 +597,9 @@ pub enum Expr {
         expr: Aol<Expr>,
         ty: Aol<Ty>,
     },
-    /// `(@ctx e)` in argument position: supply the callee's context parameter
-    /// explicitly instead of letting it be inferred. Only valid as the FIRST
-    /// argument of an application, which is where the context parameter sits.
-    CtxArg(Aol<Expr>),
+    /// `@use {.f = e, ...}` in argument position: supply the named `@use` fields
+    /// of the callee; the ones it omits are still searched.
+    UseArg(Slice<FieldInit>),
 }
 
 /// A field initializer in a struct literal or variant payload.
@@ -605,6 +611,17 @@ pub enum FieldInit {
     Positional(Aol<Expr>),
 }
 
+/// One field of a `@use {name: Type, ...}` parameter. `before` counts the
+/// explicit parameters the signature declares ahead of it, which is where an
+/// explicit `@use {.name = e}` argument goes.
+#[derive(Clone, Copy, Debug)]
+pub struct UseField {
+    pub name: StrId,
+    pub ty: Aol<Ty>,
+    pub before: u32,
+    pub span: Span,
+}
+
 /// One binding of a (possibly comma-chained) `let`.
 #[derive(Clone, Copy, Debug)]
 pub struct Binding {
@@ -614,14 +631,14 @@ pub struct Binding {
 }
 
 /// One parameter of a lambda: its pattern and an optional `: T` annotation
-/// (`\x: Int = x`, `\(x: Int) y = x`).
+/// (`\(x: Int) => x`, `\(x: Int) y => x`).
 #[derive(Clone, Copy, Debug)]
 pub struct LamParam {
     pub pat: Aol<Pattern>,
     pub sig: Option<Aol<Ty>>,
 }
 
-/// One arm of an `is`, or a value arm of a handler. Or-patterns (`| p1 | p2 => e`)
+/// One arm of a match, or a value arm of a handler. Or-patterns (`| p1 | p2 => e`)
 /// share a body and guard.
 #[derive(Clone, Debug)]
 pub struct Arm {

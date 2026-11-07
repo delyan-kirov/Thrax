@@ -21,7 +21,7 @@ $ ge : @Bool = 3.0 >= 3.0
 $ eq : @Bool = 0.1 == 0.1
 
 # a Real-typed recursive function
-$ pow : Real -> @Int -> Real = \base n = if n == 0 => 1.0 else base * (pow base (n - 1))
+$ pow : Real -> @Int -> Real = \base n => if n == 0 => 1.0 else base * (pow base (n - 1))
 
 $ two_pow_10 : @Float64 = pow 2.0 10
 $ half_cubed : @Float64 = pow 0.5 3

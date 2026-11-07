@@ -209,7 +209,7 @@ fn cons(fields: Vec<Atom>) -> IrExpr {
 
 #[test]
 fn a_dying_scrutinee_hands_its_cell_to_a_constructor_of_the_same_arity() {
-    // `\xs = is xs | Cons h t => Cons t h | _ => xs'`, with xs dead after the test.
+    // `\xs => xs |> \ | Cons h t => Cons t h | _ => xs'`, with xs dead after the test.
     let case = IrExpr::Case {
         scrut: Atom::Local(0),
         alts: vec![cons_alt(1, cons(vec![Atom::Local(2), Atom::Local(1)]))],
@@ -301,7 +301,7 @@ fn a_live_scrutinee_is_borrowed() {
 
 #[test]
 fn a_binder_a_handler_body_reads_is_not_dropped_where_it_is_bound() {
-    // `is xs | Nil => {} | Cons h t => do f h ...`: `h` is pinned for the
+    // `xs |> \ | Nil => {} | Cons h t => do f h ...`: `h` is pinned for the
     // handler body, which also makes it look live after the `Nil` branch.
     let handle = IrExpr::Handle {
         body: Box::new(app(glob(), Atom::Local(1))),

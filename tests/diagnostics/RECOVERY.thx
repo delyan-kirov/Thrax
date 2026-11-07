@@ -2,11 +2,11 @@ $ @mod RECOVERY
 
 # One broken item does not hide the errors after it, and a use of a broken
 # definition is not reported again.
-$ h = \x = (x + 1  #~ error[UNEXPECTED_TOKEN]: expected ')' to close the group, found the next item
+$ h = \x => (x + 1  #~ error[UNEXPECTED_TOKEN]: expected ')' to close the group, found the next item
 
 $ k : @Int = h 3 + lenght [1]  #~ error[TYPE_UNBOUND]: unbound name `lenght`
 
-$ f : @Int -> @Int = \x = x + "a"  #~ error[TYPE_MISMATCH]: expected @Int, found @Str
+$ f : @Int -> @Int = \x => x + "a"  #~ error[TYPE_MISMATCH]: expected @Int, found @Str
 
 # `f` keeps its signature, so its callers still check against it.
 $ g : @Int = f 1 + 1

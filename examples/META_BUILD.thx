@@ -21,22 +21,23 @@ $ with IO
 $ with STR
 $ with VEC
 
-$ thx_files : {} -> <@Meta, @IO> @Vec @Str = \_ =
-    VEC.filter (\f = STR.ends_with f ".thx") (IO.read_dir "examples")
+$ thx_files : {} -> <@Meta, @IO> @Vec @Str = \_ =>
+    VEC.filter (\f => STR.ends_with f ".thx") (IO.read_dir "examples")
 
 # `@build` returns the items to add, as `@Code`. Here: a count of the example
 # files (so the number is baked in, never computed at run time) and the name of
 # the first of them, which the sorted listing makes deterministic.
-$ @build : {} -> <@Meta, @IO> @Code = \_ =
+$ @build : {} -> <@Meta, @IO> @Code = \_ =>
     let files = thx_files {} in
-    @parse_items (
-        "$ file_count : @Int = "
-            ++ STR.from_int (VEC.len files)
-            ++ "\n"
-            ++ "$ first_file : @Str = \""
-            ++ VEC.get_or files 0 ""
-            ++ "\"\n"
-    )
+    @parse_items
+        (
+            "$ file_count : @Int = "
+                ++ STR.from_int (VEC.len files)
+                ++ "\n"
+                ++ "$ first_file : @Str = \""
+                ++ VEC.get_or files 0 ""
+                ++ "\"\n"
+        )
 
 # `file_count` and `first_file` exist only because `@build` produced them.
 $ ck_count : @Int = if file_count > 0 => 0 else 1

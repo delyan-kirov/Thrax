@@ -26,7 +26,7 @@ fn global(program: &CoreProgram, name: &str) -> Aol<Term> {
 
 #[test]
 fn if_becomes_one_case_on_the_condition() {
-    let p = lower("$ @mod M\n$ f : @Bool -> @Int = \\b = if b => 1 else 2\n");
+    let p = lower("$ @mod M\n$ f : @Bool -> @Int = \\b => if b => 1 else 2\n");
     let t = &p.terms;
     let Term::Lam { param, body } = t.get(global(&p, "f")) else {
         panic!("expected a lambda");
@@ -43,7 +43,7 @@ fn if_becomes_one_case_on_the_condition() {
 
 #[test]
 fn a_multi_parameter_lambda_curries() {
-    let p = lower("$ @mod M\n$ k : @Int -> @Int -> @Int = \\a b = a\n");
+    let p = lower("$ @mod M\n$ k : @Int -> @Int -> @Int = \\a b => a\n");
     assert_eq!(p.terms.render(global(&p, "k")), "(Lam a (Lam b (Var a)))");
 }
 

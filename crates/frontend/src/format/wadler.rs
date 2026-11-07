@@ -59,7 +59,7 @@ pub(super) enum Node {
 #[derive(Default)]
 pub(super) struct Docs {
     pub(super) nodes: Vec<Node>,
-    /// Groups that open at the end of a line (a trailing `(\x = ...)`): when
+    /// Groups that open at the end of a line (a trailing `(\x => ...)`): when
     /// fitting what comes before one, only its text up to its first line
     /// point counts.
     pub(super) open: std::collections::HashSet<D>,

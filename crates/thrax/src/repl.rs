@@ -912,7 +912,7 @@ impl Repl {
     }
 
     /// Print `expr : <type>` without evaluating it. A bare NAME prints its
-    /// DECLARATION, `@ctx` prefix and all: inferring it as an expression would have
+    /// DECLARATION, `@use` fields and all: inferring it as an expression would have
     /// to pick a type for its context, which is what the declaration leaves open.
     fn show_type(&self, expr: &str) {
         if let Some(name) = bare_global_name(expr) {

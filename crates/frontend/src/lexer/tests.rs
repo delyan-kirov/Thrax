@@ -10,7 +10,7 @@ fn kinds(src: &str) -> Vec<Kind> {
 
 #[test]
 fn global_declaration() {
-    let ks = kinds("$fib : Int -> Int = \\n = n");
+    let ks = kinds("$fib : Int -> Int = \\n => n");
     assert_eq!(
         ks,
         vec![
@@ -23,7 +23,7 @@ fn global_declaration() {
             Kind::Eq,
             Kind::Lambda,
             Kind::Word,
-            Kind::Eq,
+            Kind::FatArrow,
             Kind::Word,
             Kind::Eof,
         ]

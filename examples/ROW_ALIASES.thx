@@ -17,30 +17,30 @@ $ Online : @alias = <App, Net> # an alias may name another alias
 # is `<Log | e>`: logging, plus whatever else the caller allows.
 $ WithLog : @alias e = <Log | e>
 
-$ frame : @Int -> <App> @Int = \x = draw x; log x; x * 2
+$ frame : @Int -> <App> @Int = \x => draw x; log x; x * 2
 
-$ sync : @Int -> <Online> @Int = \x = frame (fetch x)
+$ sync : @Int -> <Online> @Int = \x => frame (fetch x)
 
-$ traced : (@Int -> <WithLog e> @Int) -> @Int -> <WithLog e> @Int = \f x = log x; f x
+$ traced : (@Int -> <WithLog e> @Int) -> @Int -> <WithLog e> @Int = \f x => log x; f x
 
 # Each handler discharges one label; together they discharge the whole alias.
-$ runLog : ({} -> <Log | e> @Int) -> <e> @Int = \body =
+$ runLog : ({} -> <Log | e> @Int) -> <e> @Int = \body =>
     do body {}
     ctl k | log n => n + k {} | r => r
 
-$ runGpu : ({} -> <Gpu | e> @Int) -> <e> @Int = \body =
+$ runGpu : ({} -> <Gpu | e> @Int) -> <e> @Int = \body =>
     do body {}
     ctl k | draw n => k {} | r => r
 
-$ runNet : ({} -> <Net | e> @Int) -> <e> @Int = \body =
+$ runNet : ({} -> <Net | e> @Int) -> <e> @Int = \body =>
     do body {}
     ctl k | fetch n => k (n + 1) | r => r
 
-$ runApp : ({} -> <App> @Int) -> @Int = \body = runGpu <| \_ = runLog body
+$ runApp : ({} -> <App> @Int) -> @Int = \body => runGpu <| \_ => runLog body
 
-$ r_frame : @Int = runApp <| \_ = frame 10 # 20 + log 10
-$ r_sync : @Int = runNet <| \_ = runGpu <| \_ = runLog <| \_ = sync 4 # fetch 5, 10 + log 5
-$ r_traced : @Int = runLog <| \_ = traced (\n = n + 1) 7 # 8 + log 7
+$ r_frame : @Int = runApp <| \_ => frame 10                              # 20 + log 10
+$ r_sync : @Int = runNet <| \_ => runGpu <| \_ => runLog <| \_ => sync 4 # fetch 5, 10 + log 5
+$ r_traced : @Int = runLog <| \_ => traced (\n => n + 1) 7               # 8 + log 7
 
 $ test : @Int = if r_frame == 30 && r_sync == 15 && r_traced == 15 => 0 else 1
 

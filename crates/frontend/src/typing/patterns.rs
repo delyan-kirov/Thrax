@@ -442,7 +442,7 @@ impl<'a> Checker<'a> {
                 help: "match with only one kind of pattern, or add a catch-all `| _ => ...`"
             ));
         }
-        let what = if handler { "the handler's value arms do" } else { "this `is` does" };
+        let what = if handler { "the handler's value arms do" } else { "this match does" };
         Err(diag!(
             Code::NonExhaustiveMatch, span, 0,
             "non-exhaustive match: {what} not cover `{}`", usefulness::show(&missing);
@@ -461,7 +461,7 @@ impl<'a> Checker<'a> {
         Err(diag!(
             Code::NonExhaustiveMatch, span, 0,
             "refutable pattern in {site}: it does not match `{}`", usefulness::show(&missing);
-            help: "bind a variable and match it with `is`, which can handle every case"
+            help: "match it instead, which can handle every case: `e |> \\ | pat => ... | _ => ...`"
         ))
     }
 

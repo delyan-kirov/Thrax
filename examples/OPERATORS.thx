@@ -40,8 +40,8 @@ $ ck_unsigned : @Int = if (big > 5) && !(big < 5) => 0 else 32
 # `Money` goes through this instance, `<` on an `@Int` through CORE's.
 $ Money : @struct = cents: @Int
 
-$ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
-$ impl_IEq_for_Money : IEq Money = .{ .eq = \a b = a.cents == b.cents }
+$ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a b => a.cents < b.cents }
+$ impl_IEq_for_Money : IEq Money = .{ .eq = \a b => a.cents == b.cents }
 
 $ ck_custom : @Int = if (Money.{ .cents = 150 } < Money.{ .cents = 900 }) && (2 < 3) => 0 else 64
 
@@ -57,7 +57,7 @@ $ ck_structural : @Int =
 
 # `<` and `>` in an expression, in a function whose type carries an effect row:
 # the row is type-level, the operators value-level, so the two never meet.
-$ clamp_pos : @Int -> <| e> @Int = \n = if n < 0 => 0 else n
+$ clamp_pos : @Int -> <| e> @Int = \n => if n < 0 => 0 else n
 $ ck_row : @Int = if (clamp_pos (0 - 3) == 0) && (clamp_pos 5 == 5) => 0 else 256
 
 # Force-evaluate results for the combined test runner (pass = no fault).

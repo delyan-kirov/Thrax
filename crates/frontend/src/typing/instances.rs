@@ -1,6 +1,6 @@
-//! Context (`@ctx`) instance resolution.
+//! Context (`@use`) instance resolution.
 //!
-//! A definition whose signature opens with a `@ctx` parameter takes that
+//! A definition whose signature opens with `@use` fields takes that
 //! argument implicitly. At each use the checker plans the requirement, then
 //! resolves it at the enclosing definition's boundary, once inference has
 //! pinned the requirement's type variables. Resolution searches by type: first
@@ -23,7 +23,7 @@ use super::*;
 
 impl<'a> Checker<'a> {
     /// Elaborate a signature into the type callers see and, when it opens with a
-    /// `@ctx` parameter, that parameter's type. Both are generalized together (as
+    /// `@use` context parameter, that parameter's type. Both are generalized together (as
     /// one tuple) so a variable they share becomes the same `Generic` in each.
     pub(super) fn scheme_and_ctx(&mut self, sig: Aol<Ty>, has_ctx: bool) -> (Type, Option<Type>) {
         self.unifier.enter_level();
@@ -33,7 +33,7 @@ impl<'a> Checker<'a> {
         let (ctx, exposed) = if has_ctx {
             match self.unifier.types.node(full) {
                 TypeNode::Arrow(from, to, _) => (Some(from), to),
-                // A `@ctx` signature is built as an arrow by the parser; an alias
+                // A `@use` signature is built as an arrow by the parser; an alias
                 // could still hide one, in which case there is nothing to strip.
                 _ => (None, full),
             }
@@ -71,11 +71,15 @@ impl<'a> Checker<'a> {
         self.unifier.types.tuple(items)
     }
 
-    /// A context parameter's type must be a declared nominal type applied to its
+    /// A `@use` field's type must be a declared nominal type applied to its
     /// arguments. A bare variable or a base type would turn the search into "any
     /// value of this type in scope", which is never what is meant, and the error
     /// belongs at the declaration rather than at every call site.
-    pub(super) fn check_ctx_head(&mut self, name: StrId, ctx: Aol<Ty>) -> Result<()> {
+    pub(super) fn check_ctx_head(&mut self, name: StrId, ctx: Aol<Ty>, sig: Aol<Ty>) -> Result<()> {
+        let fields: Vec<UseField> = match self.ast.use_params.get(sig) {
+            Some(fs) => self.ast.slice(*fs).to_vec(),
+            None => Vec::new(),
+        };
         let mut tvars = HashMap::new();
         let ty = self.ty_of_ast(ctx, &mut tvars);
         let zonked = self.unifier.zonk(ty);
@@ -85,13 +89,16 @@ impl<'a> Checker<'a> {
             TypeNode::Tuple(items) => self.unifier.types.items(items).to_vec(),
             _ => vec![zonked],
         };
-        for part in parts {
+        for (i, part) in parts.into_iter().enumerate() {
             let ok = self.ctx_head(part).is_some_and(|h| self.is_nominal(h));
             if !ok {
-                let span = self.ast.ty_span(ctx).unwrap_or_else(|| Span::at(0));
+                let (field, span) = match fields.get(i) {
+                    Some(f) => (format!("`{}`", f.name), self.ast.ty_span(f.ty).unwrap_or(f.span)),
+                    None => ("a field".to_string(), self.ast.ty_span(ctx).unwrap_or_else(|| Span::at(0))),
+                };
                 return Err(diag!(
                     Code::TypeMismatch, span, 0,
-                    "the `@ctx` parameter of `{name}` must be a declared type, not `{}`",
+                    "`@use` field {field} of `{name}` must have a declared type, not `{}`",
                     self.show(part)
                 )
                 .with_note("a context is found by its type, so it needs a named one")
@@ -111,17 +118,36 @@ impl<'a> Checker<'a> {
 // ## Resolution
 
 impl<'a> Checker<'a> {
-    /// Plan the context argument of `fname` at use `site`. An explicit `(@ctx e)`
-    /// is checked and used at once; otherwise resolution is deferred to the
-    /// enclosing definition's boundary, where the requirement's type variables are
-    /// pinned (so `max_of 3 7` searches for a context over `@Int` rather than over
-    /// a bare variable). The binders that could satisfy it are captured now,
-    /// because the scopes are gone by then.
-    pub(super) fn plan_ctx(&mut self, site: Aol<Expr>, fname: StrId, req: Type) -> Result<()> {
-        if let Some(value) = self.ctx_override.remove(&site) {
-            self.check(value, req)?;
-            self.ctx_args.insert(site, CtxVal::Expr(value));
-            return Ok(());
+    /// Plan the context argument of `fname` at use `site`. The fields an explicit
+    /// `@use {.f = e}` names are checked and used as given; the rest, and the whole
+    /// context when there is no such argument, are resolved at the enclosing
+    /// definition's boundary, where the requirement's type variables are pinned
+    /// (so `max_of 3 7` searches for a context over `@Int` rather than over a bare
+    /// variable). The binders that could satisfy it are captured now, because the
+    /// scopes are gone by then. `sig` is the callee's signature, which names its
+    /// `@use` fields.
+    pub(super) fn plan_ctx(
+        &mut self,
+        site: Aol<Expr>,
+        fname: StrId,
+        req: Type,
+        sig: Option<Aol<Ty>>,
+    ) -> Result<()> {
+        let mut given = Vec::new();
+        if let Some(uses) = self.ctx_override.remove(&site) {
+            given = self.use_given(fname, req, sig, &uses)?;
+            let parts = self.bundle_items(req);
+            if given.len() == parts.len().max(1) {
+                let val = match parts.len() {
+                    0 => CtxVal::Expr(given[0].1),
+                    _ => {
+                        given.sort_by_key(|g| g.0);
+                        CtxVal::Tuple(given.iter().map(|g| CtxVal::Expr(g.1)).collect())
+                    }
+                };
+                self.ctx_args.insert(site, val);
+                return Ok(());
+            }
         }
         let locals = self.ctx_locals(req);
         self.ctx_pending.push(PendingCtx {
@@ -130,8 +156,90 @@ impl<'a> Checker<'a> {
             req,
             sig: self.current_sig,
             locals,
+            given,
         });
         Ok(())
+    }
+
+    /// An explicit `@use` argument whose callee declares no `@use` parameter.
+    pub(super) fn use_without_fields(&self, head: Aol<Expr>, uses: &[UseOverride]) -> Diagnostic {
+        let span = self.ast.expr_span(uses[0].site).unwrap_or(Span::at(0));
+        let callee = match self.node(head) {
+            Expr::Var { name, .. } => format!("`{name}`"),
+            _ => "this function".to_string(),
+        };
+        diag!(
+            Code::TypeMismatch, span, 0,
+            "a `@use` argument, but {callee} declares no `@use` parameter"
+        )
+    }
+
+    /// The components of a several-field `@use` bundle, or nothing for a
+    /// one-field one (whose context is the field itself).
+    fn bundle_items(&mut self, req: Type) -> Vec<Type> {
+        let z = self.unifier.zonk(req);
+        match self.unifier.types.node(z) {
+            TypeNode::Tuple(items) => self.unifier.types.items(items).to_vec(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Match the fields of explicit `@use` arguments to `fname`'s `@use`
+    /// parameters by name, check each value against its field's type, and return
+    /// `(position in the bundle, value)` for each. A field must be given where its
+    /// parameter stands: after exactly the explicit arguments declared before it.
+    fn use_given(
+        &mut self,
+        fname: StrId,
+        req: Type,
+        sig: Option<Aol<Ty>>,
+        uses: &[UseOverride],
+    ) -> Result<Vec<(usize, Aol<Expr>)>> {
+        let fields: Vec<UseField> = match sig.and_then(|s| self.ast.use_params.get(s).copied()) {
+            Some(fs) => self.ast.slice(fs).to_vec(),
+            None => Vec::new(),
+        };
+        let parts = self.bundle_items(req);
+        let mut out: Vec<(usize, Aol<Expr>)> = Vec::new();
+        for u in uses {
+            for init in self.ast.slice(u.inits).to_vec() {
+                let FieldInit::Named { name, value } = init else { continue };
+                let span = self.ast.expr_span(value).or(self.ast.expr_span(u.site)).unwrap_or(Span::at(0));
+                let Some(i) = fields.iter().position(|f| f.name == name) else {
+                    let known: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+                    let mut d = diag!(
+                        Code::TypeMismatch, span, 0,
+                        "`{fname}` has no `@use` field `{name}`"
+                    );
+                    if let Some(c) = utilities::error::closest(name.as_str(), known.iter().copied()) {
+                        d = d.with_help(format!("did you mean `{c}`?"));
+                    } else if known.is_empty() {
+                        d = d.with_note(format!("`{fname}` declares no `@use` parameter"));
+                    }
+                    return Err(d);
+                };
+                if out.iter().any(|g| g.0 == i) {
+                    return Err(diag!(
+                        Code::DuplicateSymbol, span, 0,
+                        "`@use` field `{name}` of `{fname}` is given twice"
+                    ));
+                }
+                let field = fields[i];
+                if field.before != u.at {
+                    let site = self.ast.expr_span(u.site).unwrap_or(span);
+                    return Err(diag!(
+                        Code::TypeMismatch, site, 0,
+                        "`@use` field `{name}` of `{fname}` goes after {} explicit argument(s), not {}",
+                        field.before, u.at;
+                        note: "an explicit `@use` argument precedes the explicit argument that follows its parameter"
+                    ));
+                }
+                let want = if parts.is_empty() { req } else { parts[i] };
+                self.check(value, want)?;
+                out.push((i, value));
+            }
+        }
+        Ok(out)
     }
 
     /// The binders in scope that could satisfy `req`, innermost scope first. A
@@ -146,15 +254,24 @@ impl<'a> Checker<'a> {
             .skip(1)
             .flat_map(|(d, s)| s.iter().map(move |(n, t)| (d, *n, *t)))
             .collect();
+        // A bundle requirement (a callee with several `@use` fields) is resolved
+        // component by component, so each component's head is wanted.
         let zonked = self.unifier.zonk(req);
-        let want = self.ctx_head(zonked);
-        if want.is_none() {
+        let wants: Vec<utilities::StrId> = match self.unifier.types.node(zonked) {
+            TypeNode::Tuple(items) => {
+                let parts = self.unifier.types.items(items).to_vec();
+                parts.into_iter().filter_map(|p| self.ctx_head(self.unifier.zonk(p))).collect()
+            }
+            _ => self.ctx_head(zonked).into_iter().collect(),
+        };
+        if wants.is_empty() {
             return Vec::new();
         }
+        let wanted = |h: Option<utilities::StrId>| h.is_some_and(|h| wants.contains(&h));
         let mut out = Vec::new();
         for (depth, name, ty) in entries {
             let z = self.unifier.zonk(ty);
-            if self.ctx_head(z) == want {
+            if wanted(self.ctx_head(z)) {
                 out.push(CtxLocal { depth, name, ty, index: None });
                 continue;
             }
@@ -163,7 +280,7 @@ impl<'a> Checker<'a> {
             if let TypeNode::Tuple(items) = self.unifier.types.node(z) {
                 let parts = self.unifier.types.items(items).to_vec();
                 for (i, part) in parts.into_iter().enumerate() {
-                    if self.ctx_head(part) == want {
+                    if wanted(self.ctx_head(part)) {
                         out.push(CtxLocal { depth, name, ty: part, index: Some(i) });
                     }
                 }
@@ -188,7 +305,7 @@ impl<'a> Checker<'a> {
 
     // Note [Ctx resolution fixpoint]
     //
-    // A `@ctx` requirement is resolved by its type, but at the use site that
+    // A `@use` requirement is resolved by its type, but at the use site that
     // type is usually still a variable: in `max_of 3 7` the requirement is
     // `IOrd a` until something says what `a` is. So a use only plans the
     // requirement (`plan_ctx`), and resolution waits for the definition
@@ -223,7 +340,11 @@ impl<'a> Checker<'a> {
                 }
                 None => HashSet::new(),
             };
-            let resolved = self.resolve_ctx(p.fname, req, &p.locals, &rigid, 0);
+            let resolved = if p.given.is_empty() {
+                self.resolve_ctx(p.fname, req, &p.locals, &rigid, 0)
+            } else {
+                self.resolve_partly_given(p.fname, req, &p.locals, &rigid, &p.given)
+            };
             // A metaprogram-expansion round: the instance may be injected by a
             // generator that has not run yet, so leave the site unresolved rather
             // than failing. The final strict round rejects it if it is still missing.
@@ -243,6 +364,30 @@ impl<'a> Checker<'a> {
             self.ctx_args.insert(p.site, val);
         }
         Ok(())
+    }
+
+    /// A several-field `@use` bundle some of whose fields an explicit argument
+    /// gave: those are used as written, the rest are searched.
+    fn resolve_partly_given(
+        &mut self,
+        fname: StrId,
+        req: Type,
+        locals: &[CtxLocal],
+        rigid: &HashSet<VarId>,
+        given: &[(usize, Aol<Expr>)],
+    ) -> Result<CtxVal> {
+        let parts = self.bundle_items(req);
+        let mut vals = Vec::with_capacity(parts.len());
+        for (i, part) in parts.into_iter().enumerate() {
+            vals.push(match given.iter().find(|g| g.0 == i) {
+                Some(&(_, value)) => CtxVal::Expr(value),
+                None => {
+                    let part = self.unifier.zonk(part);
+                    self.resolve_ctx(fname, part, locals, rigid, 1)?
+                }
+            });
+        }
+        Ok(CtxVal::Tuple(vals))
     }
 
     /// Resolve one context requirement. A tuple requirement splits into its
@@ -418,7 +563,7 @@ impl<'a> Checker<'a> {
 impl<'a> Checker<'a> {
     /// No instance matched `req`, but one may agree on its first parameter (the
     /// type the interface is "for") and disagree on another, typically one the
-    /// call fixed indirectly, e.g. `for xs \\i = i` pins `IFor`'s element type
+    /// call fixed indirectly, e.g. `for xs \\i => i` pins `IFor`'s element type
     /// through the body's result. Then the context IS determined and simply does
     /// not fit, so say that, naming the instance and the parameter that differs,
     /// rather than claim none is in scope.
@@ -490,8 +635,9 @@ impl<'a> Checker<'a> {
         )
         .with_help(format!(
             "define or import a value of type `{}`, or pass one explicitly as \
-             `{fname} (@ctx value) ...`",
-            self.show(req)
+             `{fname} @use {{.{} = value}} ...`",
+            self.show(req),
+            self.use_field_hint(fname, req)
         ))
     }
 
@@ -504,8 +650,8 @@ impl<'a> Checker<'a> {
             self.show(req)
         )
         .with_help(
-            "annotate the call so its type is known, or declare the same `@ctx` parameter on \
-             the enclosing definition so the context is passed in",
+            "annotate the call so its type is known, or declare a `@use` field of that type \
+             on the enclosing definition so the context is passed in",
         )
     }
 
@@ -520,9 +666,42 @@ impl<'a> Checker<'a> {
             names.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")
         )
         .with_help(format!(
-            "pass the one you mean explicitly as `{fname} (@ctx {}) ...`",
+            "pass the one you mean explicitly as `{fname} @use {{.{} = {}}} ...`",
+            self.use_field_hint(fname, req),
             names.first().map_or("value", |n| n.as_str())
         ))
+    }
+
+    /// The name of `fname`'s `@use` field whose type has `req`'s head, for a
+    /// diagnostic's suggested explicit argument; `field` when it cannot tell.
+    fn use_field_hint(&self, fname: StrId, req: Type) -> String {
+        let sig = self.global_ctx.get(&fname).copied();
+        let fields: Vec<UseField> = match sig.and_then(|s| self.ast.use_params.get(s).copied()) {
+            Some(fs) => self.ast.slice(fs).to_vec(),
+            None => return "field".to_string(),
+        };
+        let want = self.ctx_head(self.unifier.zonk(req));
+        let hits: Vec<&UseField> = fields
+            .iter()
+            .filter(|f| want.is_some_and(|w| self.ty_head_name(f.ty) == Some(w)))
+            .collect();
+        match hits.as_slice() {
+            [one] => one.name.as_str().to_string(),
+            _ if fields.len() == 1 => fields[0].name.as_str().to_string(),
+            _ => "field".to_string(),
+        }
+    }
+
+    /// The constructor a written type is headed by: `IOrd` in `IOrd t`.
+    fn ty_head_name(&self, ty: Aol<Ty>) -> Option<StrId> {
+        let mut cur = ty;
+        loop {
+            match self.ast.ty(cur) {
+                Ty::App(f, _) => cur = *f,
+                Ty::Con { name, .. } => return Some(*name),
+                _ => return None,
+            }
+        }
     }
 }
 
@@ -627,7 +806,7 @@ impl<'a> Checker<'a> {
             self.blessed_sites.insert(head, hook.field);
             return Ok(self.unifier.zonk(rest));
         }
-        self.plan_ctx(head, name, req)?;
+        self.plan_ctx(head, name, req, None)?;
         self.blessed_sites.insert(head, field);
         Ok(rest)
     }
@@ -862,7 +1041,7 @@ impl<'a> Checker<'a> {
         )
     }
 
-    /// Route a literal pattern (`is "foo"`, `is 42`) whose scrutinee is a user type
+    /// Route a literal pattern (`| "foo"`, `| 42`) whose scrutinee is a user type
     /// through that type's construction + equality hooks: it matches by building the
     /// literal into the user type and comparing with its `IEq` instance.
     /// On success records both hooks at `pat` for lowering and returns `true`;
@@ -909,7 +1088,7 @@ pub(super) const CTX_DEPTH: usize = 32;
 // ## Interface wrappers
 
 /// The field an interface wrapper projects: `body` must be exactly
-/// `\d p1 .. pn = d.field p1 .. pn`, with `d` and the parameters distinct variable
+/// `\d p1 .. pn => d.field p1 .. pn`, with `d` and the parameters distinct variable
 /// patterns applied in order. Anything else (`neg`'s `ds.0.sub ds.1.zero x`, a
 /// wrapper that reorders or transforms) returns `None`.
 pub(super) fn wrapper_field(ast: &Ast, body: Aol<Expr>) -> Option<StrId> {

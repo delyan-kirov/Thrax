@@ -16,9 +16,9 @@ $ ck_some : @Int = if is_some o => 0 else 1
 $ ck_none : @Int = if is_none n => 0 else 1
 $ ck_unwrap : @Int = if (unwrap_or o 0) == 41 => 0 else 1
 $ ck_default: @Int = if (unwrap_or n 7) == 7 => 0 else 1
-$ ck_map : @Int = if (unwrap_or (opt_map (\x = x + 1) o) 0) == 42 => 0 else 1
+$ ck_map : @Int = if (unwrap_or (opt_map (\x => x + 1) o) 0) == 42 => 0 else 1
 $ ck_then : @Int =
-    let half = \x = if x % 2 == 0 => Option.Some.{ x / 2 } else Option.None in
+    let half = \x => if x % 2 == 0 => Option.Some.{ x / 2 } else Option.None in
     if (unwrap_or (opt_then half o) 99) == 99 => 0 else 1
 
 # ---- tuples (the language's anonymous products) ----
@@ -54,6 +54,9 @@ $ ck_rclamp: @Int = if (clamp 0.0 1.0 7.25) == 1.0 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @Int =
-    ck_some + ck_none + ck_unwrap + ck_default + ck_map + ck_then + ck_fst + ck_snd + ck_swap + ck_min + ck_max + ck_abs + ck_sign + ck_clamp + ck_even + ck_odd + ck_gcd + ck_pow + ck_cmp + ck_sqrt + ck_floor + ck_ceil + ck_round + ck_rpow + ck_fmod + ck_trig + ck_explog + ck_rmin + ck_rabs + ck_rclamp
+    ck_some + ck_none + ck_unwrap + ck_default + ck_map + ck_then + ck_fst + ck_snd + ck_swap
+        + ck_min + ck_max + ck_abs + ck_sign + ck_clamp + ck_even + ck_odd + ck_gcd + ck_pow
+        + ck_cmp + ck_sqrt + ck_floor + ck_ceil + ck_round + ck_rpow + ck_fmod + ck_trig + ck_explog
+        + ck_rmin + ck_rabs + ck_rclamp
 
 $ @e <| assert (test == 0) "STDLIB_CORE: a check failed"

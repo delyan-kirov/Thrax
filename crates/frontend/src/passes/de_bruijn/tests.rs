@@ -33,7 +33,7 @@ fn occurrences(pairs: &[(&str, usize)]) -> Vec<(String, usize)> {
     pairs.iter().map(|(n, i)| (n.to_string(), *i)).collect()
 }
 
-/// `\x = x`: the sole binder is innermost, index 1.
+/// `\x => x`: the sole binder is innermost, index 1.
 #[test]
 fn innermost_binder_is_one() {
     let got = indices(|t| {
@@ -43,7 +43,7 @@ fn innermost_binder_is_one() {
     assert_eq!(got, occurrences(&[("x", 1)]));
 }
 
-/// `\x = \y = x`: `x` is two binders out, index 2; `y` would be 1.
+/// `\x => \y => x`: `x` is two binders out, index 2; `y` would be 1.
 #[test]
 fn outer_binder_counts_outward() {
     let got = indices(|t| {
@@ -97,7 +97,7 @@ fn shadowing_picks_innermost() {
 /// not, so the value's reference escapes to the outer scope.
 #[test]
 fn rec_let_binds_in_value() {
-    // rec: `\outer = let f = f in f`: the `f` in the value sees the let binder.
+    // rec: `\outer => let f = f in f`: the `f` in the value sees the let binder.
     let got = indices(|t| {
         let (v, b) = (t.var("f"), t.var("f"));
         let l = t.add(Term::Let { name: id("f"), rec: true, val: v, body: b });
@@ -105,7 +105,7 @@ fn rec_let_binds_in_value() {
     });
     assert_eq!(got, occurrences(&[("f", 1), ("f", 1)]));
 
-    // non-rec: `\g = let f = g in f`: the value's `g` is the outer lambda param
+    // non-rec: `\g => let f = g in f`: the value's `g` is the outer lambda param
     // (index 1: the let binder is not in scope yet), the body's `f` is the let (1).
     let got = indices(|t| {
         let (v, b) = (t.var("g"), t.var("f"));
@@ -116,7 +116,7 @@ fn rec_let_binds_in_value() {
 }
 
 /// One variable node shared under two binder depths gets an index per
-/// occurrence: `\x = (x, \y = x)` with both `x`s the same node.
+/// occurrence: `\x => (x, \y => x)` with both `x`s the same node.
 #[test]
 fn a_shared_node_is_indexed_per_occurrence() {
     let got = indices(|t| {

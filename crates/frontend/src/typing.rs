@@ -10,7 +10,7 @@
 //!
 //! Inference is Algorithm W, bidirectional (`algorithm_w`), over the
 //! [`Unifier`] ([`unify`]). A name has one definition; polymorphism over types
-//! goes through interfaces, whose `@ctx` arguments are resolved by type
+//! goes through interfaces, whose `@use` arguments are resolved by type
 //! (`instances`). Matches are checked for exhaustiveness ([`usefulness`]).
 //! What desugaring needs from all this is in [`resolved`]. The other private
 //! modules each hold one concern of the [`Checker`]: `declarations`,
@@ -48,7 +48,7 @@ use std::rc::Rc;
 
 use crate::parser::data::{
     Ast, Binding, EffectRow, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField,
-    RowEntry, SliceSlot, Ty,
+    RowEntry, SliceSlot, Ty, UseField,
 };
 use utilities::{Aol, Slice, StrId};
 use utilities::{diag, Applicability, Code, Diagnostic, Edit, ExternArg, Result, Span};
@@ -152,9 +152,9 @@ pub struct Checker<'a> {
     resolved_calls: HashMap<Aol<Expr>, StrId>,
     /// The context parameter type of each context-bearing definition in this
     /// module, sharing its variables with the exposed type, so a printed signature
-    /// can show the `@ctx` prefix.
+    /// can show the `@use` fields.
     decl_ctx: HashMap<StrId, Type>,
-    /// Top-level definitions whose signature opens with a `@ctx` context
+    /// Top-level definitions whose signature opens with a `@use` context
     /// parameter, by name, as the signature's AST handle (the context type is its
     /// first `from`). A use site plans the context from it and records the resolved
     /// value in [`Self::ctx_args`]; lowering injects it as a leading argument.
@@ -178,14 +178,14 @@ pub struct Checker<'a> {
     ctx_pending: Vec<PendingCtx>,
     /// The elaborated signature of the definition currently being checked. Its type
     /// variables are the caller's to choose, so context resolution may not bind
-    /// them: a `$ g : a -> @Str = \x = show x` must declare the context rather than
+    /// them: a `$ g : a -> @Str = \x => show x` must declare the context rather than
     /// have `a` silently specialized to the one instance that happens to exist. The
     /// signature is kept as a type (not a variable set) because unification may
     /// point its variables at others, and zonking at resolution time follows that.
     current_sig: Option<Type>,
-    /// Explicit `(@ctx e)` arguments, keyed by the head reference site they apply
+    /// Explicit `@use {...}` arguments, keyed by the head reference site they apply
     /// to. Consumed when that reference plans its context.
-    ctx_override: HashMap<Aol<Expr>, Aol<Expr>>,
+    ctx_override: HashMap<Aol<Expr>, Vec<UseOverride>>,
     /// Every global whose type's head is a declared nominal type, keyed by that
     /// head's name: the candidates a context requirement searches. Implementing an
     /// interface is just defining a value of its type, so there is nothing to mark.
@@ -263,12 +263,12 @@ pub struct Checker<'a> {
     /// emits), mapped to the single field lowering projects off the instance that
     /// `ctx_args` records for the same site.
     blessed_sites: HashMap<Aol<Expr>, StrId>,
-    /// Literal PATTERN sites (`is "foo"`, `is 42`) whose scrutinee is a user type,
+    /// Literal PATTERN sites (`| "foo"`, `| 42`) whose scrutinee is a user type,
     /// mapped to the resolved `(build hook, equality hook)`: the pattern matches by
     /// building the literal into the user type (build hook) and comparing it against
     /// the scrutinee (equality hook), instead of the built-in `==` on a primitive.
     literal_pattern_hooks: HashMap<Aol<Pattern>, (HookImpl, HookImpl)>,
-    /// Sequence PATTERN pieces (`is [a, b]`, the `[h]` of `h :: t`, the `[z]` of
+    /// Sequence PATTERN pieces (`| [a, b]`, the `[h]` of `h :: t`, the `[z]` of
     /// `r ++ [z]`), mapped to the resolved view: `@ISeqView` for a piece matched
     /// from the front, `@ISeqViewBack` for one matched from the back. Lowering
     /// unfolds the piece through it.
@@ -413,6 +413,18 @@ struct PendingCtx {
     /// Binders in scope at the use site that could satisfy the requirement. Captured
     /// there because the scopes are gone by the time the boundary resolves.
     locals: Vec<CtxLocal>,
+    /// The fields of a several-field bundle an explicit `@use` argument gave, by
+    /// position in the bundle, already checked; the rest are searched.
+    given: Vec<(usize, Aol<Expr>)>,
+}
+
+/// An explicit `@use {.f = e}` argument of a call, off the spine: its fields, and
+/// how many explicit arguments precede it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UseOverride {
+    pub(crate) at: u32,
+    pub(crate) inits: Slice<FieldInit>,
+    pub(crate) site: Aol<Expr>,
 }
 
 /// A deferred overload use: its candidate set, the argument types, the fresh
@@ -699,8 +711,8 @@ impl<'a> Checker<'a> {
         // module resolves them regardless of source order.
         for d in &defs {
             let Some(ctx) = d.ctx else { continue };
-            self.check_ctx_head(d.name, ctx)?;
-            let sig = d.sig.expect("a `@ctx` is parsed as part of a signature");
+            let sig = d.sig.expect("a `@use` is parsed as part of a signature");
+            self.check_ctx_head(d.name, ctx, sig)?;
             self.own_ctx.push((d.name, sig));
             self.qualified_ctx.insert((self.module_name, d.name), sig);
             self.global_ctx.insert(d.name, sig);
@@ -1052,31 +1064,52 @@ impl<'a> Checker<'a> {
     }
 
     /// The declared type of a global `name` in scope, as a user reads it (with any
-    /// `@ctx` prefix). The shell's `:type` uses this for a bare name: inferring the
+    /// `@use` fields). The shell's `:type` uses this for a bare name: inferring the
     /// name as an expression would have to pick a type for its context, which is
     /// exactly what the declaration leaves open.
     pub fn show_name(&mut self, name: StrId) -> Option<String> {
         if let Some(sig) = self.global_ctx.get(&name).copied() {
             let (exposed, ctx) = self.scheme_and_ctx(sig, true);
             if let Some(ctx) = ctx {
-                let parts = self.unifier.show_all(&[ctx, exposed]);
-                return Some(format!("@ctx {} -> {}", parts[0], parts[1]));
+                return Some(self.show_with_uses(name, ctx, exposed));
             }
         }
         self.lookup(name).map(|ty| self.show(ty))
     }
 
-    /// How a definition's type reads to a user: its exposed arrow, prefixed with the
-    /// `@ctx` parameter when it declares one. A printed type never hides the context
+    /// How a definition's type reads to a user: its exposed arrow, prefixed with its
+    /// `@use` fields when it declares some. A printed type never hides the context
     /// a call site has to satisfy, which is the whole point of #213.
     pub fn show_decl(&self, name: StrId, ty: Type) -> String {
         match self.decl_ctx.get(&name) {
-            Some(ctx) => {
-                let parts = self.unifier.show_all(&[*ctx, ty]);
-                format!("@ctx {} -> {}", parts[0], parts[1])
-            }
+            Some(ctx) => self.show_with_uses(name, *ctx, ty),
             None => self.show(ty),
         }
+    }
+
+    /// `@use {d: IOrd a, s: ISub a} -> a -> a`: the context `ctx` split into the
+    /// fields `name`'s signature declares, all of them first, then `exposed`.
+    fn show_with_uses(&self, name: StrId, ctx: Type, exposed: Type) -> String {
+        let sig = self.global_ctx.get(&name).copied();
+        let fields: Vec<StrId> = match sig.and_then(|s| self.ast.use_params.get(s).copied()) {
+            Some(fs) => self.ast.slice(fs).iter().map(|f| f.name).collect(),
+            None => Vec::new(),
+        };
+        let z = self.unifier.zonk(ctx);
+        let mut parts: Vec<Type> = match self.unifier.types.node(z) {
+            TypeNode::Tuple(items) if fields.len() > 1 => self.unifier.types.items(items).to_vec(),
+            _ => vec![z],
+        };
+        let n = parts.len();
+        parts.push(exposed);
+        let shown = self.unifier.show_all(&parts);
+        let named: Vec<String> = (0..n)
+            .map(|i| match fields.get(i) {
+                Some(f) => format!("{f}: {}", shown[i]),
+                None => format!("d{i}: {}", shown[i]),
+            })
+            .collect();
+        format!("@use {{{}}} -> {}", named.join(", "), shown[n])
     }
 
     fn bind(&mut self, name: StrId, ty: Type) {
@@ -1126,7 +1159,7 @@ impl<'a> Checker<'a> {
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@Int64`), the minimal set the runtime provides; every nice name
         // (`index`, `length`, `dot`, `matmul`, `transpose`, `concat`) is a `library/LA`
-        // function built from these plus `@ctx`, not a builtin.
+        // function built from these plus `@use`, not a builtin.
         //
         // The sized-tensor primitives. `[n]T` and `Vec T` share the runtime vector
         // rep but are DISTINCT types, so these carry their own tensor-typed
@@ -1217,7 +1250,7 @@ impl<'a> Checker<'a> {
             );
         }
         // The coarse kernels `LA.dot`/`LA.matmul` call, with the element arithmetic
-        // passed as plain functions (the `@ctx` methods):
+        // passed as plain functions (the `@use` methods):
         // `@tensor_dot : (a -> a -> a) -> (a -> a -> a) -> a -> [n]a -> [n]a -> a` and
         // `@tensor_matmul : (a -> a -> a) -> (a -> a -> a) -> a -> [m][k]a -> [k][n]a -> [m][n]a`.
         {
@@ -1423,7 +1456,12 @@ fn free_globals(
             free_globals(ast, *cleanup, globals, bound, out);
             free_globals(ast, *body, globals, bound, out);
         }
-        Expr::CtxArg(value) => free_globals(ast, *value, globals, bound, out),
+        Expr::UseArg(inits) => {
+            for init in ast.slice(*inits) {
+                let (FieldInit::Named { value, .. } | FieldInit::Positional(value)) = init;
+                free_globals(ast, *value, globals, bound, out);
+            }
+        }
         Expr::Ascribe { expr, .. } => free_globals(ast, *expr, globals, bound, out),
     }
 }

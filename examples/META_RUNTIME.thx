@@ -26,7 +26,7 @@ $ greeting : @Str = @eval (@parse_str "\"he\" ++ \"llo\"")
 $ pair : { @Int, @Bool } = @eval (@parse_str "{20, 1 < 2}")
 
 # --- formatting ------------------------------------------------------------
-$ tidy : @Str = @format "$ f   : @Int->@Int = \\x=x+1"
+$ tidy : @Str = @format "$ f   : @Int->@Int = \\x=>x+1"
 
 # --- checks ----------------------------------------------------------------
 $ ck1 : @Int = if @vec_len toks == 3 => 0 else 1
@@ -35,6 +35,6 @@ $ ck3 : @Int = if product == 42 => 0 else 4
 $ ck4 : @Int = if from_tokens == 42 => 0 else 8
 $ ck5 : @Int = if STR.eq greeting "hello" => 0 else 16
 $ ck6 : @Int = if pair.0 == 20 && pair.1 => 0 else 32
-$ ck7 : @Int = if STR.eq tidy "$ f : @Int -> @Int = \\x = x + 1\n" => 0 else 64
+$ ck7 : @Int = if STR.eq tidy "$ f : @Int -> @Int = \\x => x + 1\n" => 0 else 64
 
 $ test : @Int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7

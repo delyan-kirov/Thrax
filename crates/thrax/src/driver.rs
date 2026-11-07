@@ -1227,7 +1227,7 @@ pub fn compile_session(source: &str, root_dir: &Path) -> Result<Session, String>
 }
 
 /// [`compile_session`], additionally reporting the declared type of one global name
-/// (with its `@ctx` prefix, which inferring the name as an expression would lose).
+/// (with its `@use` fields, which inferring the name as an expression would lose).
 pub fn compile_session_query(
     source: &str,
     root_dir: &Path,

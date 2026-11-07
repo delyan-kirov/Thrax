@@ -40,7 +40,7 @@ shape: `@main` takes the argument vector (`args[0]` is the program) and
 returns the exit code. It is the only name the compiler knows.
 
 ```thrax
-$ @main : @Vec @Str -> <@IO> @Int = \args = C.puts "hello"; 0
+$ @main : @Vec @Str -> <@IO> @Int = \args => C.puts "hello"; 0
 ```
 
 Every other module is a library. Checking one runs its compile-time
@@ -81,7 +81,7 @@ out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.
 - **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.
 - **C FFI with no ceremony**: `@extern "C" "sym" "lib"` binds a foreign function; C structs pass by value both ways.
 - **WebAssembly**: cross-compile with `--target=wasm32-wasi`, or run the whole compiler in the browser.
-- **Interfaces resolved by type**: an interface is a struct, an implementation is a value of it, and a function takes one as an inferred `@ctx` parameter. One mechanism; no overloading, so a name's printed type is its contract.
+- **Interfaces resolved by type**: an interface is a struct, an implementation is a value of it, and a function takes one as a named `@use` field the compiler infers. One mechanism; no overloading, so a name's printed type is its contract.
 - **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`@e` inserts generated code, plus a `@build` entry that generates part of a module from what is on disk).
 
 ## A tour of the language
@@ -132,17 +132,18 @@ $ Base : @union = Red: {}, Green: {},
 $ Color : @union = with Base, Blue: {} # Red, Green, then Blue
 ```
 
-`is scrut | pat => e ...` matches top to bottom; each arm may carry an
-`if <guard>` that falls through to the next arm on failure. There is no
-default branch: a catch-all is just an arm, `| _ => d`.
+A multi-arm lambda `\ | pat => e ...` takes one argument and matches it
+top to bottom; a match is one applied to its scrutinee, `s |> \ | ...`. Each
+arm may carry an `if <guard>` that falls through to the next arm on failure.
+There is no default branch: a catch-all is just an arm, `| _ => d`.
 
 ```thrax
-$ grade : Maybe @Int -> @Int = \m =
-    is m
-    | .Just.{ v } if v > 100 => 3
-    | .Just.{ v } if v > 0   => 2
-    | .Just.{ _ }            => 1
-    | .None                  => 0
+$ grade : Maybe @Int -> @Int = \m =>
+    m |> \
+        | .Just.{ v } if v > 100 => 3
+        | .Just.{ v } if v > 0   => 2
+        | .Just.{ _ }            => 1
+        | .None                  => 0
 ```
 
 `++` splits a sequence (a string, vector, array, or a type of your own) into
@@ -150,13 +151,13 @@ fixed pieces around one part of any length, from either end; `h :: t` is
 `[h] ++ t`. On a sized tensor the lengths are checked at compile time.
 
 ```thrax
-$ ext : @Str -> @Str = \s = is s | name ++ ".thx" => name | _ => s
+$ ext : @Str -> @Str = \s => s |> \ | name ++ ".thx" => name | _ => s
 
-$ ends : @Vec @Int -> @Int = \xs =
-    is xs
-    | [a] ++ mid ++ [z] => a + z
-    | [a]               => a
-    | _                 => 0
+$ ends : @Vec @Int -> @Int = \xs =>
+    xs |> \
+        | [a] ++ mid ++ [z] => a + z
+        | [a]               => a
+        | _                 => 0
 ```
 
 ### Algebraic effects and handlers
@@ -174,7 +175,7 @@ one, that value is the handler's result.
 $ Yield : @effect = yield : @Int -> {},
 
 # The handler resumes once per yield, summing every value it produces.
-$ sumGen : ({} -> <Yield> {}) -> @Int = \gen =
+$ sumGen : ({} -> <Yield> {}) -> @Int = \gen =>
     do gen {}
     ctl k | Yield.yield v => v + k {} | _ => 0
 ```
@@ -183,19 +184,20 @@ $ sumGen : ({} -> <Yield> {}) -> @Int = \gen =
 
 An interface is an ordinary struct whose fields are its operations;
 implementing it is defining a value of that type. A function that needs one
-declares it as a `@ctx` FIRST parameter, which call sites do not write: the
-compiler finds it by type, taking the nearest binder in scope and otherwise
-the one instance in scope.
+declares it as a named `@use` field, in scope in its body, which call sites do
+not write: the compiler finds it by type, taking the nearest binder in scope
+and otherwise the one instance in scope. `f @use {.d = e} x` passes one by
+hand.
 
 ```thrax
 $ IArea : @struct t = area: t -> Real,
 
 $ Rect : @struct = w: Real, h: Real,
-$ impl_IArea_for_Rect : IArea Rect = .{ .area = \r = r.w * r.h }
+$ impl_IArea_for_Rect : IArea Rect = .{ .area = \r => r.w * r.h }
 
-# `d` is the CONTEXT parameter: ordinary in every respect, except that call
-# sites do not write it. The compiler finds it by type.
-$ total : @ctx IArea t -> @Vec t -> Real = \d xs = VEC.foldl (\acc x = acc + d.area x) 0.0 xs
+# `d` is a `@use` field: in scope by name in the body, and call sites do not
+# write it. The compiler finds it by type.
+$ total : @use { d: IArea t } -> @Vec t -> Real = \xs => VEC.foldl (\acc x => acc + d.area x) 0.0 xs
 
 $ sum : Real = total [Rect.{ 2.0, 3.0 }, Rect.{ 1.0, 4.0 }] # 10.0
 ```
@@ -207,7 +209,7 @@ function over `IAdd`, and a type joins it by defining an instance.
 $ Money : @struct = cents: @Int,
 
 # `+` is an ordinary CORE function over `IAdd`, so a type joins it with a value.
-$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
+$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b => Money.{ .cents = a.cents + b.cents } }
 $ paid : Money = Money.{ .cents = 150 } + Money.{ .cents = 99 }
 ```
 
@@ -219,7 +221,7 @@ the library name is symbolic (no path or soname in source).
 
 ```thrax
 $ puts : @Str -> <@IO> @Int = @extern "C" "puts" "libc"
-$ @main : @Vec @Str -> <@IO> @Int = \args = puts "Hello world"; 0
+$ @main : @Vec @Str -> <@IO> @Int = \args => puts "Hello world"; 0
 ```
 
 ## Project layout

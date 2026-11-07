@@ -3,9 +3,9 @@ $ @mod FIB
 # \file fib.thx
 # \info The Fibonacci sequence by naive double recursion.
 
-$ fib : @Int -> @Int = \n = if n == 0 => 0 else if n == 1 => 1 else (fib (n - 1)) + (fib (n - 2))
+$ fib : @Int -> @Int = \n => if n == 0 => 0 else if n == 1 => 1 else (fib (n - 1)) + (fib (n - 2))
 
-$ foo : @Int = let bar = \x y = x + y in bar 2 3
+$ foo : @Int = let bar = \x y => x + y in bar 2 3
 
 $ fib0 : @Int = fib 0
 $ fib1 : @Int = fib 1
@@ -18,18 +18,18 @@ $ fib15 : @Int = fib 15
 # `.Cons`) whose union is inferred from the constructors. `@Vec` is the prelude
 # type (its `[..]`/`::` sugar is hardwired to that name).
 $ len: @Vec t -> @Int =
-    let helper: @Vec t -> @Int -> @Int = \l n = is l | [] => n | _ :: xs => helper xs (n + 1) in
-    \l = helper l 0
+    let helper: @Vec t -> @Int -> @Int = \l n => l |> \ | [] => n | _ :: xs => helper xs (n + 1) in
+    \l => helper l 0
 
-$ to: @Int -> @Int -> @Vec @Int = \a b =
+$ to: @Int -> @Int -> @Vec @Int = \a b =>
     let
         helper: @Int -> @Int -> @Vec @Int -> @Vec @Int =
-            \a b xs = if a < b => helper (a + 1) b (a :: xs) else xs
+            \a b xs => if a < b => helper (a + 1) b (a :: xs) else xs
     in
         helper a b []
 
 $ sample : @Vec @Int = to 0 3
-$ len3 : @Int = is len sample | 3 => 0 | _ => 1
+$ len3 : @Int = len sample |> \ | 3 => 0 | _ => 1
 
 $ Point: @struct =
     x: @Int,
@@ -38,7 +38,7 @@ $ Point: @struct =
 # `+` on a user type comes from an `IAdd` instance. The interface and the operator
 # are CORE's; a module adds the type by defining a value of the interface type.
 $ impl_IAdd_for_Point : IAdd Point = .{
-    .add = \p1 p2 = .{ .x = p1.x + p2.x, .y = p1.y + p2.y },
+    .add = \p1 p2 => .{ .x = p1.x + p2.x, .y = p1.y + p2.y },
 }
 
 $ summed : Point = Point.{ 1, 2 } + Point.{ 3, 4 }
