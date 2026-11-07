@@ -12,8 +12,15 @@
 //! a new line instead (it arrives as LF, distinct from the Return key's CR; some
 //! terminals also send `Ctrl-Enter` as LF, so it works there too), so an item can
 //! span lines; typing `$` then `Ctrl-J` defines the current symbol: it is
-//! evaluated, and the `$` is "moved" to the next prompt. A line beginning with `:`
-//! is a meta-command.
+//! evaluated, and the `$` is "moved" to the next prompt.
+//!
+//! The shell has no commands of its own. It runs its items at compile time, so
+//! the `<@Meta>` operations a `$ @e` can call (`@scope`, `@type_of`, `@check`,
+//! ...) work at the prompt, and a `$ @e` item expands as it would in a file.
+//! Every session imports `THRAX_SHELL`: short commands over that reflection
+//! (`type "1 + 2"`, `scope "vec"`, `help {}`) and session control (`quit {}`,
+//! `reset {}`, `list {}`), which perform the built-in `<@Shell>` effect: the
+//! shell is its host.
 //!
 //! The whole session is recompiled against the standard library on each item,
 //! so definitions accumulate and errors just print and leave the session intact.
@@ -34,11 +41,14 @@
 //! the shell as in any other program, handing the terminal back before stopping
 //! and taking raw mode again on resume.
 
+use std::cell::RefCell;
 use std::io::{self, BufRead, Write};
 use std::os::raw::c_int;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::process::ExitCode;
 
+use frontend::ir::data::Prim;
 use thrax::{driver, highlight};
 
 /// The reserved binding an evaluated expression is compiled under.
@@ -81,16 +91,14 @@ fn run_raw(state: &mut Repl, raw: &term::RawMode) {
                 let _ = io::stdout().flush();
                 break;
             }
-            // Ctrl-D exits on an empty line (the readline convention), otherwise
-            // it forward-deletes the character at the cursor.
-            Some(Key::CtrlD) => {
-                if ed.is_empty() {
-                    print!("\r\n");
-                    let _ = io::stdout().flush();
-                    break;
-                }
-                ed.delete_forward();
+            // Ctrl-D is end of input, as in a cooked terminal: it leaves the
+            // shell, dropping the item being edited. Delete deletes forward.
+            Some(Key::EndOfInput) => {
+                print!("\r\n");
+                let _ = io::stdout().flush();
+                break;
             }
+            Some(Key::DeleteForward) => ed.delete_forward(),
             Some(Key::CtrlC) => {
                 print!("\r\n");
                 ed = Editor::new();
@@ -140,24 +148,17 @@ fn run_raw(state: &mut Repl, raw: &term::RawMode) {
                 };
                 match action {
                     Action::Newline => ed.newline(),
-                    Action::Command(cmd) => {
-                        print!("\r\n");
-                        let _ = io::stdout().flush();
-                        let mut quit = false;
-                        evaluating(raw, || quit = state.command(&cmd));
-                        if quit {
-                            break;
-                        }
-                        ed = Editor::new();
-                        ed.render();
-                    }
                     Action::Submit(body) => {
                         ed.set_buffer(body.clone());
                         ed.render();
                         print!("\r\n");
                         let _ = io::stdout().flush();
+                        let mut quit = false;
                         if !body.is_empty() && body != PREFILL.trim_end() {
-                            evaluating(raw, || state.submit(&body));
+                            evaluating(raw, || quit = state.submit(&body));
+                        }
+                        if quit {
+                            break;
                         }
                         ed = Editor::new();
                         ed.render();
@@ -168,8 +169,7 @@ fn run_raw(state: &mut Repl, raw: &term::RawMode) {
     }
 }
 
-/// Run one submitted item, or one `:command`, with the terminal handed back: the
-/// editor's raw mode is
+/// Run one submitted item with the terminal handed back: the editor's raw mode is
 /// for reading keys, not for running programs, and an ordinary terminal is also
 /// what lets `Ctrl-C` raise `SIGINT`, which the handler turns into the interrupt
 /// request the evaluator polls. The request is cleared on both sides, so a stale
@@ -190,29 +190,24 @@ fn page_lines() -> isize {
 
 /// A line-at-a-time reader for when stdin is a pipe or file: the same session
 /// semantics, but editing is the shell's problem, not ours. An item accumulates
-/// over lines and submits when a line ends in `$` (or on a lone `:` command).
+/// over lines and submits when a line ends in `$`.
 fn run_cooked(state: &mut Repl) {
     let stdin = io::stdin();
     let mut buf = String::new();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         let line = line.trim_end_matches(['\n', '\r']);
-        if buf.is_empty() {
-            if let Some(cmd) = line.trim_start().strip_prefix(':') {
-                if state.command(cmd.trim().trim_end_matches('$').trim()) {
-                    break;
-                }
-                continue;
-            }
-        }
         if !buf.is_empty() {
             buf.push('\n');
         }
         match line.trim_end().strip_suffix('$') {
             Some(last) => {
                 buf.push_str(last);
-                state.submit(&buf);
+                let quit = state.submit(&buf);
                 buf.clear();
+                if quit {
+                    return;
+                }
             }
             None => buf.push_str(line),
         }
@@ -226,8 +221,10 @@ enum Key {
     Char(char),
     Enter,
     Backspace,
-    /// Delete the character at the cursor, or exit when the line is empty.
-    CtrlD,
+    /// End of input (`Ctrl-D`): leave the shell.
+    EndOfInput,
+    /// Delete the character at the cursor (the Delete key).
+    DeleteForward,
     /// Abandon the current item.
     CtrlC,
     /// Cursor movement (arrows, or the emacs `Ctrl-B`/`Ctrl-F`/`Ctrl-A`/`Ctrl-E`).
@@ -283,8 +280,6 @@ enum Action {
     Newline,
     /// Submit this source (the trailing `$` terminator already removed).
     Submit(String),
-    /// Run this `:command` (the leading `:` already removed).
-    Command(String),
 }
 
 /// The current item's editable text, excluding the fixed `$ ` prompt, plus the
@@ -327,10 +322,6 @@ impl Editor {
         self.undo.clear();
         self.redo.clear();
         self.last_edit = None;
-    }
-
-    fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
     }
 
     /// Snapshot the current state before a same-kind run of edits, coalescing so
@@ -617,30 +608,14 @@ impl Editor {
         trimmed.strip_suffix('$').unwrap_or(trimmed).trim().to_string()
     }
 
-    /// The `:command` the buffer holds, when it is a single line beginning with `:`.
-    fn command(&self) -> Option<String> {
-        if self.buffer.contains('\n') {
-            return None;
-        }
-        let cmd = self.buffer.trim().strip_prefix(':')?;
-        Some(cmd.trim().trim_end_matches('$').trim().to_string())
-    }
-
-    /// Decide what Enter does: a `:command` runs, anything else submits the whole
-    /// buffer.
+    /// Decide what Enter does: submit the whole buffer.
     fn on_enter(&self) -> Action {
-        match self.command() {
-            Some(cmd) => Action::Command(cmd),
-            None => Action::Submit(self.submit_body()),
-        }
+        Action::Submit(self.submit_body())
     }
 
-    /// Decide what `Ctrl-J` does: a `:command` runs, a trailing `$` submits,
-    /// anything else extends the item.
+    /// Decide what `Ctrl-J` does: a trailing `$` submits, anything else extends
+    /// the item.
     fn on_newline(&self) -> Action {
-        if let Some(cmd) = self.command() {
-            return Action::Command(cmd);
-        }
         match self.buffer.trim_end().strip_suffix('$') {
             Some(body) => Action::Submit(body.to_string()),
             None => Action::Newline,
@@ -744,13 +719,27 @@ fn clear_overlay_line() {
     let _ = io::stdout().flush();
 }
 
+/// The import every session opens with: `library/THRAX_SHELL.thx`, whose
+/// `<@Shell>` builtins the shell performs (see [`Repl::evaluate`]).
+const SHELL_IMPORT: &str = "$ with THRAX_SHELL";
+
+/// What a `Shell` operation asks the shell to do once the evaluation ends.
+#[derive(Default)]
+struct Requests {
+    quit: bool,
+    reset: bool,
+}
+
 struct Repl {
     root_dir: PathBuf,
     /// Full `$ with MOD` lines, in entry order, deduplicated.
     imports: Vec<String>,
     /// Accumulated definitions as `(binding name, full source item)`. Redefining
     /// a name replaces its entry, so the module never has a duplicate `$ name`.
+    /// The items a `$ @e` expanded to are one entry, under a name no binding has.
     defs: Vec<(String, String)>,
+    /// How many `$ @e` items have been added, to name their entries.
+    expansions: usize,
     /// Bodies of submitted items in entry order, for reverse history search.
     history: Vec<String>,
 }
@@ -761,17 +750,20 @@ impl Repl {
             root_dir,
             imports: Vec::new(),
             defs: Vec::new(),
+            expansions: 0,
             history: Vec::new(),
         }
     }
 
     /// The `$ @mod REPL` source for the current session, with `extra` appended.
     fn source(&self, extra: &str) -> String {
-        let mut s = String::from("$ @mod REPL\n");
+        let mut s = format!("$ @mod {}\n", driver::SHELL_MODULE);
         for imp in &self.imports {
             s.push_str(imp);
             s.push('\n');
         }
+        s.push_str(SHELL_IMPORT);
+        s.push('\n');
         for (_, def) in &self.defs {
             s.push_str(def);
             s.push('\n');
@@ -781,11 +773,12 @@ impl Repl {
     }
 
     /// Process one completed item (a `$`-prefixed source fragment, minus its
-    /// leading `$`). Empty items are ignored.
-    fn submit(&mut self, body: &str) {
+    /// leading `$`). Empty items are ignored. Returns `true` when the item asked
+    /// the shell to quit.
+    fn submit(&mut self, body: &str) -> bool {
         let body = body.trim();
         if body.is_empty() {
-            return;
+            return false;
         }
         if self.history.last().map(String::as_str) != Some(body) {
             self.history.push(body.to_string());
@@ -793,15 +786,49 @@ impl Repl {
         let item = format!("$ {body}");
         if body.split_whitespace().next() == Some("with") {
             self.import(&item);
-            return;
+            return false;
+        }
+        if body.starts_with("@e") {
+            self.splice(&item);
+            return false;
         }
         match def_name(body) {
-            Some(name) if name == "_" => self.evaluate(body),
+            Some(name) if name == "_" => return self.evaluate(body),
             Some(name) if looks_like_name(&name) => self.define(name, &item),
             _ => eprintln!(
                 "thrax: `{body}` is not a definition; to evaluate an expression write \
                  `$ _ = {body}`"
             ),
+        }
+        false
+    }
+
+    /// `item` with its compile-time sites expanded against the session, as a
+    /// file's are, or `None` (the diagnostic printed) when expansion fails. An
+    /// item with no `@e` is as written.
+    fn expanded(&self, item: &str) -> Option<String> {
+        if !has_site(item) {
+            return Some(item.to_string());
+        }
+        let before = self.source("");
+        let all = driver::expand_session(&format!("{before}{item}\n"), &self.root_dir)?;
+        // The session's earlier items are expanded already, so every edit landed
+        // in `item`, which is last.
+        Some(all[before.len()..].trim().to_string())
+    }
+
+    /// Add the items a `$ @e` item expands to. One run only for its effect (a
+    /// `@warn`, say) adds nothing.
+    fn splice(&mut self, item: &str) {
+        let Some(items) = self.expanded(item) else { return };
+        if items.is_empty() {
+            return;
+        }
+        self.expansions += 1;
+        self.defs.push((format!("@e#{}", self.expansions), items));
+        if let Err(e) = self.recompile() {
+            self.defs.pop();
+            print!("{e}");
         }
     }
 
@@ -819,11 +846,12 @@ impl Repl {
 
     /// Add or replace a named definition, rolling back if it does not compile.
     fn define(&mut self, name: String, item: &str) {
+        let Some(item) = self.expanded(item) else { return };
         let previous = self.defs.iter().position(|(n, _)| *n == name);
         let saved = previous.map(|i| self.defs[i].clone());
         match previous {
-            Some(i) => self.defs[i] = (name.clone(), item.to_string()),
-            None => self.defs.push((name.clone(), item.to_string())),
+            Some(i) => self.defs[i] = (name.clone(), item),
+            None => self.defs.push((name.clone(), item)),
         }
         if let Err(e) = self.recompile() {
             match (previous, saved) {
@@ -835,10 +863,12 @@ impl Repl {
     }
 
     /// Compile and force `$ _ = <body>` (renamed to the reserved `__it`), then
-    /// print its value or the diagnostic.
-    fn evaluate(&self, body: &str) {
+    /// print its value or the diagnostic. It runs with the compile-time hosts in
+    /// place and the shell as the `<@Shell>` host. Returns `true` when it asked
+    /// the shell to quit.
+    fn evaluate(&mut self, body: &str) -> bool {
         // `body` starts with the discard name `_`; swap it for the eval binding.
-        let it_item = format!("$ {IT}{}", &body[1..]);
+        let Some(it_item) = self.expanded(&format!("$ {IT}{}", &body[1..])) else { return false };
         let src = self.source(&format!("{it_item}\n"));
         let session = match driver::compile_session(&src, &self.root_dir) {
             Ok(s) => s,
@@ -849,7 +879,7 @@ impl Repl {
                         "help: `_=` evaluates an expression; delete the `_= ` prefill to define `{name}`"
                     );
                 }
-                return;
+                return false;
             }
         };
         let ir = session.ir();
@@ -858,10 +888,30 @@ impl Repl {
             .iter()
             .find(|(n, _)| n == IT)
             .map(|(_, t)| t.to_string());
+
+        let requests = Rc::new(RefCell::new(Requests::default()));
+        let listing = self.listing();
+        let asked = Rc::clone(&requests);
+        interpreter::machine::set_shell_host(Some(Box::new(move |prim| match prim {
+            Prim::ShellQuit => asked.borrow_mut().quit = true,
+            Prim::ShellReset => asked.borrow_mut().reset = true,
+            Prim::ShellList => print!("{listing}"),
+            other => unreachable!("`{other}` is not a `<@Shell>` builtin"),
+        })));
+        session.enter_meta(&self.root_dir);
         // Any output from effects the expression runs has already printed to
-        // stdout by this point; the `=>` line reports the value it evaluated to
+        // stdout by this point; the `#` line reports the value it evaluated to
         // (and its type), keeping that boundary visible.
-        match interpreter::machine::eval(&ir, IT) {
+        let result = interpreter::machine::eval(&ir, IT);
+        driver::leave_session_meta(&self.root_dir);
+        interpreter::machine::set_shell_host(None);
+        for w in interpreter::machine::take_meta_warnings() {
+            print!("{}", w.render_warning("", "<repl>"));
+        }
+        match result {
+            // An item run for its effect (`list {}`, a print) reports
+            // nothing: its value says nothing the output did not.
+            Ok(_) if ty.as_deref() == Some("{}") => {}
             Ok(shown) => match ty {
                 Some(ty) => println!("{RESULT}{} : {ty}", show_at_type(shown, &ty)),
                 None => println!("{RESULT}{shown}"),
@@ -871,74 +921,38 @@ impl Repl {
             Err(_) if utilities::interrupt::requested() => println!("{RESULT}interrupted"),
             Err(diag) => print!("{}", diag.render("", "<repl>")),
         }
+        let requests = requests.borrow();
+        if requests.reset {
+            self.imports.clear();
+            self.defs.clear();
+        }
+        requests.quit
+    }
+
+    /// The session's imports and definitions, one item per line, as `list {}`
+    /// shows them.
+    fn listing(&self) -> String {
+        let mut out = String::new();
+        for item in self.imports.iter().chain(self.defs.iter().map(|(_, def)| def)) {
+            out.push_str(item);
+            out.push('\n');
+        }
+        out
     }
 
     /// Type-check the session as it stands; `Ok(())` means it builds.
     fn recompile(&self) -> Result<(), String> {
         driver::compile_session(&self.source(""), &self.root_dir).map(|_| ())
     }
+}
 
-    /// Handle a `:command`. Returns `true` to quit.
-    fn command(&mut self, cmd: &str) -> bool {
-        let (name, rest) = match cmd.split_once(char::is_whitespace) {
-            Some((n, r)) => (n, r.trim()),
-            None => (cmd.trim(), ""),
-        };
-        match name {
-            "q" | "quit" => return true,
-            "help" | "?" => print!("{HELP}"),
-            "reset" => {
-                self.imports.clear();
-                self.defs.clear();
-            }
-            "list" | "l" => {
-                for imp in &self.imports {
-                    println!("{imp}");
-                }
-                for (_, def) in &self.defs {
-                    println!("{def}");
-                }
-            }
-            "t" | "type" => {
-                if rest.is_empty() {
-                    eprintln!("thrax: `:type` needs an expression, e.g. `:type 1 + 2`");
-                } else {
-                    self.show_type(rest);
-                }
-            }
-            other => eprintln!("thrax: unknown command `:{other}` (`:help` for the list)"),
-        }
-        false
-    }
-
-    /// Print `expr : <type>` without evaluating it. A bare NAME prints its
-    /// DECLARATION, `@use` fields and all: inferring it as an expression would have
-    /// to pick a type for its context, which is what the declaration leaves open.
-    fn show_type(&self, expr: &str) {
-        if let Some(name) = bare_global_name(expr) {
-            let src = self.source("");
-            match driver::compile_session_query(&src, &self.root_dir, Some(&name)) {
-                Ok(session) => {
-                    if let Some(ty) = session.queried {
-                        println!("{expr} : {ty}");
-                        return;
-                    }
-                }
-                Err(e) => {
-                    print!("{e}");
-                    return;
-                }
-            }
-        }
-        let src = self.source(&format!("$ {IT} = {expr}\n"));
-        match driver::compile_session(&src, &self.root_dir) {
-            Ok(session) => match session.decls.iter().find(|(n, _)| n == IT) {
-                Some((_, ty)) => println!("{expr} : {ty}"),
-                None => eprintln!("thrax: could not determine the type of `{expr}`"),
-            },
-            Err(e) => print!("{e}"),
-        }
-    }
+/// Whether `item` holds a compile-time site, `@e` as a whole word. A site can
+/// only be written so; a false hit (`@e` inside a string) only costs an
+/// expansion round that finds nothing.
+fn has_site(item: &str) -> bool {
+    item.match_indices("@e").any(|(at, _)| {
+        !item[at + 2..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
 }
 
 /// The name a definition typed after the `_=` prefill would bind, as in
@@ -977,36 +991,6 @@ fn def_name(after: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-const HELP: &str = "\
-The shell reads Thrax `$` items, like a `.thx` file. Each prompt opens with a
-fixed `$ ` and a deletable `_= ` prefill. Enter submits the whole buffer at once.
-Ctrl-J starts a new line, so items may span lines; type `$` then Ctrl-J to submit
-the item you are editing. An evaluated item's value is reported on a `#` comment
-line, with its type.
-
-  $ _= <expr>       evaluate an expression and print its value and type
-  $ name : T = <e>  add (or redefine) a binding (silent, like a file)
-  $ with MOD        import a standard-library module (e.g. VEC, STR, MATH)
-  :type <expr>      show an expression's type without evaluating   (:t)
-  :list             show the current imports and definitions       (:l)
-  :reset            clear all imports and definitions
-  :help             show this help                                 (:?)
-  :quit             leave the shell (or Ctrl-D on an empty line)    (:q)
-
-Emacs editing keys:
-  C-b/C-f (or arrows) character    M-b/M-f word      C-p/C-n (or Up/Down) line
-  C-a/C-e line start/end           M-</M-> item start/end
-  C-v/M-v page down/up             C-l clear screen
-  C-k kill to end of line          M-d/M-DEL kill next/previous word (C-w = M-DEL)
-  C-d delete char (or exit on an empty line)
-  C-c abandon the item being edited (and stop a running evaluation)
-  C-z suspend the shell (resume it with `fg`)
-  C-/ undo                         M-/ redo
-  C-r reverse history search: type to match, C-r/Up older, C-n/Down newer,
-      Enter to accept, Esc (or C-g) to cancel
-  C-j new line (or submit the item when it ends in `$`)
-";
-
 /// A rendered value, corrected for its type where the untyped runtime value
 /// cannot tell: a 64-bit `@Nat` is held as the bits of an `i64`, so one above
 /// `i64::MAX` renders negative.
@@ -1037,7 +1021,7 @@ mod term {
     const CTRL_A: u8 = 0x01; // start of line
     const CTRL_B: u8 = 0x02; // back one char
     const CTRL_C: u8 = 0x03; // abandon item
-    const CTRL_D: u8 = 0x04; // delete char, or exit on an empty line
+    const CTRL_D: u8 = 0x04; // end of input: leave the shell
     const CTRL_E: u8 = 0x05; // end of line
     const CTRL_F: u8 = 0x06; // forward one char
     const CTRL_G: u8 = 0x07; // cancel (keyboard-quit)
@@ -1191,7 +1175,7 @@ mod term {
                 UNDO => return Some(Key::Undo),
                 CTRL_C => return Some(Key::CtrlC),
                 CTRL_Z => return Some(Key::Suspend),
-                CTRL_D => return Some(Key::CtrlD),
+                CTRL_D => return Some(Key::EndOfInput),
                 // With `ICRNL` off, the Return key is CR and `Ctrl-J` is LF, so the
                 // two split: Return evaluates the whole buffer, `Ctrl-J` continues
                 // the item on a new line.
@@ -1225,14 +1209,18 @@ mod term {
         }
         match input.byte()? {
             b'[' | b'O' => {
+                let mut params = Vec::new();
                 let mut last = 0;
                 while let Some(x) = input.byte() {
                     last = x;
                     if is_csi_final(x) {
                         break;
                     }
+                    params.push(x);
                 }
                 match last {
+                    // `ESC [ 3 ~` is the Delete key; other `~` keys are skipped.
+                    b'~' if params == b"3" => Some(Key::DeleteForward),
                     b'C' => Some(Key::Right),
                     b'D' => Some(Key::Left),
                     b'A' => Some(Key::Up),
@@ -1277,23 +1265,4 @@ mod term {
         }
         std::str::from_utf8(&bytes).ok()?.chars().next()
     }
-}
-
-/// The global a `:type` argument names, when it is just a name: an identifier, or an
-/// operator in parentheses (`(+)` names the global `+`). `None` for anything with
-/// structure, which is typed as an expression instead.
-fn bare_global_name(expr: &str) -> Option<String> {
-    let t = expr.trim();
-    if let Some(inner) = t.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
-        let op = inner.trim();
-        let symbolic = !op.is_empty()
-            && op
-                .chars()
-                .all(|c| !c.is_alphanumeric() && !c.is_whitespace() && c != '_');
-        return symbolic.then(|| op.to_string());
-    }
-    let ident = !t.is_empty()
-        && t.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
-        && t.chars().all(|c| c.is_alphanumeric() || c == '_');
-    ident.then(|| t.to_string())
 }

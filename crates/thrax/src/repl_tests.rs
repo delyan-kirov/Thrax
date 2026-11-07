@@ -12,7 +12,7 @@ fn emacs_control_keys_decode() {
     assert_eq!(key(&[0x02]), Some(Key::Left)); // Ctrl-B
     assert_eq!(key(&[0x06]), Some(Key::Right)); // Ctrl-F
     assert_eq!(key(&[0x0b]), Some(Key::KillToEol)); // C-k
-    assert_eq!(key(&[0x04]), Some(Key::CtrlD));
+    assert_eq!(key(&[0x04]), Some(Key::EndOfInput));
     assert_eq!(key(&[0x7f]), Some(Key::Backspace));
     assert_eq!(key(&[b'\r']), Some(Key::Enter));
 }
@@ -26,7 +26,9 @@ fn arrow_escapes_decode_and_others_are_skipped() {
     // A modified arrow still resolves by its final byte.
     assert_eq!(key(b"\x1b[1;5C"), Some(Key::Right));
     // An unrecognized sequence is swallowed, so the following key surfaces.
-    assert_eq!(key(b"\x1b[3~a"), Some(Key::Char('a')));
+    assert_eq!(key(b"\x1b[2~a"), Some(Key::Char('a')));
+    // The Delete key deletes forward.
+    assert_eq!(key(b"\x1b[3~"), Some(Key::DeleteForward));
     // Vertical arrows and the Alt-word motions.
     assert_eq!(key(b"\x1b[A"), Some(Key::Up));
     assert_eq!(key(b"\x1b[B"), Some(Key::Down));
@@ -78,9 +80,6 @@ fn enter_submits_and_ctrl_j_continues() {
     let ed = editor_with("_= 1 + 2 $");
     assert!(matches!(ed.on_newline(), Action::Submit(b) if b == "_= 1 + 2 "));
 
-    let ed = editor_with(":t 1");
-    assert!(matches!(ed.on_enter(), Action::Command(c) if c == "t 1"));
-    assert!(matches!(ed.on_newline(), Action::Command(c) if c == "t 1"));
 }
 
 #[test]

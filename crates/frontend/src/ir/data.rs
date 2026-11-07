@@ -579,10 +579,14 @@ builtins! {
     TypeParams = compile_time("@type_params", 1),
     TypeOf = compile_time("@type_of", 1),
     Lookup = compile_time("@lookup", 1),
+    Scope = compile_time("@scope", 1),
     Here = compile_time("@here", 1),
     Check = compile_time("@check", 1),
     Fail = compile_time("@fail", 1),
     Warn = compile_time("@warn", 1),
+    ShellQuit = compile_time("@shell_quit", 1),
+    ShellReset = compile_time("@shell_reset", 1),
+    ShellList = compile_time("@shell_list", 1),
 }
 
 impl Prim {

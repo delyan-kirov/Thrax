@@ -958,11 +958,12 @@ impl<'a> Checker<'a> {
                 Ok(v)
             }
             Expr::Builtin => {
-                if self.module_name != "CORE" {
+                // THRAX_SHELL declares the `<@Shell>` builtins the shell performs.
+                if self.module_name != "CORE" && self.module_name != "THRAX_SHELL" {
                     let span = self.ast.expr_span(e).unwrap_or_else(|| Span::at(0));
                     return Err(diag!(
                         Code::TypeMismatch, span, 0,
-                        "only CORE may declare a builtin with `@extern \"thrax\"`";
+                        "only CORE and THRAX_SHELL may declare a builtin with `@extern \"thrax\"`";
                         note: "a builtin is implemented by the compiler and runtime, \
                                not by a library"
                     ));

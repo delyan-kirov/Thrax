@@ -14,7 +14,7 @@ fn fetch_from<'m>(extra: &'m HashMap<&'m str, String>) -> impl Fn(&str) -> Resul
 }
 
 fn session(root: &str, extra: &HashMap<&str, String>) -> Result<Vec<(String, String)>, String> {
-    let kind = InMemory::Session { open_effects: true, query: None };
+    let kind = InMemory::Session { open_effects: true };
     compile_in_memory("REPL", root, &fetch_from(extra), kind).map(|s| s.decls)
 }
 

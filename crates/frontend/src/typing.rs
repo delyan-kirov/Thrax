@@ -1081,10 +1081,10 @@ impl<'a> Checker<'a> {
     }
 
     /// The declared type of a global `name` in scope, as a user reads it (with any
-    /// `@use` fields). The shell's `:type` uses this for a bare name: inferring the
-    /// name as an expression would have to pick a type for its context, which is
-    /// exactly what the declaration leaves open.
-    pub fn show_name(&mut self, name: StrId) -> Option<String> {
+    /// `@use` fields). Inferring the name as an expression instead would have to
+    /// pick a type for its context, which is exactly what the declaration leaves
+    /// open.
+    pub(crate) fn show_name(&mut self, name: StrId) -> Option<String> {
         if let Some(sig) = self.global_ctx.get(&name).copied() {
             let (exposed, ctx) = self.scheme_and_ctx(sig, true);
             if let Some(ctx) = ctx {

@@ -30,6 +30,7 @@ pub const MODULES: &[(&str, &str)] = &[
     ("SET", include_str!("../../../library/SET.thx")),
     ("STM", include_str!("../../../library/STM.thx")),
     ("STR", include_str!("../../../library/STR.thx")),
+    ("THRAX_SHELL", include_str!("../../../library/THRAX_SHELL.thx")),
     ("VEC", include_str!("../../../library/VEC.thx")),
 ];
 

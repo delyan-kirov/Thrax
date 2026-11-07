@@ -1876,6 +1876,9 @@ thread_local! {
     /// running site's module and returns its type, or a rendered error.
     static META_CHECK: std::cell::RefCell<Option<Box<dyn Fn(&str) -> std::result::Result<String, String>>>> =
         const { std::cell::RefCell::new(None) };
+    /// The names a bare reference at the running site can resolve to, each with
+    /// its type as source, for `@scope`.
+    static META_SCOPE: std::cell::RefCell<Option<Rc<Vec<(String, String)>>>> = const { std::cell::RefCell::new(None) };
     /// The `@e` site running now, `(file, line, column)`, for `@here`.
     static META_SITE: std::cell::RefCell<Option<(String, i64, i64)>> = const { std::cell::RefCell::new(None) };
     /// What `@warn` reported while the current site ran, for the driver to render
@@ -1891,6 +1894,16 @@ pub fn set_meta_check(host: Option<Box<dyn Fn(&str) -> std::result::Result<Strin
 /// Set (or clear) the `@e` site `@here` reports.
 pub fn set_meta_site(site: Option<(String, i64, i64)>) {
     META_SITE.with(|c| *c.borrow_mut() = site);
+}
+
+/// Set (or clear) what `@scope` reports.
+pub fn set_meta_scope(scope: Option<Rc<Vec<(String, String)>>>) {
+    META_SCOPE.with(|c| *c.borrow_mut() = scope);
+}
+
+pub(crate) fn meta_scope() -> Result<Rc<Vec<(String, String)>>> {
+    META_SCOPE.with(|c| c.borrow().clone())
+        .ok_or_else(|| fault("@scope is only available at compile time (inside `$ @e`)"))
 }
 
 /// Take the warnings `@warn` reported since the last call.
@@ -1936,6 +1949,28 @@ impl TypeInfo {
             TypeInfo::Value { .. } => &[],
         }
     }
+}
+
+thread_local! {
+    /// The `<@Shell>` host: the shell, performing one of its `@shell_*` builtins.
+    /// Absent outside the shell, so a stray call faults cleanly.
+    static SHELL_HOST: std::cell::RefCell<Option<Box<dyn Fn(Prim)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Install (or clear) the `<@Shell>` host.
+pub fn set_shell_host(host: Option<Box<dyn Fn(Prim)>>) {
+    SHELL_HOST.with(|c| *c.borrow_mut() = host);
+}
+
+/// Perform the `@shell_*` builtin `prim`, or fault outside the shell.
+pub(crate) fn shell_request(prim: Prim) -> Result<()> {
+    SHELL_HOST.with(|c| match &*c.borrow() {
+        Some(host) => {
+            host(prim);
+            Ok(())
+        }
+        None => Err(fault(format!("`{prim}` is only available in the shell"))),
+    })
 }
 
 thread_local! {
