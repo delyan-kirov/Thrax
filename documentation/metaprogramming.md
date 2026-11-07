@@ -251,7 +251,8 @@ parse error that points at `$ @e`.
 at a fixed site: `X` is a closed compile-time expression, run once, now, whose
 `@Code` result replaces the site in source. What the code denotes is known only
 once it is spliced and re-checked, so the site types as a fresh variable until
-then. In item position the code holds top-level items; in type position, a type.
+then. In item position the code holds top-level items; in type position, a type;
+in pattern position (`@e (X)`, always parenthesized), a pattern.
 
 **Why.** `$ @e` already exists as CTFE (`Expr::Run` in the parser AST) and
 already drives the CEK machine at compile time. Reusing it means no new parser
@@ -684,6 +685,20 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    the driver evaluates it, requires an `@Code`, and splices its source at the
    node's span. Nests inside larger types (`@Vec (@e ...)`). Scope: def signatures
    (struct/union/alias member types are a follow-up). See `examples/META_TYPE.thx`.
+2d. **DONE: pattern-position `@e (X)` (#160, #197).** The operand is always
+   parenthesized, so it ends at `)` before the arm's `=>`, `|` or `::`.
+   `Pattern::MetaE` types as a match of any value that binds nothing; coverage is
+   skipped for a match holding one (the final compile checks the spliced
+   pattern). Lowering emits a synthetic global `@e_pat#n` per site
+   (`Program.ct_patterns`) and the driver splices its source bare, since a
+   pattern has no parentheses. The enclosing global counts as deferred until
+   then, so no `@e` runs the unspliced match. See `examples/META_PATTERN.thx`.
+2e. **DONE: an `@e` never runs unresolved code (#416).** A lenient round records
+   each site it defers (`Checker::deferred_sites`); lowering lists the globals
+   holding one (`Program.deferred`), and the driver does not run an `@e` whose
+   global reaches one. If a round makes no progress while sites wait, the strict
+   check reports the deferred error instead of whatever fault the run would have
+   raised. See Note [Deferred sites hold back generators] in `desugar.rs`.
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
 4. **PARTIALLY DONE: the `<@Meta>` effect.**

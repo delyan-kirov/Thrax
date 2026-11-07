@@ -507,13 +507,20 @@ impl<'a> Checker<'a> {
             // unknown until the driver's expand loop runs `X`, so it stands as a
             // fresh variable here. Only reachable in a lenient (pre-expansion)
             // round; the final strict compile sees the substituted concrete type.
+            //
+            // Signatures are elaborated before any global is in scope, so every
+            // name the operand mentions takes the lenient branch here even though
+            // lowering resolves it. Those are not deferred sites: holding the
+            // operand back for them would hold it forever.
             Ty::MetaE(expr) => {
                 let expr = *expr;
                 let ambient = self.meta_ambient();
                 let saved = std::mem::replace(&mut self.ambient, ambient);
+                let sites = self.deferred_sites.clone();
                 if let Ok(t) = self.infer(expr) {
                     let _ = self.unifier.unify(t, self.unifier.types.con("@Code"), "in a `@e` type splice");
                 }
+                self.deferred_sites = sites;
                 self.ambient = saved;
                 self.unifier.fresh()
             }

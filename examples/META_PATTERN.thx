@@ -1,0 +1,46 @@
+$ @mod META_PATTERN
+
+# \file META_PATTERN.thx
+# \info Pattern-position `@e`. `@e (X)` in a pattern runs X at build time; X must
+#       build an `@Code` holding a PATTERN (with `@parse_str`), whose source
+#       replaces the `@e (X)` before the final compile. The operand is always
+#       parenthesized, so it ends at `)` and never runs into the `=>` or `|`
+#       after it. This is how a value the compiler can compute stands in a
+#       pattern: render it with a generator, and the arm matches it like a
+#       hand-written literal. A spliced pattern may bind names, which the arm
+#       body uses as if they were written there.
+
+$ with OPT
+
+# A generator that computes at build time and renders the result as a pattern.
+$ lit : @Int -> @Code = \n => @parse_str <| to_string n
+
+$ answer : @Int = 6 * 7
+
+# The arm matches `42`, folded from `answer` while compiling.
+$ is_answer : @Int -> @Bool = \ | @e (lit answer) => @true | _ => @false
+
+# Several computed arms, in a match on a scrutinee.
+$ classify : @Int -> @Str = \n =>
+    n |> \
+        | @e (lit (2 * 3))      => "six"
+        | @e (lit (answer + 1)) => "forty-three"
+        | _                     => "other"
+
+# A generated pattern that binds: the body sees `x` as if it were written.
+$ some_pat : {} -> @Code = \_ => @parse_str "Option.Some.{x}"
+$ or_zero : Option @Int -> @Int = \ | @e (some_pat {}) => x | _ => 0
+
+# In a `let`: the pattern is a tuple the generator builds.
+$ pair_pat : {} -> @Code = \_ => @parse_str "{a, b}"
+$ sum_pair : @Int = let @e (pair_pat {}) = { 3, 4 } in a + b
+
+$ ck1 : @Int = if is_answer 42 && !(is_answer 41) => 0 else 1
+$ ck2 : @Int = if classify 6 == "six" && classify 43 == "forty-three" => 0 else 2
+$ ck3 : @Int = if classify 7 == "other" => 0 else 4
+$ ck4 : @Int = if or_zero (Option.Some.{ 5 }) == 5 && or_zero Option.None == 0 => 0 else 8
+$ ck5 : @Int = if sum_pair == 7 => 0 else 16
+
+$ test : @Int = ck1 + ck2 + ck3 + ck4 + ck5
+
+$ @e <| assert (test == 0) "META_PATTERN: a check failed"

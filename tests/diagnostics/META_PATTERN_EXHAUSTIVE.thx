@@ -1,0 +1,5 @@
+$ @mod META_PATTERN_EXHAUSTIVE
+
+# Coverage is checked on the spliced pattern.
+$ lit : @Int -> @Code = \n => @parse_str <| to_string n
+$ f : @Int -> @Int = \ | @e (lit 3) => 1  #~ error[NON_EXHAUSTIVE_MATCH]: non-exhaustive match

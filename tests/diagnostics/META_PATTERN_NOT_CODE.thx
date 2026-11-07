@@ -1,0 +1,4 @@
+$ @mod META_PATTERN_NOT_CODE
+
+# The operand of a pattern-position `@e` builds the pattern's code.
+$ f : @Int -> @Int = \ | @e (3) => 1 | _ => 0  #~ error[TYPE_MISMATCH]: a numeric literal cannot be used where `@Code` is expected

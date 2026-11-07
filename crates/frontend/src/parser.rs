@@ -2814,6 +2814,15 @@ impl<'a> Parser<'a> {
                 let name = self.intern(self.text(t));
                 Ok(self.pat(Pattern::Var(name)))
             }
+            // `@e (X)`: parenthesized, so the operand ends at `)` and never runs
+            // into the `=>`, `|` or `::` that follow a pattern.
+            Kind::At if self.intrinsic_name(t) == "e" => {
+                self.bump()?;
+                expect!(self, Kind::LParen, "expected '(' after '@e' in a pattern");
+                let e = self.parse_expr(0)?;
+                expect!(self, Kind::RParen, "expected ')' to close the '@e' pattern");
+                Ok(self.pat(Pattern::MetaE(e)))
+            }
             Kind::At => {
                 self.bump()?;
                 match self.intrinsic_name(t) {

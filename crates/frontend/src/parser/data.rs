@@ -438,6 +438,9 @@ pub enum Pattern {
         tag: StrId,
         fields: Slice<FieldPat>,
     },
+    /// `@e (X)`: a pattern a generator produces. `X` builds the `@Code`, and the
+    /// driver splices its source here before the final compile.
+    MetaE(Aol<Expr>),
 }
 
 /// A field pattern inside a struct pattern or variant payload.

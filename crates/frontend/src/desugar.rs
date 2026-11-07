@@ -71,6 +71,9 @@ pub fn desugar_program(
         terms: Terms::new(),
         meta_evals: Vec::new(),
         meta_type_evals: Vec::new(),
+        meta_pat_evals: Vec::new(),
+        reached_deferred: false,
+        deferred: Vec::new(),
     };
     let mut effects = Vec::new();
     let mut globals = Vec::new();
@@ -85,7 +88,7 @@ pub fn desugar_program(
                 if let Some(sig) = sig {
                     lw.collect_meta_types(*sig);
                 }
-                let term = lw.def(*sig, *body);
+                let term = lw.watched(*name, |lw| lw.def(*sig, *body));
                 globals.push((*name, term));
                 if ctx.is_some() {
                     ctx_globals.push(*name);
@@ -97,7 +100,7 @@ pub fn desugar_program(
             // module, and the driver qualifies the same way to force it.
             Item::Run(expr, span) => {
                 let name = StrId::intern(&format!("@e#{}", ct_runs.len()));
-                let term = lw.expr(*expr);
+                let term = lw.watched(name, |lw| lw.expr(*expr));
                 globals.push((name, term));
                 ct_runs.push((name, *span));
             }
@@ -123,6 +126,10 @@ pub fn desugar_program(
     let ct_types: Vec<(StrId, Span)> =
         lw.meta_type_evals.iter().map(|(n, _, s)| (*n, *s)).collect();
     globals.extend(lw.meta_type_evals.drain(..).map(|(n, body, _)| (n, body)));
+    // Pattern-position `@e (X)` synthetic globals, spliced as pattern source.
+    let ct_patterns: Vec<(StrId, Span)> =
+        lw.meta_pat_evals.iter().map(|(n, _, s)| (*n, *s)).collect();
+    globals.extend(lw.meta_pat_evals.drain(..).map(|(n, body, _)| (n, body)));
     // `$ @build : {} -> <@Meta, @IO> @Code`: back the call `@build {}` with a
     // synthetic global so the driver can force it exactly as it forces an `$ @e`.
     // The reference is module-qualified because several modules may each define
@@ -153,7 +160,9 @@ pub fn desugar_program(
     core.ct_runs = ct_runs;
     core.ct_evals = ct_evals;
     core.ct_types = ct_types;
+    core.ct_patterns = ct_patterns;
     core.ct_build = ct_build;
+    core.deferred = lw.deferred;
     core
 }
 
@@ -181,7 +190,32 @@ struct Desugarer<'a> {
     /// resulting `@Code`'s type source at the `@e X` span and re-compiles. Drained
     /// by [`desugar_program`] into `Program.globals` / `Program.ct_types`.
     meta_type_evals: Vec<(StrId, Aol<Term>, Span)>,
+    /// Synthetic globals for pattern-position `@e (X)`, each `@e_pat#n = X`; the
+    /// driver splices the resulting `@Code`'s pattern source at the span. Drained
+    /// by [`desugar_program`] into `Program.globals` / `Program.ct_patterns`.
+    meta_pat_evals: Vec<(StrId, Aol<Term>, Span)>,
+    /// Whether the global being lowered has reached a deferred site yet.
+    reached_deferred: bool,
+    /// The globals that did, drained into `Program.deferred`.
+    deferred: Vec<StrId>,
 }
+
+// Note [Deferred sites hold back generators]
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// A lenient expansion round leaves a site it cannot resolve yet (an unbound
+// name, a missing instance) unresolved, because a generator that has not run may
+// still supply it. Lowering then emits the site without what it lacks: a call
+// with no instance argument, a reference to a global that does not exist. Code
+// like that runs wrong in whatever way the gap produces, so an `@e` that ran it
+// would fault with a message unrelated to the cause ("no field `c`"), or worse,
+// succeed and splice code computed from a wrong value.
+//
+// So every global whose body holds a deferred site is recorded in
+// `Program.deferred`, and the driver does not run an `@e` whose global reaches
+// one through the globals it references. The site waits like a faulting one: a
+// later round, after some generator supplied what was missing, runs it against
+// the resolved code. When a round makes no progress, the strict check reports
+// the deferred error itself.
 
 // ## Building Core
 
@@ -280,6 +314,25 @@ impl<'a> Desugarer<'a> {
     /// `@use` context parameter needs nothing here: the body binds it like any other first
     /// parameter, and each call site injects the resolved value as a leading
     /// argument (see [`Self::apply_ctx`]).
+    /// Lower a global's body with `f`, and whether it reached a deferred site.
+    /// See Note [Deferred sites hold back generators].
+    fn watching(&mut self, f: impl FnOnce(&mut Self) -> Aol<Term>) -> (Aol<Term>, bool) {
+        let outer = std::mem::replace(&mut self.reached_deferred, false);
+        let term = f(self);
+        let reached = std::mem::replace(&mut self.reached_deferred, outer);
+        (term, reached)
+    }
+
+    /// Lower global `name`'s body with `f`, recording `name` in `deferred` when
+    /// it reaches a deferred site.
+    fn watched(&mut self, name: StrId, f: impl FnOnce(&mut Self) -> Aol<Term>) -> Aol<Term> {
+        let (term, reached) = self.watching(f);
+        if reached {
+            self.deferred.push(name);
+        }
+        term
+    }
+
     fn def(&mut self, sig: Option<Aol<Ty>>, body: Aol<Expr>) -> Aol<Term> {
         let term = self.expr(body);
         // A bare `@extern` already declares every parameter in its `arg_types`
@@ -357,6 +410,9 @@ impl<'a> Desugarer<'a> {
     }
 
     fn expr(&mut self, e: Aol<Expr>) -> Aol<Term> {
+        if self.resolved.deferred_sites.contains(&e) {
+            self.reached_deferred = true;
+        }
         // A promoted argument (scalar or positional tuple passed where a record is
         // expected) is wrapped into a name-keyed record here.
         if let Some(names) = self.resolved.promotions.get(&e) {
@@ -912,6 +968,9 @@ impl<'a> Desugarer<'a> {
         // single field.
         // Only a lenient expansion round leaves the instance unresolved, and the
         // strict round rejects the site, so the bare reference below never runs.
+        if self.resolved.deferred_sites.contains(&site) {
+            self.reached_deferred = true;
+        }
         if let Some(&field) = self.resolved.blessed_sites.get(&site) {
             if let Some(ctx) = self.resolved.ctx_args.get(&site).cloned() {
                 let instance = self.ctx_term(&ctx);
@@ -953,8 +1012,11 @@ impl<'a> Desugarer<'a> {
     /// this site references that global. Shared by direct application and the
     /// `|>` / `<|` pipes (so `x |> @e` and `@e <| x` splice too).
     fn lower_meta_e(&mut self, arg: Aol<Expr>, span: Span) -> Aol<Term> {
-        let body = self.expr(arg);
+        let (body, reached) = self.watching(|lw| lw.expr(arg));
         let name = StrId::intern(&format!("@e_expr#{}", self.meta_evals.len()));
+        if reached {
+            self.deferred.push(name);
+        }
         self.meta_evals.push((name, body, span));
         self.var(name)
     }
@@ -973,7 +1035,7 @@ impl<'a> Desugarer<'a> {
                 let expr = *expr;
                 let span = self.ast.ty_span(ty).unwrap_or_else(|| Span::at(0));
                 let name = StrId::intern(&format!("@e_type#{}", self.meta_type_evals.len()));
-                let term = self.expr(expr);
+                let term = self.watched(name, |lw| lw.expr(expr));
                 self.meta_type_evals.push((name, term, span));
             }
             Ty::App(a, b) | Ty::SizeAdd(a, b) | Ty::SizeMul(a, b) => {
@@ -1416,6 +1478,21 @@ impl<'a> Desugarer<'a> {
     fn pat(&mut self, p: Aol<Pattern>) -> Pat {
         match self.pnode(p) {
             Pattern::Wild => Pat::Wild,
+            // `@e (X)`: `X` becomes a synthetic global the driver forces, splicing
+            // the pattern source it returns here. Until then the match cannot be
+            // run, so the enclosing global counts as deferred and no `@e` runs it.
+            Pattern::MetaE(e) => {
+                let e = *e;
+                let span = self.ast.pat_span(p).unwrap_or_else(|| Span::at(0));
+                let (body, reached) = self.watching(|lw| lw.expr(e));
+                let name = StrId::intern(&format!("@e_pat#{}", self.meta_pat_evals.len()));
+                if reached {
+                    self.deferred.push(name);
+                }
+                self.meta_pat_evals.push((name, body, span));
+                self.reached_deferred = true;
+                Pat::Wild
+            }
             Pattern::Var(name) => Pat::Var(*name),
             Pattern::Int(n) => self.pat_hook_eq(p, Term::Int(*n)).unwrap_or(Pat::Int(*n)),
             Pattern::Real(r) => self.pat_hook_eq(p, Term::Real(*r)).unwrap_or(Pat::Real(*r)),

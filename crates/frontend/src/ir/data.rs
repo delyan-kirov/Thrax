@@ -340,23 +340,29 @@ impl IrExpr {
                 _ => f(a),
             }
         }
+        self.for_each_operand(&mut |a| visit(a, f));
+    }
+
+    /// Visit the atoms written directly in this expression, a closure as itself
+    /// rather than its captures.
+    pub fn for_each_operand(&self, f: &mut impl FnMut(&Atom)) {
         match self {
-            IrExpr::Ret(a) | IrExpr::Field { rec: a, .. } => visit(a, f),
+            IrExpr::Ret(a) | IrExpr::Field { rec: a, .. } => f(a),
             IrExpr::App { fun, arg, .. } => {
-                visit(fun, f);
-                visit(arg, f);
+                f(fun);
+                f(arg);
             }
             IrExpr::MkStruct { base, fields, .. } => {
-                base.iter().chain(fields.iter().map(|(_, a)| a)).for_each(|a| visit(a, f))
+                base.iter().chain(fields.iter().map(|(_, a)| a)).for_each(|a| f(a))
             }
-            IrExpr::MkVariant { fields, .. } => fields.iter().for_each(|a| visit(a, f)),
-            IrExpr::MkTuple(items) => items.iter().for_each(|a| visit(a, f)),
-            IrExpr::Case { scrut, .. } => visit(scrut, f),
+            IrExpr::MkVariant { fields, .. } => fields.iter().for_each(|a| f(a)),
+            IrExpr::MkTuple(items) => items.iter().for_each(|a| f(a)),
+            IrExpr::Case { scrut, .. } => f(scrut),
             IrExpr::Handle { clauses, els, .. } => {
-                clauses.iter().for_each(|c| visit(&c.fun, f));
-                visit(els, f);
+                clauses.iter().for_each(|c| f(&c.fun));
+                f(els);
             }
-            IrExpr::Defer { cleanup, .. } => visit(cleanup, f),
+            IrExpr::Defer { cleanup, .. } => f(cleanup),
             IrExpr::Let { .. } | IrExpr::Drop { .. } | IrExpr::Fault(_) => {}
         }
     }

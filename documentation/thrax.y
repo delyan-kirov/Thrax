@@ -503,6 +503,7 @@ pat_atom
   | UIDENT DOT LBRACE field_pats RBRACE
   | UIDENT DOT UIDENT pat_payload
   | UIDENT DOT UIDENT DOT UIDENT pat_payload
+  | AT_E LPAREN expr RPAREN                /* a pattern a generator produces */
   ;
 
 pat_payload  : /* empty */ | DOT LBRACE field_pats RBRACE ;
