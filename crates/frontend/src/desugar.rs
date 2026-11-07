@@ -22,10 +22,10 @@
 use std::collections::HashMap;
 
 use crate::parser::data::{
-    Ast, Binding, Expr, FieldInit, FieldPat, Item, LamParam, Pattern,
+    Ast, Binding, EffectRow, Expr, FieldInit, FieldPat, Item, LamParam, Pattern,
     Program, RecField, SliceSlot, Ty,
 };
-use crate::typing::{CtxVal, HookImpl, Resolved};
+use crate::typing::{declarations::payload_fields, CtxVal, HookImpl, Resolved};
 use utilities::{Aol, Slice, Span, StrId};
 
 use crate::core::{
@@ -104,8 +104,22 @@ pub fn desugar_program(
                 globals.push((name, term));
                 ct_runs.push((name, *span));
             }
+            Item::Struct { fields, .. } => {
+                for f in ast.slice(*fields).iter() {
+                    lw.collect_meta_types(f.ty);
+                }
+            }
+            Item::Union { variants, .. } => {
+                for v in ast.slice(*variants).iter() {
+                    for (_, ty) in payload_fields(ast, &v.payload) {
+                        lw.collect_meta_types(ty);
+                    }
+                }
+            }
+            Item::Alias { ty, .. } => lw.collect_meta_types(*ty),
             Item::Effect { name, ops, .. } => {
                 for op in ast.slice(*ops).iter() {
+                    lw.collect_meta_types(op.ty);
                     effects.push(CoreEffect {
                         effect: *name,
                         op: op.name,
@@ -790,6 +804,9 @@ impl<'a> Desugarer<'a> {
             Expr::Lambda { params, body } => {
                 let params: Vec<LamParam> = self.ast.slice(*params).to_vec();
                 let body = *body;
+                for sig in params.iter().filter_map(|p| p.sig) {
+                    self.collect_meta_types(sig);
+                }
                 let mut term = self.expr(body);
                 for p in params.into_iter().rev() {
                     term = self.lambda_param(p.pat, term);
@@ -800,6 +817,9 @@ impl<'a> Desugarer<'a> {
             Expr::Let { bindings, body } => {
                 let bindings: Vec<Binding> = self.ast.slice(*bindings).to_vec();
                 let body = *body;
+                for sig in bindings.iter().filter_map(|b| b.sig) {
+                    self.collect_meta_types(sig);
+                }
                 let mut term = self.expr(body);
                 for b in bindings.into_iter().rev() {
                     term = self.binding(&b, term);
@@ -878,7 +898,11 @@ impl<'a> Desugarer<'a> {
             // checker let a stray one through.
             Expr::UseArg(_) => self.fault("a `@use {...}` argument out of place"),
 
-            Expr::Ascribe { expr, .. } => self.expr(*expr),
+            Expr::Ascribe { expr, ty } => {
+                let (expr, ty) = (*expr, *ty);
+                self.collect_meta_types(ty);
+                self.expr(expr)
+            }
         }
     }
 
@@ -1048,10 +1072,18 @@ impl<'a> Desugarer<'a> {
                 self.collect_meta_types(size);
                 self.collect_meta_types(elem);
             }
-            Ty::Arrow { from, to, .. } => {
+            Ty::Arrow { from, effect, to } => {
                 let (from, to) = (*from, *to);
+                if let Some(row) = effect {
+                    let row = row.clone();
+                    self.collect_meta_row(&row);
+                }
                 self.collect_meta_types(from);
                 self.collect_meta_types(to);
+            }
+            Ty::Row(row) => {
+                let row = row.clone();
+                self.collect_meta_row(&row);
             }
             Ty::Tuple(items) => {
                 for t in self.ast.slice(*items).to_vec() {
@@ -1063,7 +1095,16 @@ impl<'a> Desugarer<'a> {
                     self.collect_meta_types(f.ty);
                 }
             }
-            Ty::Con { .. } | Ty::Var(_) | Ty::Nat(_) | Ty::Unit | Ty::Row(_) => {}
+            Ty::Con { .. } | Ty::Var(_) | Ty::Nat(_) | Ty::Unit => {}
+        }
+    }
+
+    /// The type arguments of an effect row's entries (`<Chan (@e X)>`).
+    fn collect_meta_row(&mut self, row: &EffectRow) {
+        for entry in self.ast.slice(row.entries).to_vec() {
+            for arg in self.ast.slice(entry.args).to_vec() {
+                self.collect_meta_types(arg);
+            }
         }
     }
 

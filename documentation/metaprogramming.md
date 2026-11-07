@@ -165,21 +165,27 @@ sentinel the value carries) rather than a `Maybe`. Callers test it via
 `@typeinfo` predicates; the common case (name resolves) has no wrapper to
 unwrap.
 
-**LANDED (a first cut of type reflection).** Ahead of the full `<@Meta>`
-`@lookup`, three effect-less reflection builtins expose a declared type's shape
-to a `$ @e` generator:
+**LANDED (a first cut of reflection).** Ahead of the full `@lookup`, these
+`<@Meta>` operations expose a declared type's shape, or a global value's type, to
+an `@e` generator:
 
 ```
-@type_kind     : @Str -> @Str                -- "struct" | "union"
-@type_params   : @Str -> @Vec @Str           -- declared type parameters, in order
-@type_fields   : @Str -> @Vec @Str           -- a struct's field names
-@type_variants : @Str -> @Vec {@Str, @Int}   -- a union's (tag, arity) pairs
+@type_kind     : @Str -> <@Meta> @Str               -- "struct" | "union" | "value"
+@type_params   : @Str -> <@Meta> @Vec @Str          -- declared type parameters, in order
+@type_fields   : @Str -> <@Meta> @Vec @Str          -- a struct's field names
+@type_variants : @Str -> <@Meta> @Vec {@Str, @Int}  -- a union's (tag, arity) pairs
+@type_of       : @Str -> <@Meta> @Str               -- a global value's type, as source
 ```
 
-The argument is a type name, bare (`"Rgb"`) or qualified (`"MOD.Rgb"`; qualify to
+The argument is a name, bare (`"Rgb"`) or qualified (`"MOD.Rgb"`; qualify to
 disambiguate a name shared across modules). They resolve through a driver-installed
-host (`machine::set_type_host`, fed from `Declarations::reflect`), available only inside
-`$ @e`; a stray call at runtime faults. On top of them, `library/DERIVE.thx`
+host (`machine::set_type_host`, fed from `Declarations::reflect` plus each round's
+checked global types). They read the program being compiled, so they carry
+`<@Meta>`: a call in ordinary code is a type error, and a helper that reflects
+declares `<@Meta>` (as `DERIVE.derive_show` does). `@type_of "fib"` is
+`"@Int -> @Int"`, exactly as `thrax check` prints it, `@use` fields included. In a
+round that still has unexpanded sites a type may be partial, so a generator that
+depends on it should not run before the sites it reads. On top of them, `library/DERIVE.thx`
 derives a default `to_string` for any struct or union (`$ @e (DERIVE.derive_show
 "Rgb")`); see `examples/DERIVE_SHOW.thx`. This is the first real derive-style
 macro, exercising reflection + forward-referenced injection (2b) + overload
@@ -452,10 +458,15 @@ string-based code generator:
   needs escaping, written `\?(`. A `"` inside the code still needs `\"` (or build
   with `++`).
 
-**Spans.** A parsed string carries spans relative to the string body; `@parse`
-maps a syntax error back to a location within the literal. Mapping that through
-the enclosing file's escapes is best-effort, so a diagnostic in generated code is
-less precise than one in hand-written source. Acceptable for the escape-hatch
+**Spans (LANDED, #151).** A syntax error from `@parse_str` / `@parse_items`
+carries the fragment it was raised in (`Diagnostic::with_fragment`). The driver
+looks for a string literal that decodes to exactly that fragment, first inside
+the `@e` site and then anywhere in the module (the literal may sit in a helper the
+`@e` calls, which then gets a label at the `@e`), and maps the offset through the
+literal's escapes, so the caret lands on the character the author wrote. A
+fragment no literal spells (built with `++` or interpolation) stays at the `@e`
+site with the fragment quoted in a note. Errors in spliced code that only show up
+when it is checked are reported in the expanded source. Acceptable for the escape-hatch
 tier; `@emit`/`@abort` (section 5) still let a generator raise a clear message of
 its own.
 
@@ -683,8 +694,12 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    fresh variable; lowering's `collect_meta_types` walks each def signature and
    emits a synthetic global `@e_type#n` per site (recorded in `Program.ct_types`);
    the driver evaluates it, requires an `@Code`, and splices its source at the
-   node's span. Nests inside larger types (`@Vec (@e ...)`). Scope: def signatures
-   (struct/union/alias member types are a follow-up). See `examples/META_TYPE.thx`.
+   node's span. Nests inside larger types (`@Vec (@e ...)`). Every type position
+   is collected (#160): def signatures, struct fields, union payloads, alias
+   bodies, effect operations, effect-row arguments (`<State (@e X)>`), `@use`
+   fields, and the annotations inside a body (`let x : T`, `\(x : T)`,
+   `(e : T)`). Before #160 a member-type `@e` parsed but was never spliced, so it
+   stood as an unchecked variable. See `examples/META_TYPE.thx`.
 2d. **DONE: pattern-position `@e (X)` (#160, #197).** The operand is always
    parenthesized, so it ends at `)` before the arm's `=>`, `|` or `::`.
    `Pattern::MetaE` types as a match of any value that binds nothing; coverage is

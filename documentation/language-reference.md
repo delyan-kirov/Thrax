@@ -1370,6 +1370,15 @@ $ @e <| @parse_items "$ injected : @Int = 99"           # inserts an item
 $ is55 : @Int -> @Bool = \ | @e (lit (fib 10)) => @true | _ => @false
 ```
 
+A type splice may stand at any type position: a signature, a struct field, a
+union payload, an alias body, an effect operation, an effect-row argument, a
+`@use` field, or an annotation inside a body (`let x : T`, `\(x : T)`,
+`(e : T)`).
+
+```thrax
+$ Point : @struct = x: @e (pick {}), y: @e (pick {})
+```
+
 In a pattern the operand is always parenthesized, `@e (X)`, so it ends at `)`
 and never runs into the `=>` or `|` after it. This is how a value the compiler
 can compute stands in a pattern: the generator renders it, and the arm matches
@@ -1382,12 +1391,18 @@ supply it; an `@e` whose code reaches one waits for a later round, and if no
 round supplies it the error is reported as written.
 
 `X` may perform the compile-time operations (`@emit`, `@abort`, `@fresh`,
-`@link`, `@link_path`). They carry the `<@Meta>` effect, which `@e`
-discharges. It discharges nothing else, so `@e` is **hermetic**: a generator
+`@link`, `@link_path`, and the reflection `@type_kind`, `@type_params`,
+`@type_fields`, `@type_variants`, `@type_of`). They carry the `<@Meta>` effect,
+which `@e` discharges. It discharges nothing else, so `@e` is **hermetic**: a generator
 cannot perform `@IO`. Compile-time IO lives in `@build` alone (section 11.3).
 
 Empty code inserts nothing. A site that runs only for its effect returns it, so
 the directive disappears once it has run.
+
+A syntax error in a fragment points into the string literal that spells it,
+escapes accounted for, even when that literal is in a helper the `@e` calls. A
+fragment built at compile time (`"a" ++ b`) has no such literal, so the error
+points at the `@e` and quotes the fragment.
 
 ## 11.2 Compile-time assertions and build directives
 There is no `@assert` builtin. `CORE.assert : @Bool -> @Str -> <@Meta> @Code` is

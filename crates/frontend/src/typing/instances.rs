@@ -90,6 +90,10 @@ impl<'a> Checker<'a> {
             _ => vec![zonked],
         };
         for (i, part) in parts.into_iter().enumerate() {
+            // An unspliced `@e` stands as a fresh variable until expansion.
+            if fields.get(i).is_some_and(|f| matches!(self.ast.ty(f.ty), Ty::MetaE(_))) {
+                continue;
+            }
             let ok = self.ctx_head(part).is_some_and(|h| self.is_nominal(h));
             if !ok {
                 let (field, span) = match fields.get(i) {

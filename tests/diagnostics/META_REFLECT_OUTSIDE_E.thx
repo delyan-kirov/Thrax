@@ -1,0 +1,6 @@
+$ @mod META_REFLECT_OUTSIDE_E
+
+# Reflection reads the program being compiled, so it is a `<@Meta>` operation:
+# ordinary code cannot call it.
+$ P : @struct = x: @Int
+$ n : @Int = @vec_len (@type_fields "P") #~ error[TYPE_MISMATCH]: effect `@Meta` is performed but not handled

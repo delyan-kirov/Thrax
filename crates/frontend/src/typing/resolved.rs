@@ -347,6 +347,8 @@ pub struct ReflectInfo {
     pub structs: Vec<(StrId, StrId, Vec<StrId>, Vec<StrId>)>,
     /// `(module, name, type params, variants)` per union, a variant `(tag, arity)`.
     pub unions: Vec<(StrId, StrId, Vec<StrId>, Vec<(StrId, usize)>)>,
+    /// `(module, name, type)` per global value, the type as source.
+    pub values: Vec<(StrId, StrId, String)>,
 }
 
 impl Declarations {
@@ -422,7 +424,7 @@ impl Declarations {
                 (m, n, params_of(m, n), vs.into_iter().map(|(t, a, _)| (t, a)).collect())
             })
             .collect();
-        ReflectInfo { structs, unions }
+        ReflectInfo { structs, unions, values: Vec::new() }
     }
 
     /// Resolve `pick` against `module`'s own declarations, then each imported

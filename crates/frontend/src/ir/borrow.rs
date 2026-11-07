@@ -202,7 +202,7 @@ fn reads_operand(prim: Prim, i: usize) -> bool {
         | ArraySlice | ArrayScan | ArrayMatch | PtrBytes | RecordWithout | VecNew | VecLen | VecGet | VecSlice | TensorLength | TensorStack
         | TensorTranspose | TensorConcat | TensorIndex | TensorSlice | TensorIndexAxis | TensorSliceAxis
         | Lex | TokenKind | TokenText | Parse | ParseStr | ParseItems | Format | TypeKind | TypeFields
-        | TypeVariants | TypeParams | Iand | Ior | Ixor | Inot | Ishl | Ishr | Ushr | F64Bits | BitsF64
+        | TypeVariants | TypeParams | TypeOf | Iand | Ior | Ixor | Inot | Ishl | Ishr | Ushr | F64Bits | BitsF64
         | F32Bits | BitsF32 => true,
         ArrayPush | ArraySet => i > 0,
         VecFill => i == 0,

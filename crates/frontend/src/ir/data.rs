@@ -574,6 +574,7 @@ builtins! {
     TypeFields = compile_time("@type_fields", 1),
     TypeVariants = compile_time("@type_variants", 1),
     TypeParams = compile_time("@type_params", 1),
+    TypeOf = compile_time("@type_of", 1),
 }
 
 impl Prim {

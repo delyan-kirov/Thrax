@@ -645,11 +645,24 @@ fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<C
 
     // Lower every module; put the root first so its names win when resolving an
     // unqualified reference defined in more than one module.
-    let reflect = resolved.declarations.reflect();
+    let mut reflect = resolved.declarations.reflect();
     let root = loaded.index[&loaded.root_name];
     let mut order: Vec<usize> = (0..run.programs.len()).collect();
     order.sort_by_key(|&i| i != root);
     let lowered = run.desugar(&order, &resolved);
+    // `@type_of` answers from every global's rendered type. Rendering them all is
+    // only worth it in a round with a compile-time site to ask.
+    let has_sites = lowered.iter().any(|p| {
+        !(p.ct_runs.is_empty() && p.ct_evals.is_empty() && p.ct_types.is_empty() && p.ct_patterns.is_empty())
+            || p.ct_build.is_some()
+    });
+    if has_sites {
+        for (i, defs) in run.results.iter().enumerate() {
+            let module = utilities::StrId::intern(&loaded.sources[i].0);
+            let checker = run.checker(i);
+            reflect.values.extend(defs.iter().map(|(name, ty)| (module, *name, checker.show_decl(*name, *ty))));
+        }
+    }
 
     // `$ @build` has one signature, like the entry: one name, one shape. Its own
     // annotation is known even in a lenient round, so this is checked every round
@@ -716,16 +729,61 @@ fn render_e_fault(
     span: utilities::Span,
     sources: &[(String, String, String)],
 ) -> String {
-    if sink_active() {
-        sink_push(module, diag.fill_span(span));
-        return String::new();
-    }
     let (src, path) = sources
         .iter()
         .find(|(n, _, _)| n == module)
         .map(|(_, p, s)| (s.as_str(), p.as_str()))
         .unwrap_or(("", module));
-    diag.fill_span(span).render(src, path)
+    let diag = place_in_literal(diag, src, span).fill_span(span);
+    if sink_active() {
+        sink_push(module, diag);
+        return String::new();
+    }
+    diag.render(src, path)
+}
+
+/// Move an error raised inside a `@parse_str` / `@parse_items` fragment into the
+/// string literal that spells it: the first one inside the `@e` site that
+/// decodes to the fragment, else the first anywhere in the module. A fragment
+/// no literal spells (built at compile time) stays at the site, quoted in a
+/// note.
+fn place_in_literal(diag: utilities::Diagnostic, src: &str, site: utilities::Span) -> utilities::Diagnostic {
+    let Some(text) = diag.fragment().map(str::to_owned) else { return diag };
+    let mut found = None;
+    let mut lx = frontend::Lexer::new(src);
+    while let Ok(t) = lx.next_token() {
+        if matches!(t.kind, frontend::Kind::Eof) {
+            break;
+        }
+        if !matches!(t.kind, frontend::Kind::Str) {
+            continue;
+        }
+        let Some((bytes, at)) = frontend::lexer::decode_string_offsets(&src[t.span.start..t.span.end]) else {
+            continue;
+        };
+        if bytes != text.as_bytes() {
+            continue;
+        }
+        let inside = site.start <= t.span.start && t.span.end <= site.end;
+        if found.is_none() || inside {
+            found = Some((t.span.start, at, inside));
+        }
+        if inside {
+            break;
+        }
+    }
+    match found {
+        Some((start, at, inside)) => {
+            let diag = diag.place_fragment(|s| {
+                let (a, b) = (start + at[s.start], start + at[s.end]);
+                Some(utilities::Span::new(a, b.max(a + 1)))
+            });
+            if inside { diag } else { diag.with_label(site, "the `@e` that ran it") }
+        }
+        None => diag
+            .place_fragment(|_| None)
+            .with_note(format!("in the generated code `{}`", text.escape_debug())),
+    }
 }
 
 /// Where diagnostics go when an editor drives the pipeline: collected here as
@@ -1163,6 +1221,9 @@ fn reflect_tables(reflect: frontend::ReflectInfo) -> Rc<ReflectTables> {
     for (module, name, params, variants) in reflect.unions {
         put(module, name, TypeInfo::Union { params, variants });
     }
+    for (module, name, ty) in reflect.values {
+        put(module, name, TypeInfo::Value { ty });
+    }
     for entries in bare.values_mut() {
         entries.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
     }
@@ -1170,7 +1231,7 @@ fn reflect_tables(reflect: frontend::ReflectInfo) -> Rc<ReflectTables> {
 }
 
 /// The `$ @e` reflection host for the module whose directive is running: a
-/// by-name lookup answering `@type_kind`/`@type_fields`/`@type_variants`.
+/// by-name lookup answering `@type_kind`/`@type_fields`/`@type_variants`/`@type_of`.
 ///
 /// A bare name resolves to `caller`'s OWN type first. Types are namespaced per
 /// module, so two modules may each declare a `Box`; without this a derive in one

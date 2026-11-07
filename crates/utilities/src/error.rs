@@ -294,6 +294,10 @@ pub struct Diagnostic {
     /// attached.
     notes: Vec<String>,
     helps: Vec<Help>,
+    /// When the root span is not into the file but into generated text (a
+    /// `@parse_str` fragment wrapped in a scratch module): that text, and where it
+    /// starts in the source the span was raised against.
+    fragment: Option<(String, usize)>,
 }
 
 impl Diagnostic {
@@ -310,7 +314,42 @@ impl Diagnostic {
             labels: Vec::new(),
             notes: Vec::new(),
             helps: Vec::new(),
+            fragment: None,
         }
+    }
+
+    /// Record that the root span points into `text`, which starts at byte `base`
+    /// of the source the diagnostic was raised against.
+    pub fn with_fragment(mut self, text: impl Into<String>, base: usize) -> Diagnostic {
+        self.fragment = Some((text.into(), base));
+        self
+    }
+
+    /// The fragment the root span points into, if any.
+    pub fn fragment(&self) -> Option<&str> {
+        self.fragment.as_ref().map(|(text, _)| text.as_str())
+    }
+
+    /// Drop the fragment, moving the root frame, labels and fix edits through
+    /// `place`, which gets a span relative to the fragment and gives one in real
+    /// source. A span it cannot place becomes the [`Span::at`]`(0)` sentinel on
+    /// the root (for [`Diagnostic::fill_span`]) and is dropped elsewhere.
+    pub fn place_fragment(mut self, place: impl Fn(Span) -> Option<Span>) -> Diagnostic {
+        let Some((text, base)) = self.fragment.take() else { return self };
+        let rel = |at: usize| at.saturating_sub(base).min(text.len());
+        let f = |s: Span| place(Span::new(rel(s.start), rel(s.end)));
+        self.frames[0].span = f(self.frames[0].span).unwrap_or(Span::at(0));
+        self.labels = std::mem::take(&mut self.labels)
+            .into_iter()
+            .filter_map(|l| Some(Label { span: f(l.span)?, msg: l.msg }))
+            .collect();
+        for h in &mut self.helps {
+            h.edits = std::mem::take(&mut h.edits)
+                .into_iter()
+                .filter_map(|e| Some(Edit { span: f(e.span)?, ..e }))
+                .collect();
+        }
+        self
     }
 
     pub fn severity(&self) -> Severity {

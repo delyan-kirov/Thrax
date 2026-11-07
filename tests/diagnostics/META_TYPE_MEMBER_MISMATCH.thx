@@ -1,0 +1,7 @@
+$ @mod META_TYPE_MEMBER_MISMATCH
+
+# A type splice in a declaration member is checked like a written type, not left
+# as an unknown: the field is `@Bool`, so an integer does not fit it.
+$ flag_type : {} -> @Code = \_ => @parse_str "@Bool"
+$ Flags : @struct = on: @e (flag_type {})
+$ f : Flags = { .on = 1 } #~ error[TYPE_MISMATCH]: a numeric literal cannot be used where `@Bool` is expected

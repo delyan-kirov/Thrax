@@ -600,6 +600,32 @@ pub fn decode_string(raw: &str, start: usize, line: Line) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Decode a plain string literal `raw` (quotes included) like [`decode_string`],
+/// also giving, for each decoded byte and one past the last, its offset in `raw`
+/// (an escape's bytes all sit at its backslash, the end at the closing quote).
+/// `None` when the literal does not decode.
+pub fn decode_string_offsets(raw: &str) -> Option<(Vec<u8>, Vec<usize>)> {
+    let bytes = raw.as_bytes();
+    let inner = bytes.get(1..bytes.len().checked_sub(1)?)?;
+    let mut out = Vec::with_capacity(inner.len());
+    let mut at = Vec::with_capacity(inner.len() + 1);
+    let mut i = 0;
+    while i < inner.len() {
+        let before = out.len();
+        if inner[i] == b'\\' {
+            let next = decode_escape(inner, i, 1, 0, &mut out).ok()?;
+            at.extend(std::iter::repeat_n(i + 1, out.len() - before));
+            i = next;
+        } else {
+            out.push(inner[i]);
+            at.push(i + 1);
+            i += 1;
+        }
+    }
+    at.push(inner.len() + 1);
+    Some((out, at))
+}
+
 /// Decode one escape sequence. `i` points at the backslash; `body` is the byte
 /// slice being decoded and `body_start` its absolute source offset (for
 /// diagnostics). Appends the decoded byte(s) to `out` and returns the index just
