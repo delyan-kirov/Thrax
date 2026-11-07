@@ -88,6 +88,7 @@ pub enum Code {
     EntrySignature,
     /// `@abort` ran: a compile-time check or generator failed the build.
     MetaAbort,
+    MetaWarning,
     /// A project's `BUILD.thx` is malformed, imported, or one of its directives
     /// is used elsewhere.
     BuildScript,
@@ -133,6 +134,7 @@ impl Code {
             NoEntry => "NO_ENTRY",
             EntrySignature => "ENTRY_SIGNATURE",
             MetaAbort => "META_ABORT",
+            MetaWarning => "META_WARNING",
             BuildScript => "BUILD_SCRIPT",
             IntLiteralRange => "INT_LITERAL_RANGE",
             NonExhaustiveMatch => "NON_EXHAUSTIVE_MATCH",

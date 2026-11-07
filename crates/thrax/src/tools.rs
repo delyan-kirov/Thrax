@@ -172,6 +172,7 @@ pub const ALL_CODES: &[Code] = &[
     Code::NoEntry,
     Code::EntrySignature,
     Code::MetaAbort,
+    Code::MetaWarning,
     Code::IntLiteralRange,
     Code::NonExhaustiveMatch,
     Code::UnreachableArm,

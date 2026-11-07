@@ -61,6 +61,12 @@ pub fn desugar_program(
             imports.push(module);
         }
     }
+    // Every module sees the prelude, after what it imports by name, so a CORE
+    // type is found there rather than in whichever module also declares the name.
+    let prelude = StrId::intern("CORE");
+    if program.module != prelude && !imports.contains(&prelude) {
+        imports.push(prelude);
+    }
     let mut lw = Desugarer {
         ast,
         resolved,
@@ -72,6 +78,7 @@ pub fn desugar_program(
         meta_evals: Vec::new(),
         meta_type_evals: Vec::new(),
         meta_pat_evals: Vec::new(),
+        meta_row_evals: Vec::new(),
         reached_deferred: false,
         deferred: Vec::new(),
     };
@@ -144,6 +151,10 @@ pub fn desugar_program(
     let ct_patterns: Vec<(StrId, Span)> =
         lw.meta_pat_evals.iter().map(|(n, _, s)| (*n, *s)).collect();
     globals.extend(lw.meta_pat_evals.drain(..).map(|(n, body, _)| (n, body)));
+    // Effect-row `<@e (X)>` synthetic globals, spliced as row entries.
+    let ct_rows: Vec<(StrId, Span)> =
+        lw.meta_row_evals.iter().map(|(n, _, s)| (*n, *s)).collect();
+    globals.extend(lw.meta_row_evals.drain(..).map(|(n, body, _)| (n, body)));
     // `$ @build : {} -> <@Meta, @IO> @Code`: back the call `@build {}` with a
     // synthetic global so the driver can force it exactly as it forces an `$ @e`.
     // The reference is module-qualified because several modules may each define
@@ -175,6 +186,7 @@ pub fn desugar_program(
     core.ct_evals = ct_evals;
     core.ct_types = ct_types;
     core.ct_patterns = ct_patterns;
+    core.ct_rows = ct_rows;
     core.ct_build = ct_build;
     core.deferred = lw.deferred;
     core
@@ -208,6 +220,10 @@ struct Desugarer<'a> {
     /// driver splices the resulting `@Code`'s pattern source at the span. Drained
     /// by [`desugar_program`] into `Program.globals` / `Program.ct_patterns`.
     meta_pat_evals: Vec<(StrId, Aol<Term>, Span)>,
+    /// Synthetic globals for effect-row `<@e (X)>`, each `@e_row#n = X`; the
+    /// driver splices the resulting `@Code`'s entries at the span. Drained by
+    /// [`desugar_program`] into `Program.globals` / `Program.ct_rows`.
+    meta_row_evals: Vec<(StrId, Aol<Term>, Span)>,
     /// Whether the global being lowered has reached a deferred site yet.
     reached_deferred: bool,
     /// The globals that did, drained into `Program.deferred`.
@@ -297,7 +313,8 @@ impl<'a> Desugarer<'a> {
     /// The lazy flags for a declared type's slots, once the name is resolved the
     /// way construction resolves it.
     fn lazy_flags(&self, ty: StrId, tag: Option<StrId>) -> Option<&[bool]> {
-        self.resolved.lazy_slots.get(&(ty, tag)).map(Vec::as_slice)
+        let home = self.resolved.declarations.type_home(self.module, &self.imports, ty)?;
+        self.resolved.lazy_slots.get(&(home, ty, tag)).map(Vec::as_slice)
     }
 
     /// The head type constructor's name, if `t` is a (possibly applied) `Con`.
@@ -1102,6 +1119,11 @@ impl<'a> Desugarer<'a> {
     /// The type arguments of an effect row's entries (`<Chan (@e X)>`).
     fn collect_meta_row(&mut self, row: &EffectRow) {
         for entry in self.ast.slice(row.entries).to_vec() {
+            if let Some(expr) = entry.meta {
+                let name = StrId::intern(&format!("@e_row#{}", self.meta_row_evals.len()));
+                let term = self.watched(name, |lw| lw.expr(expr));
+                self.meta_row_evals.push((name, term, entry.span));
+            }
             for arg in self.ast.slice(entry.args).to_vec() {
                 self.collect_meta_types(arg);
             }
@@ -1391,7 +1413,7 @@ impl<'a> Desugarer<'a> {
 
     fn variant(&mut self, ty: Option<StrId>, tag: StrId, fields: &[FieldInit]) -> Aol<Term> {
         let none = StrId::intern("");
-        let (union, names) = match self.resolved.declarations.variant(self.module, &self.imports, tag) {
+        let (union, names) = match self.resolved.declarations.variant(self.module, &self.imports, ty, tag) {
             Some((u, ns)) => (u, ns.to_vec()),
             None => (ty.unwrap_or(none), Vec::new()),
         };
@@ -1599,7 +1621,7 @@ impl<'a> Desugarer<'a> {
                 let names = self
                     .resolved
                     .declarations
-                    .variant(self.module, &self.imports, tag)
+                    .variant(self.module, &self.imports, ty, tag)
                     .map(|(_, ns)| ns.to_vec())
                     .or_else(|| {
                         ty.and_then(|t| self.resolved.declarations.fields_of(self.module, &self.imports, t))

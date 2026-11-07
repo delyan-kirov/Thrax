@@ -274,10 +274,11 @@ eff_row
   | PIPE_BACK LIDENT GT
   ;
 
-/* An entry is an effect applied to its type arguments (`Chan @Int e`), or a row
- * alias applied to its parameters (`WithLog e`). */
+/* An entry is an effect applied to its type arguments (`Chan @Int e`), a row
+ * alias applied to its parameters (`WithLog e`), or entries a generator produces
+ * (`@e (X)`, parenthesized so the operand stops before `,` or `>`). */
 eff_names : eff_entry | eff_names COMMA eff_entry ;
-eff_entry : UIDENT | AT_TYCON | eff_entry type_atom ;
+eff_entry : UIDENT | AT_TYCON | eff_entry type_atom | AT_E LPAREN expr RPAREN ;
 
 expr
   : ctrl_expr

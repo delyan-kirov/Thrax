@@ -1495,12 +1495,11 @@ static Value *code_value(const char *src, size_t len) {
   return THxRT_struct("@Code", 1, &key, &text);
 }
 
-static Value *token_field(Value *tok, const char *field) {
+static Value *token_text(Value *tok) {
   tok = THxVALUE_force(tok);
-  if (tok->tag != T_STRUCT || strcmp(tok->u.strct.name, "@Token") != 0)
-    thrax_fault("expected an @Token");
-  Value *f = struct_field(tok, field);
-  if (!f || f->tag != T_STR) thrax_fault("malformed @Token");
+  if (tok->tag != T_VARIANT || tok->u.variant.len != 1) thrax_fault("expected a Token");
+  Value *f = THxVALUE_force(tok->u.variant.fields[0]);
+  if (f->tag != T_STR) thrax_fault("malformed Token");
   return f;
 }
 
@@ -1509,8 +1508,18 @@ static Value *compiler_builtin(int id, Value **a) {
   const char *name = THxB_names[id];
   char *err = NULL;
   switch (id) {
-  case THxB_TOKEN_KIND: return token_field(a[0], "kind");
-  case THxB_TOKEN_TEXT: return token_field(a[0], "text");
+  case THxB_TOKEN_KIND: {
+    Value *tok = THxVALUE_force(a[0]);
+    if (tok->tag != T_VARIANT) thrax_fault("expected a Token");
+    return THxRT_str(tok->u.variant.tag, strlen(tok->u.variant.tag));
+  }
+  case THxB_TOKEN_TEXT: return token_text(a[0]);
+  case THxB_UNPARSE: {
+    Value *code = THxVALUE_force(a[0]);
+    if (code->tag != T_STRUCT || strcmp(code->u.strct.name, "@Code") != 0)
+      thrax_fault("@unparse expects an @Code");
+    return struct_field(code, "src");
+  }
   case THxB_LEX: case THxB_FORMAT: case THxB_EVAL: {
     int eval = id == THxB_EVAL;
     Value *arg = THxVALUE_force(a[0]);
@@ -1528,10 +1537,11 @@ static Value *compiler_builtin(int id, Value **a) {
     thrax_value_free(v);
     return r;
   }
-  case THxB_PARSE_STR: case THxB_PARSE_ITEMS: {
+  case THxB_PARSE_STR: case THxB_PARSE_ITEMS: case THxB_PARSE_TYPE: case THxB_PARSE_ROW: {
     Value *s = THxVALUE_force(a[0]);
     if (s->tag != T_STR) thrax_fault("expected a string");
-    if (thrax_parse(s->u.str.data, s->u.str.len, id == THxB_PARSE_ITEMS, &err) != 0)
+    int kind = id == THxB_PARSE_ITEMS ? 1 : id == THxB_PARSE_TYPE ? 2 : id == THxB_PARSE_ROW ? 3 : 0;
+    if (thrax_parse(s->u.str.data, s->u.str.len, kind, &err) != 0)
       compiler_fault(name, err);
     return code_value((const char *)s->u.str.data, s->u.str.len);
   }
@@ -1542,11 +1552,11 @@ static Value *compiler_builtin(int id, Value **a) {
     if (toks->tag != T_VEC) thrax_fault("expected a vector");
     size_t len = 0;
     for (size_t i = 0; i < toks->u.seq.len; i++)
-      len += token_field(toks->u.seq.items[i], "text")->u.str.len + 1;
+      len += token_text(toks->u.seq.items[i])->u.str.len + 1;
     char *buf = xmalloc(len);
     size_t at = 0;
     for (size_t i = 0; i < toks->u.seq.len; i++) {
-      Value *t = token_field(toks->u.seq.items[i], "text");
+      Value *t = token_text(toks->u.seq.items[i]);
       if (i > 0) buf[at++] = ' ';
       memcpy(buf + at, t->u.str.data, t->u.str.len);
       at += t->u.str.len;

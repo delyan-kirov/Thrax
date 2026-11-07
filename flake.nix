@@ -159,6 +159,7 @@
             git config core.hooksPath tools/hooks
             git config core.commentChar ';'
             git config push.autoSetupRemote true
+            [ ! -e tools/editors/.git ] || git -C tools/editors config core.hooksPath hooks
           fi
         '';
       };

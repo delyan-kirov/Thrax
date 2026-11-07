@@ -1,0 +1,4 @@
+$ @mod META_WARN
+
+# `@warn` reports at the `@e` and the build goes on.
+$ @e <| (@warn (diag "worth knowing"); @parse_items "") #~ warning[META_WARNING]: worth knowing

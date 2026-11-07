@@ -1402,6 +1402,25 @@ impl<'a> Parser<'a> {
         let mut entries = Vec::new();
         loop {
             let start = self.here()?;
+            // `@e (X)`: parenthesized, so the operand ends before a `,` or the
+            // closing `>`, which an expression would read as a comparison.
+            let t = self.peek()?;
+            if matches!(t.kind, Kind::At) && self.intrinsic_name(t) == "e" {
+                self.bump()?;
+                expect!(self, Kind::LParen, "expected '(' after '@e' in an effect row");
+                let e = self.parse_expr(0)?;
+                expect!(self, Kind::RParen, "expected ')' to close the '@e' row entry");
+                entries.push(RowEntry {
+                    name: self.intern("@e"),
+                    args: self.ast.make_slice(Vec::new()),
+                    span: Span::new(start, self.last_end),
+                    meta: Some(e),
+                });
+                if !self.eat(|k| matches!(k, Kind::Comma))? {
+                    break;
+                }
+                continue;
+            }
             let name = self.expect_effect_label()?;
             let mut args = Vec::new();
             while self.starts_type_atom()? {
@@ -1412,6 +1431,7 @@ impl<'a> Parser<'a> {
                 name,
                 args,
                 span: Span::new(start, self.last_end),
+                meta: None,
             });
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;

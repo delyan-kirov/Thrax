@@ -561,8 +561,11 @@ builtins! {
     Parse = compiler("@parse", 1),
     ParseStr = compiler("@parse_str", 1),
     ParseItems = compiler("@parse_items", 1),
+    ParseType = compiler("@parse_type", 1),
+    ParseRow = compiler("@parse_row", 1),
     Format = compiler("@format", 1),
     Eval = compiler("@eval", 1),
+    Unparse = compiler("@unparse", 1),
     Abort = compile_time("@abort", 1),
     Emit = compile_time("@emit", 1),
     Fresh = compile_time("@fresh", 1),
@@ -575,6 +578,11 @@ builtins! {
     TypeVariants = compile_time("@type_variants", 1),
     TypeParams = compile_time("@type_params", 1),
     TypeOf = compile_time("@type_of", 1),
+    Lookup = compile_time("@lookup", 1),
+    Here = compile_time("@here", 1),
+    Check = compile_time("@check", 1),
+    Fail = compile_time("@fail", 1),
+    Warn = compile_time("@warn", 1),
 }
 
 impl Prim {

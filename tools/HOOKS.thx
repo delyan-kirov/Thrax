@@ -18,14 +18,20 @@ $ trunk : @Str = "master"
 
 $ hook : @Vec @Str -> <Forge, @IO, Fail> {} = \args =>
     arg_at args 2 |> \
-        | "pre-commit"    => pre_commit {}
-        | "commit-msg"    => commit_msg (arg_at args 3)
-        | "post-commit"   => post_commit {}
-        | "pre-push"      => pre_push {}
-        | "post-checkout" => if arg_at args 5 == "1" => sync_trunk {} else {}
-        | "post-merge"    => if STR.is_empty (env "THXDO_SYNCING") => prune_merged {} else {}
-        | "open-pr"       => open_pr (arg_at args 3) (arg_at args 4)
-        | other           => Fail.fail ("unknown hook `" ++ other ++ "`")
+        | "pre-commit"            => pre_commit {}
+        | "commit-msg"            => commit_msg (arg_at args 3)
+        | "post-commit"           => post_commit {}; editors_refresh {}
+        | "pre-push"              => pre_push {}
+        | "post-checkout"         =>
+            (if arg_at args 5 == "1" => sync_trunk {} else {}); editors_refresh {}
+        | "post-merge" =>
+            (if STR.is_empty (env "THXDO_SYNCING") => prune_merged {} else {}); editors_refresh {}
+        | "editors-pre-commit"    => editors_pre_commit {}
+        | "editors-post-commit"   => editors_post_commit {}
+        | "editors-post-checkout" => editors_refresh {}
+        | "editors-post-merge"    => editors_refresh {}
+        | "open-pr"               => open_pr (arg_at args 3) (arg_at args 4)
+        | other                   => Fail.fail ("unknown hook `" ++ other ++ "`")
 
 # The issue a commit subject names: `#351 Fix it` is 351.
 $ subject_issue : @Str -> Option @Int = \s =>
@@ -43,6 +49,53 @@ $ slug : @Str -> @Str = \title =>
         STR.substr s 0 40
     else
         trim_dashes (STR.substr s 0 (last_dash s 40))
+
+# Every editor brought up to date with the grammar: Zed's pin moved to its last
+# commit, the highlight queries checked against it, the grammars Zed and Helix
+# compile rebuilt, and VS Code's install repackaged. Neovim compiles nothing.
+$ editors_update : {} -> <@IO, Fail> {} = \u =>
+    pin_zed_grammar {};
+    check_queries {};
+    zed_build {};
+    (if helix_installed {} => helix_build {} else {});
+    if vscode_installed {} => vscode_build {} else {}
+
+# What the editors use rebuilt when it is missing or older than its sources, so
+# a commit, checkout or pull never leaves an editor without it. Only for the
+# editors that have Thrax installed.
+$ editors_refresh : {} -> <@IO, Fail> {} = \u =>
+    let ext = editors ++ "/zed/" in
+    let parser = [editors ++ "/tree-sitter-thrax/src/parser.c"] in
+    let srcs = VEC.append
+        (VEC.map (\f => ext ++ "src/" ++ f) (read_dir (ext ++ "src"))) [
+            ext ++ "Cargo.toml",
+            ext ++ "extension.toml"
+        ] in
+    (
+        if zed_installed {}
+            && (
+                out_of_date (ext ++ "extension.wasm") srcs
+                    || out_of_date (ext ++ "grammars/thrax.wasm") parser
+            ) =>
+            say "rebuilding the Zed extension ...";
+            zed_build {};
+            say "Zed extension rebuilt, restart Zed to load it"
+        else
+            {}
+    );
+    (
+        if vscode_installed {}
+            && out_of_date vsix (VEC.map (\f => editors ++ "/vscode/" ++ f) vscode_srcs) =>
+            say "reinstalling the VS Code extension ...";
+            vscode_build {};
+            say "VS Code extension reinstalled, reload VS Code to load it"
+        else
+            {}
+    );
+    if helix_installed {} && out_of_date (helix_grammar {}) parser =>
+        say "rebuilding the Helix grammar ..."; helix_build {}; say "Helix grammar rebuilt"
+    else
+        {}
 
 $ @private
 
@@ -118,8 +171,28 @@ $ pre_commit : {} -> <@IO, Fail> {} = \u =>
         else
             {}
     );
-    if VEC.any (\f => f == "documentation/thrax.y") staged =>
-        say "grammar check ..."; sh "bison -o /dev/null documentation/thrax.y"
+    (
+        if VEC.any (\f => f == "documentation/thrax.y") staged =>
+            say "grammar check ..."; sh "bison -o /dev/null documentation/thrax.y"
+        else
+            {}
+    );
+    if VEC.any (\f => f == editors) staged =>
+        let c = output ("git rev-parse :" ++ editors) in
+        let pinned =
+            pinned_rev (output ("git -C " ++ editors ++ " show " ++ c ++ ":zed/extension.toml")) in
+        if pinned == grammar_rev c =>
+            {}
+        else
+            Fail.fail
+                (
+                    "the staged "
+                        ++ editors
+                        ++ " pins the Zed grammar at an older commit\n"
+                        ++ "help: `thxdo editors-update`, commit zed/extension.toml in "
+                        ++ editors
+                        ++ ", then stage it here"
+                )
     else
         {}
 
@@ -161,6 +234,167 @@ $ fmt_staged : @Str -> <@IO, Fail> @Bool = \f =>
             remove_file tmp;
             say ("formatted " ++ f);
             @true
+
+# ---- the Zed extension ----
+
+$ editors : @Str = "tools/editors"
+
+$ zed_toml : @Str = "tools/editors/zed/extension.toml"
+
+$ rev_line : @Str -> @Str = \rev => "rev = \"" ++ rev ++ "\""
+
+# The `rev` an extension.toml pins the grammar at.
+$ pinned_rev : @Str -> @Str = \toml =>
+    let line = OPT.unwrap_or (VEC.find (\l => STR.starts_with l "rev = ") (STR.lines toml)) "" in
+    STR.replace (STR.replace line "rev = " "") "\"" ""
+
+# The last commit up to `c` in tools/editors that changed the grammar.
+$ grammar_rev : @Str -> <@IO> @Str = \c =>
+    output ("git -C " ++ editors ++ " log -1 --format=%H " ++ c ++ " -- tree-sitter-thrax")
+
+$ pin_zed_grammar : {} -> <@IO> {} = \u =>
+    let rev = grammar_rev "HEAD" in
+    let text = OPT.unwrap_or (read_file zed_toml) "" in
+    let old = pinned_rev text in
+    (
+        if rev != old =>
+            write_file zed_toml (STR.replace text (rev_line old) (rev_line rev));
+            say
+                (
+                    "the Zed grammar is pinned at "
+                        ++ rev
+                        ++ ", commit zed/extension.toml in "
+                        ++ editors
+                )
+        else
+            {}
+    );
+    if STR.is_empty (output ("git -C " ++ editors ++ " branch -r --contains " ++ rev)) =>
+        say ("Zed fetches the grammar from the remote, and " ++ rev ++ " is not pushed")
+    else
+        {}
+
+# The highlight queries name the grammar's node types, so a regenerated grammar
+# can leave them naming one that is gone, and Helix and Zed then drop them.
+$ queries : @Vec @Str = ["helix/queries/thrax/highlights.scm", "zed/languages/thrax/highlights.scm"]
+
+$ check_queries : {} -> <@IO, Fail> {} = \u =>
+    let bad = bad_queries 0 [] in
+    if VEC.is_empty bad =>
+        {}
+    else
+        Fail.fail
+            (
+                "highlight queries do not match the grammar:\n  "
+                    ++ STR.join "\n  " bad
+                    ++ "\nhelp: rename the node types the grammar renamed"
+            )
+
+$ bad_queries : @Int -> @Vec @Str -> <@IO> @Vec @Str = \i acc =>
+    if i >= @vec_len queries =>
+        acc
+    else
+        let q = @vec_get queries i in
+        let r = capture
+            (
+                "cd "
+                    ++ editors
+                    ++ "/tree-sitter-thrax && nix develop path:.. -c tree-sitter query ../"
+                    ++ q
+                    ++ " ../TAGS.thx 2>&1 >/dev/null"
+            ) in
+        let why = VEC.filter (\l => STR.contains l "error") (STR.lines r.out) in
+        bad_queries (i + 1) (if r.ok => acc else @vec_push acc (q ++ ": " ++ STR.join " " why))
+
+# The hooks of the tools/editors repository (tools/editors/hooks), run from the
+# Thrax root. A commit that changes the grammar moves Zed's pin to it, which is
+# left for the next commit: a commit cannot name itself.
+$ editors_pre_commit : {} -> <@IO, Fail> {} = \u =>
+    let staged = STR.lines (output ("git -C " ++ editors ++ " diff --cached --name-only")) in
+    let inputs = ["tree-sitter-thrax/", "helix/queries/", "zed/languages/"] in
+    if VEC.any (\f => VEC.any (\p => STR.starts_with f p) inputs) staged =>
+        say "checking the highlight queries ..."; check_queries {}
+    else
+        {}
+
+$ editors_post_commit : {} -> <@IO, Fail> {} = \u =>
+    let changed = STR.lines
+        (output ("git -C " ++ editors ++ " diff-tree --no-commit-id --name-only -r HEAD")) in
+    (
+        if VEC.any (\f => STR.starts_with f "tree-sitter-thrax/") changed =>
+            pin_zed_grammar {}
+        else
+            {}
+    );
+    editors_refresh {}
+
+$ config_home : {} -> <@IO> @Str = \u =>
+    if STR.is_empty (env "XDG_CONFIG_HOME") => env "HOME" ++ "/.config" else env "XDG_CONFIG_HOME"
+
+# Helix has Thrax when it has compiled the grammar once (`hx --grammar build`).
+$ helix_grammar : {} -> <@IO> @Str = \u => config_home {} ++ "/helix/runtime/grammars/thrax.so"
+
+$ helix_installed : {} -> <@IO> @Bool = \u => is_some (mtime (helix_grammar {}))
+
+# Only Thrax's grammar, compiled as `hx --grammar build` would: that builds every
+# grammar Helix knows, and one failing elsewhere would stop it.
+$ helix_build : {} -> <@IO, Fail> {} = \u =>
+    let src = editors ++ "/tree-sitter-thrax/src" in
+    sh
+        (
+            "cc -shared -fPIC -O3 -g0 -I "
+                ++ src
+                ++ " "
+                ++ src
+                ++ "/parser.c -o "
+                ++ quote (helix_grammar {})
+        )
+
+# VS Code runs the packaged extension it installed, so a change reaches it only
+# through a new package.
+$ vsix : @Str = "tools/editors/vscode/thrax.vsix"
+
+$ vscode_srcs : @Vec @Str = [
+    "extension.js",
+    "package.json",
+    "language-configuration.json",
+    "syntaxes/thrax.tmLanguage.json"
+]
+
+$ vscode_installed : {} -> <@IO> @Bool = \u =>
+    succeeds "ls -d \"$HOME\"/.vscode/extensions/thrax.thrax-* >/dev/null 2>&1"
+
+$ vscode_build : {} -> <@IO, Fail> {} = \u => sh
+    (
+        "cd "
+            ++ editors
+            ++ "/vscode"
+            ++ " && { [ -d node_modules ] || npm install --no-audit --no-fund --silent; }"
+            ++ " && npx --yes @vscode/vsce package -o thrax.vsix >/dev/null 2>&1"
+            ++ " && code --install-extension thrax.vsix --force >/dev/null 2>&1"
+    )
+
+$ zed_installed : {} -> <@IO> @Bool = \u =>
+    let data =
+        if STR.is_empty (env "XDG_DATA_HOME") =>
+            env "HOME" ++ "/.local/share"
+        else
+            env "XDG_DATA_HOME"
+    in
+    is_some (mtime (data ++ "/zed/extensions/installed/thrax"))
+
+$ zed_build : {} -> <@IO, Fail> {} = \u =>
+    sh ("nix run path:" ++ editors ++ "#zed-build -- " ++ editors)
+
+# Whether `target` is missing or older than one of `srcs`.
+$ out_of_date : @Str -> @Vec @Str -> <@IO> @Bool = \target srcs =>
+    mtime target |> \ | Option.Some.{ t } => newer_than t srcs 0 | _ => @true
+
+$ newer_than : @Int -> @Vec @Str -> @Int -> <@IO> @Bool = \t srcs i =>
+    if i >= @vec_len srcs =>
+        @false
+    else
+        OPT.unwrap_or (mtime (@vec_get srcs i)) 0 > t || newer_than t srcs (i + 1)
 
 # ---- commit-msg / post-commit ----
 

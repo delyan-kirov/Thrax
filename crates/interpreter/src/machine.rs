@@ -1871,6 +1871,52 @@ pub(crate) fn meta_eval(src: &str) -> Result<OwnedValue> {
     })
 }
 
+thread_local! {
+    /// The `@check` host: given fragment source, the driver type-checks it in the
+    /// running site's module and returns its type, or a rendered error.
+    static META_CHECK: std::cell::RefCell<Option<Box<dyn Fn(&str) -> std::result::Result<String, String>>>> =
+        const { std::cell::RefCell::new(None) };
+    /// The `@e` site running now, `(file, line, column)`, for `@here`.
+    static META_SITE: std::cell::RefCell<Option<(String, i64, i64)>> = const { std::cell::RefCell::new(None) };
+    /// What `@warn` reported while the current site ran, for the driver to render
+    /// at that site.
+    static META_WARNINGS: std::cell::RefCell<Vec<utilities::Diagnostic>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Install (or clear) the `@check` host.
+pub fn set_meta_check(host: Option<Box<dyn Fn(&str) -> std::result::Result<String, String>>>) {
+    META_CHECK.with(|c| *c.borrow_mut() = host);
+}
+
+/// Set (or clear) the `@e` site `@here` reports.
+pub fn set_meta_site(site: Option<(String, i64, i64)>) {
+    META_SITE.with(|c| *c.borrow_mut() = site);
+}
+
+/// Take the warnings `@warn` reported since the last call.
+pub fn take_meta_warnings() -> Vec<utilities::Diagnostic> {
+    META_WARNINGS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+pub(crate) fn push_meta_warning(d: utilities::Diagnostic) {
+    META_WARNINGS.with(|c| c.borrow_mut().push(d));
+}
+
+pub(crate) fn meta_site() -> Result<(String, i64, i64)> {
+    META_SITE.with(|c| c.borrow().clone())
+        .ok_or_else(|| fault("@here is only available while a compile-time `@e` runs"))
+}
+
+pub(crate) fn meta_check(src: &str) -> Result<String> {
+    META_CHECK.with(|c| match &*c.borrow() {
+        Some(host) => host(src).map_err(|rendered| {
+            utilities::Diagnostic::error(utilities::Code::MetaAbort, utilities::Span::at(0), 0, "`@check` rejected the fragment")
+                .with_note(rendered.trim_end().to_string())
+        }),
+        None => Err(fault("@check needs the compiler, and none is installed here")),
+    })
+}
+
 /// The declared shape of a user type, as compile-time reflection reports it: its
 /// type parameters, plus a struct's field names or a union's variants (each with
 /// its payload arity).

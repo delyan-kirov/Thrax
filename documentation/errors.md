@@ -192,6 +192,12 @@ generator failed the build on purpose.
 
 The message is the one the check gave. Fix what it checks, or the check.
 
+## META_WARNING
+
+Compile-time code ran `@warn`: a generator reported something worth knowing
+but let the build go on. It is shown at the `@e` that ran it, with the notes
+and helps the generator gave.
+
 ## INT_LITERAL_RANGE
 
 An integer literal does not fit the type it is used at, such as `300` as an
