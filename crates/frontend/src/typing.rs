@@ -1475,10 +1475,6 @@ fn free_globals(
                 }
             }
         }
-        Expr::Defer { cleanup, body } => {
-            free_globals(ast, *cleanup, globals, bound, out);
-            free_globals(ast, *body, globals, bound, out);
-        }
         Expr::UseArg(inits) => {
             for init in ast.slice(*inits) {
                 let (FieldInit::Named { value, .. } | FieldInit::Positional(value)) = init;

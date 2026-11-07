@@ -36,6 +36,9 @@ use crate::core::{
 /// `@delay (\_ => e)`; the machine forces it at the point the value is
 /// scrutinised and patches the cell with the result.
 pub const DELAY: &str = "@delay";
+/// The CORE builtin that runs a cleanup when a body's scope exits. It has no
+/// runtime implementation: every reference lowers to [`Term::Defer`].
+pub const FINALE: &str = "@finale";
 
 /// One surface match arm's unresolved handles: its patterns (an or-pattern has
 /// several), an optional guard, and the body.
@@ -578,6 +581,9 @@ impl<'a> Desugarer<'a> {
                 if let Some(params) = self.extern_params_of(f) {
                     return self.flatten_extern_app(f, &params, x);
                 }
+                if let Some(t) = self.finale_app(f, x) {
+                    return t;
+                }
                 let f = self.expr(f);
                 let x = self.expr(x);
                 self.app(f, x)
@@ -884,12 +890,6 @@ impl<'a> Desugarer<'a> {
                     }),
                 })
             }
-            Expr::Defer { cleanup, body } => {
-                let (cleanup, body) = (*cleanup, *body);
-                let cleanup = self.expr(cleanup);
-                let body = self.expr(body);
-                self.add(Term::Defer { cleanup, body })
-            }
             Expr::Builtin => self.fault("`@extern \"thrax\"` is only a definition's whole body"),
             Expr::Extern { abi, symbol, lib } => {
                 let (abi, symbol, lib) = (*abi, *symbol, *lib);
@@ -1019,11 +1019,76 @@ impl<'a> Desugarer<'a> {
             }
         }
         let (module, name) = self.resolved_var_id(site);
+        if module.is_none() && self.text(name) == FINALE {
+            return self.finale_eta();
+        }
         if let Some(t) = self.wrapper_projection(site, module, name) {
             return t;
         }
         let base = self.global(module, name);
         self.apply_ctx(site, base)
+    }
+
+    /// Whether `f` references the CORE `@finale` builtin (not a local or a user
+    /// global that happens to share the name).
+    fn is_finale_head(&self, f: Aol<Expr>) -> bool {
+        matches!(self.node(f), Expr::Var { name, .. } if self.text(*name) == FINALE)
+            && self.resolved_var_id(f).0.is_none()
+    }
+
+    /// `@finale cleanup body` applied in full (directly or through a pipe):
+    /// `f` is `@finale cleanup` and `x` is `body`. Lowered straight to the
+    /// finalization frame, so the common call allocates no closures.
+    fn finale_app(&mut self, f: Aol<Expr>, x: Aol<Expr>) -> Option<Aol<Term>> {
+        let Expr::App(head, cleanup) = *self.node(f) else {
+            return None;
+        };
+        if !self.is_finale_head(head) {
+            return None;
+        }
+        let cleanup = self.expr(cleanup);
+        let body = self.expr(x);
+        Some(self.finale(cleanup, body))
+    }
+
+    /// `@finale` referenced first-class or partially applied: `\c b => @finale c b`.
+    fn finale_eta(&mut self) -> Aol<Term> {
+        let (c, b) = (self.fresh(), self.fresh());
+        let (cv, bv) = (self.var(c), self.var(b));
+        let frame = self.finale(cv, bv);
+        let inner = self.terms.lam(b, frame);
+        self.terms.lam(c, inner)
+    }
+
+    /// The finalization frame for `@finale cleanup body`: run `body {}`, then
+    /// `cleanup {}` however its scope exits. Both arguments are evaluated first,
+    /// in order, as for any call.
+    fn finale(&mut self, cleanup: Aol<Term>, body: Aol<Term>) -> Aol<Term> {
+        let mut binds = Vec::new();
+        let cleanup = self.thunk_call(cleanup, &mut binds);
+        let body = self.thunk_call(body, &mut binds);
+        let mut t = self.add(Term::Defer { cleanup, body });
+        for (name, val) in binds.into_iter().rev() {
+            t = self.terms.let_(name, val, t);
+        }
+        t
+    }
+
+    /// `thunk {}`. A literal lambda is inlined (its parameter bound to unit), a
+    /// variable is called, and any other term is bound in `binds` so it is
+    /// evaluated where it was written rather than when the frame runs it.
+    fn thunk_call(&mut self, thunk: Aol<Term>, binds: &mut Vec<(StrId, Aol<Term>)>) -> Aol<Term> {
+        let unit = self.unit();
+        match *self.terms.get(thunk) {
+            Term::Lam { param, body } => self.terms.let_(param, unit, body),
+            Term::Var { .. } => self.app(thunk, unit),
+            _ => {
+                let name = self.fresh();
+                binds.push((name, thunk));
+                let v = self.var(name);
+                self.app(v, unit)
+            }
+        }
     }
 
     /// An interface wrapper applied to its resolved instance IS that instance's
@@ -1257,11 +1322,17 @@ impl<'a> Desugarer<'a> {
                 self.lower_meta_e(rhs, self.ast.expr_span(site).unwrap_or(Span::at(0)))
             }
             "|>" => {
+                if let Some(t) = self.finale_app(rhs, lhs) {
+                    return t;
+                }
                 let f = self.expr(rhs);
                 let x = self.expr(lhs);
                 self.app(f, x)
             }
             "<|" => {
+                if let Some(t) = self.finale_app(lhs, rhs) {
+                    return t;
+                }
                 let f = self.expr(lhs);
                 let x = self.expr(rhs);
                 self.app(f, x)

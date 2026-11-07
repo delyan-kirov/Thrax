@@ -82,7 +82,7 @@ pub(super) const MAX_ALIGNED: usize = 40;
 
 /// The keywords and marks that start a layout form.
 pub(super) fn starts_form(t: &Tok) -> bool {
-    matches!(t.kind, Kind::Let | Kind::If | Kind::Lambda | Kind::Defer | Kind::Do)
+    matches!(t.kind, Kind::Let | Kind::If | Kind::Lambda | Kind::Do)
 }
 
 pub(super) fn is_bar(t: &Tok) -> bool {
@@ -373,6 +373,11 @@ impl Layout<'_, '_> {
                 if halt(&t) {
                     break;
                 }
+                let call = breaks.last().map_or(0, |&(at, _)| at);
+                if run.get(call).is_some_and(|p| self.is_finale(p.first)) && self.callback_at(ts, *pos) {
+                    let head = self.lay_run(run, breaks, fills);
+                    return self.finale(head, ts, pos, &halt);
+                }
                 if starts_form(&t) || (matches!(t.kind, Kind::With) && self.has_in(ts, *pos, &halt)) {
                     let form = self.form(ts, pos, &halt);
                     run.push(form);
@@ -459,6 +464,43 @@ impl Layout<'_, '_> {
         P { d: g, ..acc }
     }
 
+    /// Whether the tree at `pos` is `<|` handing a one-clause lambda to the call
+    /// before it: `f x <| \_ =>`.
+    fn callback_at(&self, ts: &[Tree], pos: usize) -> bool {
+        let op = self.tok_of(&ts[pos]).is_some_and(|t| matches!(t.kind, Kind::Op) && t.text == "<|");
+        let lambda = self.peek(ts, pos + 1).filter(|(_, t)| matches!(self.tok_of(t).map(|t| t.kind), Some(Kind::Lambda)));
+        op && lambda.is_some_and(|(i, _)| !self.peek_tok(ts, i + 1).is_some_and(|t| is_bar(&t)))
+    }
+
+    /// Whether token `i` is the `@finale` builtin.
+    fn is_finale(&self, i: usize) -> bool {
+        matches!(self.toks[i].kind, Kind::At) && self.toks[i].text == "@finale"
+    }
+
+    /// `@finale c <| \_ =>` then the body on the next line at the head's level,
+    /// so the cleanups read as a sequence the way a chain of lets does. `head`
+    /// is the call before the `<|` at `pos`. A chain of them breaks as one.
+    fn finale(&mut self, head: P, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
+        let op = self.tree(&ts[*pos]);
+        *pos += 1;
+        let cs = self.comments(ts, pos);
+        let lambda = self.lambda_head(ts, pos, halt);
+        let lambda = self.with_comments(cs, lambda);
+        let head = self.join(&[head, op, lambda]).expect("non-empty");
+        let outer = self.docs.reserve();
+        let mut body = self.expr(ts, pos, halt, false);
+        if self.is_finale(body.first) {
+            if let Node::Group(_, false) = self.docs.nodes[body.d] {
+                let broken = self.docs.add(Node::Broken(body.d));
+                body.d = self.docs.add(Node::Cond { group: outer, flat: body.d, broken });
+            }
+        }
+        let line = self.docs.add(Node::Line);
+        let d = self.docs.cat(vec![head.d, line, body.d]);
+        self.docs.fill_group(outer, d, false);
+        P { d: outer, first: head.first, last: body.last }
+    }
+
     /// Whether an `in` follows at this level before the expression ends.
     fn has_in(&self, ts: &[Tree], pos: usize, halt: &dyn Fn(&Tok) -> bool) -> bool {
         ts[pos + 1..]
@@ -480,7 +522,7 @@ impl Layout<'_, '_> {
         Some(self.with_comments(cs, p))
     }
 
-    /// A `let`/`with`/`defer`/`if`/`\`/`do` form, which runs to the end of
+    /// A `let`/`with`/`if`/`\`/`do` form, which runs to the end of
     /// the enclosing expression.
     fn form(&mut self, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
         let kw = self.tok_of(&ts[*pos]).copied().expect("a form starts with a token");
@@ -498,7 +540,7 @@ impl Layout<'_, '_> {
                 }
                 self.hang_below(head, body, true)
             }
-            Kind::Let | Kind::With | Kind::Defer => self.binding_form(ts, pos, halt),
+            Kind::Let | Kind::With => self.binding_form(ts, pos, halt),
             Kind::If => self.if_form(ts, pos, halt),
             Kind::Do => {
                 let k = self.tok(Self::first_tok(&ts[*pos]));
@@ -666,7 +708,7 @@ impl Layout<'_, '_> {
         self.join(&ps).expect("a lambda has its backslash")
     }
 
-    /// `let p = v in body` (and `with s in`, `defer c in`). The head stays on
+    /// `let p = v in body` (and `with s in`). The head stays on
     /// one line if it fits; otherwise the value goes one level under `=` (or
     /// the keyword) with `in` alone below it. A bracketed value opens on the
     /// keyword's line and keeps `in` beside its closing bracket. The body
@@ -710,7 +752,7 @@ impl Layout<'_, '_> {
         let mut body = self.expr(ts, pos, halt, false);
         // A chain of lets breaks as one: once this one ends its line with `in`,
         // so does every let after it.
-        if matches!(self.toks[body.first].kind, Kind::Let | Kind::With | Kind::Defer) {
+        if matches!(self.toks[body.first].kind, Kind::Let | Kind::With) {
             while let Node::Cat(xs) = &self.docs.nodes[body.d] {
                 let [x] = xs[..] else { break };
                 body.d = x;

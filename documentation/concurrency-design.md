@@ -279,8 +279,8 @@ Settled under #282 (section 6 has the details):
 - **Cross-thread resume.** Yes. A continuation that crosses to another thread
   is marked like any value; marking flags the slice, which is then always
   copied on resume (never moved), and its counts are atomic.
-- **`defer` and cancellation.** Tasks are never cancelled, and a program
-  waits for its `spawn` tasks before it exits, so a task's `defer` cleanups
+- **`@finale` and cancellation.** Tasks are never cancelled, and a program
+  waits for its `spawn` tasks before it exits, so a task's `@finale` cleanups
   run exactly once, on the thread that runs the task.
 - **Declaring a handler thread-safe.** No declaration: a task takes its
   handlers with it (`PAR.spawn_with handler body`), and a handler is ordinary

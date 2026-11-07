@@ -1,5 +1,5 @@
 $ @mod PARSE_COMMA_CHAIN
 
-# `let`, `if`, `with` and `defer` take one entry each; several nest.
+# `let`, `if` and `with` take one entry each; several nest.
 $ a : @Int = let x = 1, y = 2 in x + y  #~ error[UNEXPECTED_TOKEN]: `let` takes no comma-separated list
 $ b : @Int -> @Int = \n => if n == 0 => 0, n > 0 => 1 else 2  #~ error[UNEXPECTED_TOKEN]: `if` takes no comma-separated list

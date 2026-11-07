@@ -57,7 +57,7 @@ mirroring the interpreter's `IT::Value`. Evaluation is strict (no thunks). Tags:
 `T_INT`, `T_REAL`, `T_STR` (also Array bytes), `T_STRUCT`, `T_VARIANT`,
 `T_CLOS` (an IR code index + captured env), `T_BUILTIN` (a curried operator),
 `T_EXTERN` (a curried foreign call), `T_OP` (an effect operation),
-`T_RESUMP` (a captured continuation / resumption), `T_DEFER` (the `defer`
+`T_RESUMP` (a captured continuation / resumption), `T_DEFER` (the `@finale`
 intrinsic, curried over its two thunks), `T_UNK` (placeholder / unit).
 
 **Generated code never reads a union arm directly.** Every access goes through a
@@ -79,7 +79,7 @@ straight-line C and ends by calling exactly one **terminator**; the driver
 - **Atoms** become single C expressions: `Local i`->`THxVALUE_local(fr->locals,
   ...)`, `Env i`->`THxVALUE_env(fr->env, ...)`, `Glob n`->`force_code(<code>)` (or
   `THxRT_builtin(THxB_<NAME>, arity)` for a built-in, `THxK_op("Eff.op")` for an
-  effect operation, `THxK_defer()` for `defer`),
+  effect operation, `THxK_defer()` for `@finale`),
   literals->`THxRT_int/...`, `MkClosure`->`THxRT_closure(code, captures, n)`.
 - **Terminators**: `THxK_ret(v)` delivers a value up the continuation;
   `THxK_tailcall(fn,arg)` tail-applies (constant stack); `THxK_apply(fr,fn,arg,
@@ -135,7 +135,7 @@ stack-overflow limit).
 
 Most calls cannot perform an effect, and those need none of the machine. A
 known global function (a closure literal, seen through its currying) whose body
-provably never suspends (no handler, no `defer`, every call a built-in, a
+provably never suspends (no handler, no `@finale`, every call a built-in, a
 partial application, or another such function) also gets a plain C function
 `d_<code>`: its activation is a `Frame` on the C stack, a saturated call of it
 from a block or another direct function is a C call, and a self tail call is a
@@ -179,7 +179,7 @@ Atoms `Local`/`Env`/`Glob`/`LitI`/`LitR`/`LitS`/`MkClosure`; expressions `Ret`,
 default), `MkStruct`, `Field`, `MkVariant`, `Unk`; lazy-memoized global CAFs;
 built-in @Int/Real operators and the `%array` primitive; **C FFI** (`@extern`,
 below); and **algebraic effects** handlers (`do`/`ctl`), operations,
-first-class resumptions, and `defer` (see below).
+first-class resumptions, and `@finale` (see below).
 
 The backend now lowers the whole IR: **all 24 `examples/` programs compile and
 run natively**, matching the interpreter. `CC::unsupported` no longer rejects
@@ -270,7 +270,7 @@ the interpreter binary, not an external library.
 
 ## Algebraic effects (the CEK driver)
 
-Handlers/`perform`/`resume`/`defer` work by capturing and splicing slices of a
+Handlers/`perform`/`resume`/`@finale` work by capturing and splicing slices of a
 **reified continuation stack** the same design as the interpreter (`IT.cpp`),
 ported to C in `src/THxK.c` (option 1 of the two routes originally sketched
 here). The driver owns a single heap continuation stack `kont` of `KFrame`s
@@ -291,9 +291,9 @@ the generated block functions:
   `segment_copy` and stays resumable. Which it is comes from the clause's
   `ResumeUse`, carried in the prompt's `uses` table; a clause that never mentions
   `k` gets no resumption at all, just a `K_CLEANUPS` frame holding the abandoned
-  slice's `defer` thunks.
-- **`defer cleanup do body`** lowers to the `%finally` intrinsic (`T_DEFER`,
-  curried over two thunks); it installs a `K_DEFER` marker that runs the cleanup
+  slice's `@finale` cleanup thunks.
+- **`@finale cleanup body`** (a CORE builtin over two thunks) lowers to the
+  finalization frame (`T_DEFER`); it installs a `K_DEFER` marker that runs the cleanup
   on normal completion, on abort (the captured continuation is discarded the
   `K_AFTERCLAUSE` runs the pending cleanups with enclosing handlers still
   installed), or when a stored continuation later completes.
@@ -302,10 +302,10 @@ The interpreter distinguishes a **stored** resumption (a coroutine that stashed
 `k`) from a **discarded** one via a `shared_ptr` use-count; the C runtime has no
 refcount, so instead `THxK_mark_escape` flags a `THxK_Resump` when it is copied
 into a closure capture or a struct/variant field (the value constructors in
-`src/THxRT.c` call it). A stored/escaped `k`'s `defer` cleanups are not finalized
+`src/THxRT.c` call it). A stored/escaped `k`'s `@finale` cleanups are not finalized
 at the clause boundary they run on later completion. (Limitation, inherited
 from the interpreter: a stored continuation dropped without ever resuming never
-runs its `defer`.)
+runs its `@finale` cleanup.)
 
 ## Memory: reference counting (the default engine)
 
@@ -321,7 +321,7 @@ pairs** generated code was already forbidden from touching representation
 so those functions carry the ownership rules:
 
 - **Stores own**: a frame slot (`THxK_setlocal`), a constructor child
-  (struct/variant fields, closure captures, curried builtin/extern/defer
+  (struct/variant fields, closure captures, curried builtin/extern/finale
   operand rows), every kont frame's payload (KRet's frame, KPrompt's
   clauses + `els`, KDefer's cleanup, KThunkRet's saved value, KAfterClause's
   kval), and the global CAF cache each hold `+1`; reads borrow.
@@ -387,8 +387,8 @@ pointer-boxed.
 
 ## Known limitations
 
-- A stored continuation dropped without ever resuming never runs its `defer`
-  (inherited from the interpreter) though its memory *is* reclaimed.
+- A stored continuation dropped without ever resuming never runs its `@finale`
+  cleanup (inherited from the interpreter) though its memory *is* reclaimed.
 - FFI marshals the base scalar/pointer types; aggregates (struct/variant) are
   not passed across the boundary, and only libc-resolvable libraries are
   exercised (others just need the right `-l`/path).
@@ -413,8 +413,8 @@ this exactly, so the equivalence is:
 
 `build native-test` checks this for every example (all 24, effects included),
 and the generated main's leak check makes each one a leak regression test too;
-`build test` runs the interpreter side. The effect examples (EFFECTS, FINALLY,
+`build test` runs the interpreter side. The effect examples (EFFECTS, FINALE,
 COROUTINES, PIPES, EFFECT_OVERLOAD) are validated to produce the **same values**
 natively as under the interpreter (exceptions 42/-1, generator 42, state 21,
-`defer` 103/9/6/2), and the emitted binaries are valgrind-clean of invalid
+`@finale` 103/9/6/2/10/31), and the emitted binaries are valgrind-clean of invalid
 reads/writes.

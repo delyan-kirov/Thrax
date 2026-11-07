@@ -581,11 +581,6 @@ pub enum Expr {
         body: Aol<Expr>,
         handler: Option<Box<Handler>>,
     },
-    /// `defer cleanup in body`.
-    Defer {
-        cleanup: Aol<Expr>,
-        body: Aol<Expr>,
-    },
     /// `@extern "abi" "symbol" "lib"`, or `@extern "load"` (no symbol or
     /// library: both are empty).
     Extern {

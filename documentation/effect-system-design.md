@@ -252,7 +252,7 @@ a copy and the original stays resumable for its other owners.
 
 | Clause | At the perform point | At a resume |
 | --- | --- | --- |
-| never mentions `k` (`ResumeUse::Never`) | keep only the slice's `defer` cleanups, release the frames | n/a |
+| never mentions `k` (`ResumeUse::Never`) | keep only the slice's `@finale` cleanups, release the frames | n/a |
 | mentions `k` (`ResumeUse::Captured`) | capture the slice | move it if the resumption is uniquely owned, else splice a copy |
 
 What this buys over the static per-clause walk it replaced:
@@ -288,7 +288,7 @@ correct: the copy is one more owner of a nested resumption, so that one is no
 longer unique and its own resumes copy too. Koka and OCaml 5 share the same
 limitation.
 
-**Each resumed copy runs its own `defer` cleanups**, when that copy completes.
+**Each resumed copy runs its own `@finale` cleanups**, when that copy completes.
 A resumption never resumed still finalizes at the clause boundary, as before.
 
 ### Original decision: affine (kept for the record)
@@ -629,6 +629,14 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     refcount ("stored") check -- NOT a destructor, so timing is correct. Also made
     `do <body>` (no `ctl`) a plain block. `dat/FINALLY.thx`. Limitation: a stored
     continuation dropped without ever being resumed does not run its `defer`.
+  - [X] **`@finale` replaces `defer` (2026-11-08).** The keyword is gone:
+    `@finale cleanup body` is a CORE builtin over two thunks, so it pipes,
+    partially applies and passes around (`@finale (\_ => close f) <| \_ => body`).
+    The desugarer lowers every reference to the same `Defer` finalization frame
+    (a saturated call directly, a first-class one through an eta wrapper), so
+    the runtime and its semantics are unchanged. A handler-return clause cannot
+    replace it: the return clause never runs when an outer handler drops the
+    continuation, which is exactly the abort case. `examples/FINALE.thx`.
   - [X] **Multi-shot resumptions (2026-10-04, issue #228).** A resumption may be
     resumed any number of times; each resume after the last splices a COPY of the
     captured slice (frames cloned, a fresh let box per `K_RET`, aliased frames
@@ -697,7 +705,8 @@ Status legend: [X] done, [~] in progress, [ ] planned.
 ## 11. Deferred
 
 - **M2 (effects):**
-  - `defer` DONE (2026-06-27): `defer <cleanup> in <body>` keyword runs cleanup
+  - `defer` DONE (2026-06-27), now the `@finale` CORE builtin (2026-11-08):
+    the former `defer <cleanup> in <body>` keyword ran cleanup
     on completion/abort/stored-completion via `KDefer` + clause-boundary
     `KAfterClause` markers (no `discontinue` keyword; Koka-style runtime,
     Go-style surface; desugars to the internal `%finally` intrinsic). `initially`

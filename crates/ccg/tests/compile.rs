@@ -1051,13 +1051,15 @@ fn effects_coroutines_cross_context_resume() {
 }
 
 #[test]
-fn effects_defer_finalization() {
+fn effects_finale_finalization() {
     // Normal completion, abort (handler drops the continuation), LIFO nesting,
     // and a stored continuation whose cleanup runs when it finally completes.
-    assert_example("FINALLY.thx", "r_normal");
-    assert_example("FINALLY.thx", "r_abort");
-    assert_example("FINALLY.thx", "r_nested");
-    assert_example("FINALLY.thx", "r_stored");
+    assert_example("FINALE.thx", "r_normal");
+    assert_example("FINALE.thx", "r_abort");
+    assert_example("FINALE.thx", "r_nested");
+    assert_example("FINALE.thx", "r_stored");
+    assert_example("FINALE.thx", "r_first_class");
+    assert_example("FINALE.thx", "r_order");
 }
 
 #[test]

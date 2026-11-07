@@ -46,8 +46,7 @@
  *     right, so `f let x = 1 in x + 100` parses as `f (let x = 1 in (x+100))`
  *     -- the `+ 100` is swallowed. Legal, but a footgun that should emit a
  *     compiler warning. Here a control form in operand position needs parens.
- *   - LOWER PRIORITY: `defer` cleanup is `op_expr` here (parser.rs allows a full
- *     expr up to `,`/`in`); semantic well-formedness (field-case, mixed
+ *   - LOWER PRIORITY: semantic well-formedness (field-case, mixed
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
@@ -72,7 +71,7 @@
 %token EQ ARROW FATARROW DOLLAR COLON COMMA DOT  /* FATARROW is `=>` */
 
 %token KW_LET KW_IN KW_IF KW_ELSE KW_WITH
-%token KW_DO KW_CTL KW_DEFER
+%token KW_DO KW_CTL
 
 %right SEMI                         /* ; */
 %right PIPE_BACK                    /* <| */
@@ -294,7 +293,7 @@ expr
   ;
 
 ctrl_expr
-  /* Each form takes ONE binding, subject, arm or cleanup; several nest:
+  /* Each form takes ONE binding, subject or arm; several nest:
    * `let x = a in let y = b in e`, `if a => b else if c => d else e`. */
   : KW_LET let_binder EQ expr KW_IN expr
   | KW_WITH expr KW_IN expr  /* field-scoping: bring the subject struct's
@@ -306,7 +305,6 @@ ctrl_expr
    * elaborates as a match on `s`. An empty match is `x |> @absurd` (a CORE
    * function), not a lambda with no arms. */
   | LAMBDA arms
-  | KW_DEFER op_expr KW_IN expr
   | handle
   ;
 

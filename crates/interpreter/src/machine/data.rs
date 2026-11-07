@@ -1160,7 +1160,6 @@ fn token_kind_name(kind: frontend::Kind) -> &'static str {
         With => "With",
         Do => "Do",
         Ctl => "Ctl",
-        Defer => "Defer",
         Comment => "Comment",
         Eof => "Eof",
     }

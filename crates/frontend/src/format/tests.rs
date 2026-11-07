@@ -59,8 +59,8 @@ fn a_let_chain_reads_as_a_sequence() {
     let src = "$ @mod M\n$ f = \\x => let a = x + 1 in let bb = a * 2 in a + bb\n";
     assert_eq!(fmt(src), "$ @mod M\n$ f = \\x => let a = x + 1 in let bb = a * 2 in a + bb\n");
     assert_eq!(narrow(src, 30), "$ @mod M\n$ f = \\x =>\n    let a = x + 1 in\n    let bb = a * 2 in\n    a + bb\n");
-    let defer = "$ @mod M\n$ f = \\x => defer g 1 in defer g 2 in x\n";
-    assert_eq!(narrow(defer, 20), "$ @mod M\n$ f = \\x =>\n    defer g 1 in\n    defer g 2 in\n    x\n");
+    let finale = "$ @mod M\n$ f = \\x => @finale g <| \\_ => @finale h <| \\_ => x\n";
+    assert_eq!(narrow(finale, 24), "$ @mod M\n$ f = \\x =>\n    @finale g <| \\_ =>\n    @finale h <| \\_ =>\n    x\n");
 }
 
 #[test]
