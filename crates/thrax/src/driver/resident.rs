@@ -228,11 +228,6 @@ impl ModuleRun {
         }
     }
 
-    /// Module `i`'s checker, which this run must have checked itself.
-    pub(crate) fn checker_mut(&mut self, i: usize) -> &mut Checker<'static> {
-        self.fresh[i].as_mut().expect("only a module this run checked is mutable")
-    }
-
     /// Every module's checker, in module order.
     pub(crate) fn checkers(&self) -> impl Iterator<Item = &Checker<'_>> {
         (0..self.reused.len()).map(|i| self.checker(i))

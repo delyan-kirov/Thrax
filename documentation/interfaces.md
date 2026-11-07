@@ -28,7 +28,7 @@ $ a : @Str = to_string 1                         # the field is found by type
 $ b : @Str = to_string @use {.d = show_hex} 255  # or written by hand
 ```
 
-`:type to_string` prints `@use {d: IToString a} -> a -> @Str`. The caller-visible
+`@type_of "to_string"` gives `@use {d: IToString a} -> a -> @Str`. The caller-visible
 type is the arrow without the `@use` parameter, so `to_string 1` is a complete call.
 
 Rules, all of them:

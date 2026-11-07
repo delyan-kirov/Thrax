@@ -168,6 +168,7 @@ Compiler messages, receive (query the accumulated compile state):
 
 ```
 @lookup    : @Str   -> <@Meta> Decl          -- LANDED
+@scope     : {}     -> <@Meta> @Vec {@Str, @Str}  -- LANDED. names in scope, with types
 @modules   : ()     -> <@Meta> []@module     -- what is imported
 @functions : ()     -> <@Meta> []@Code        -- parsed functions
 @types     : ()     -> <@Meta> []@typeinfo
@@ -195,6 +196,20 @@ and a name nobody declared is `Decl.Missing`, a value to match rather than a
 fault or a `Maybe` to unwrap. It is the matchable form of the `@type_*`
 operations below, which remain as shorthands (and fault on a missing name). See
 `examples/META_REFLECT.thx`.
+
+`@scope {}` lists every name a bare reference at the running site can resolve
+to (the module's own globals, then its imports), each with its type as source.
+
+**The shell runs at compile time.** Each prompt recompiles the session, so the
+shell is a compile-time site: its items run with the same hosts a `$ @e` has, and
+`$ _= @scope {}`, `$ _= @type_of "f"` or `$ _= @check <| @parse_str "1 + 2"` work
+at the prompt. A `$ @e` item (or an `@e` inside a definition) expands as in a
+file, and the shell keeps the expanded items. The shell has no `:` commands:
+every session imports `library/THRAX_SHELL.thx`, whose `type "1 + 2"` and
+`scope "vec"` print what that reflection finds, and whose `quit`/`reset`/`list`/
+`help` call `@shell_*` builtins of the built-in `<@Shell>` effect. The shell is
+their host (`interpreter::machine::set_shell_host`), like the compiler is
+`<@Meta>`'s; a program has none, so calling one there is a type error.
 
 **LANDED (a first cut of reflection).** Ahead of the full `@lookup`, these
 `<@Meta>` operations expose a declared type's shape, or a global value's type, to

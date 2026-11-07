@@ -1003,6 +1003,24 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             };
             Ok(Value::Variant { ty: "Decl".into(), tag: tag.into(), fields })
         }
+        // The `<@Shell>` operations, which the shell performs.
+        Prim::ShellQuit | Prim::ShellReset | Prim::ShellList => {
+            crate::machine::shell_request(name)?;
+            Ok(Value::Unit)
+        }
+        // The names in scope where the site runs, as `(name, type)` pairs.
+        Prim::Scope => {
+            let items: Vec<PVal> = crate::machine::meta_scope()?
+                .iter()
+                .map(|(name, ty)| {
+                    mk(Value::Tuple(vec![
+                        mk(Value::Str(Rc::new(name.as_bytes().to_vec()))),
+                        mk(Value::Str(Rc::new(ty.as_bytes().to_vec()))),
+                    ]))
+                })
+                .collect();
+            Ok(Value::Vector(Rc::new(items)))
+        }
         // The `@e` site running now, as a CORE `Site`.
         Prim::Here => {
             let (file, line, column) = crate::machine::meta_site()?;

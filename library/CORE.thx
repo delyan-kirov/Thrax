@@ -258,6 +258,10 @@ $ Decl : @union =
     Missing: {},
 $ @lookup : @Str -> <@Meta> Decl = @extern "thrax"
 
+# Every name a bare reference at the running `@e` can resolve to (its module's
+# own globals, then what it imports), each with its type as source, by name.
+$ @scope : {} -> <@Meta> @Vec { @Str, @Str } = @extern "thrax"
+
 # Where the running `@e` is: its file, line and column (both from 1).
 $ Site : @struct = file: @Str, line: @Int, column: @Int
 $ @here : {} -> <@Meta> Site = @extern "thrax"

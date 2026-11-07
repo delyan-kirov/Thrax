@@ -202,13 +202,14 @@ fn reads_operand(prim: Prim, i: usize) -> bool {
         | ArraySlice | ArrayScan | ArrayMatch | PtrBytes | RecordWithout | VecNew | VecLen | VecGet | VecSlice | TensorLength | TensorStack
         | TensorTranspose | TensorConcat | TensorIndex | TensorSlice | TensorIndexAxis | TensorSliceAxis
         | Lex | TokenKind | TokenText | Parse | Unparse | ParseStr | ParseItems | ParseType | ParseRow | Format | TypeKind | TypeFields
-        | TypeVariants | TypeParams | TypeOf | Lookup | Here | Check | Fail | Warn | Iand | Ior | Ixor | Inot | Ishl | Ishr | Ushr | F64Bits | BitsF64
+        | TypeVariants | TypeParams | TypeOf | Lookup | Scope | Here | Check | Fail | Warn | Iand | Ior | Ixor | Inot | Ishl | Ishr | Ushr | F64Bits | BitsF64
         | F32Bits | BitsF32 => true,
         ArrayPush | ArraySet => i > 0,
         VecFill => i == 0,
         VecPush | VecSet | TensorCreate | TensorDot | TensorMatmul | Delay | Par | Spawn | Await | ChanNew | ChanSend | ChanRecv
         | TvarNew | TvarRead | StmBegin | StmRead | StmWrite | StmCommit | StmWait | StmSave | StmRollback
-        | Eval | Abort | Emit | Fresh | Link | LinkPath | ImportPath | SetOption => false,
+        | Eval | Abort | Emit | Fresh | Link | LinkPath | ImportPath | SetOption | ShellQuit | ShellReset
+        | ShellList => false,
     }
 }
 

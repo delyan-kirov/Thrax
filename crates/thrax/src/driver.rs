@@ -624,18 +624,62 @@ pub(crate) fn dotted(ast: &frontend::Ast, parts: utilities::Slice<utilities::Str
 /// progressively `@e`-expanded sources.
 type Compiled = (
     Vec<frontend::core::CoreProgram>,
-    frontend::ReflectInfo,
+    Reflection,
     Vec<Option<u64>>,
 );
 
-fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<Compiled, ExitCode> {
+/// What compile-time code can ask about a compile: the declared types and global
+/// values (`@type_of`, `@lookup`), and per module that has a site to run, the
+/// names in scope there (`@scope`).
+struct Reflection {
+    info: frontend::ReflectInfo,
+    scopes: HashMap<utilities::StrId, Rc<Vec<(String, String)>>>,
+}
+
+/// The [`Reflection`] of a checked run. Rendering every global's type is only
+/// worth it when some module has a site to ask: `scoped` says which do.
+fn reflection(run: &ModuleRun, loaded: &Loaded, resolved: &frontend::Resolved, scoped: &dyn Fn(&str) -> bool) -> Reflection {
+    let mut info = resolved.declarations.reflect();
+    let mut scopes = HashMap::new();
+    let modules: Vec<usize> = (0..loaded.sources.len()).filter(|&i| scoped(&loaded.sources[i].0)).collect();
+    if modules.is_empty() {
+        return Reflection { info, scopes };
+    }
+    // Each global as its own module renders it: only there does its type carry
+    // its `@use` fields.
+    let mut declared: HashMap<utilities::StrId, Vec<String>> = HashMap::new();
+    for (i, defs) in run.results.iter().enumerate() {
+        let module = utilities::StrId::intern(&loaded.sources[i].0);
+        let checker = run.checker(i);
+        for (name, ty) in defs {
+            let shown = checker.show_decl(*name, *ty);
+            declared.entry(*name).or_default().push(shown.clone());
+            info.values.push((module, *name, shown));
+        }
+    }
+    for i in modules {
+        let visible = run.checker(i).visible_values().into_iter().filter(|(n, _)| *n != PROBE);
+        let entries = visible
+            .map(|(n, ty)| match declared.get(&utilities::StrId::intern(n)).map(Vec::as_slice) {
+                Some([shown]) => (n.to_string(), shown.clone()),
+                _ => (n.to_string(), ty),
+            })
+            .collect();
+        scopes.insert(utilities::StrId::intern(&loaded.sources[i].0), Rc::new(entries));
+    }
+    Reflection { info, scopes }
+}
+
+/// `shell` checks the root as the shell's session, under an open effect row.
+fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool, shell: bool) -> Result<Compiled, ExitCode> {
+    let session = shell.then(|| SessionRoot { module: &loaded.root_name, open_effects: true });
     // A lenient round tolerates unbound names a generator may still inject. Once
     // the round fails anyway those names are worth reporting too, so the report
     // comes from a strict check of the same sources.
-    let mut run = match check_all(loaded, lenient, None) {
+    let mut run = match check_all(loaded, lenient, session) {
         Ok(run) => run,
         Err(rendered) => {
-            let rendered = if lenient { check_all(loaded, false, None).err().unwrap_or(rendered) } else { rendered };
+            let rendered = if lenient { check_all(loaded, false, session).err().unwrap_or(rendered) } else { rendered };
             eprint!("{rendered}");
             return Err(ExitCode::FAILURE);
         }
@@ -645,28 +689,23 @@ fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<C
 
     // Lower every module; put the root first so its names win when resolving an
     // unqualified reference defined in more than one module.
-    let mut reflect = resolved.declarations.reflect();
     let root = loaded.index[&loaded.root_name];
     let mut order: Vec<usize> = (0..run.programs.len()).collect();
     order.sort_by_key(|&i| i != root);
     let lowered = run.desugar(&order, &resolved);
-    // `@type_of` answers from every global's rendered type. Rendering them all is
-    // only worth it in a round with a compile-time site to ask.
-    let has_sites = lowered.iter().any(|p| {
-        !(p.ct_runs.is_empty()
-            && p.ct_evals.is_empty()
-            && p.ct_types.is_empty()
-            && p.ct_patterns.is_empty()
-            && p.ct_rows.is_empty())
-            || p.ct_build.is_some()
-    });
-    if has_sites {
-        for (i, defs) in run.results.iter().enumerate() {
-            let module = utilities::StrId::intern(&loaded.sources[i].0);
-            let checker = run.checker(i);
-            reflect.values.extend(defs.iter().map(|(name, ty)| (module, *name, checker.show_decl(*name, *ty))));
-        }
-    }
+    let with_sites: HashSet<&str> = lowered
+        .iter()
+        .filter(|p| {
+            !(p.ct_runs.is_empty()
+                && p.ct_evals.is_empty()
+                && p.ct_types.is_empty()
+                && p.ct_patterns.is_empty()
+                && p.ct_rows.is_empty())
+                || p.ct_build.is_some()
+        })
+        .map(|p| p.module.as_str())
+        .collect();
+    let reflect = reflection(&run, loaded, &resolved, &|m| with_sites.contains(m));
 
     // `$ @build` has one signature, like the entry: one name, one shape. Its own
     // annotation is known even in a lenient round, so this is checked every round
@@ -904,6 +943,18 @@ fn expand_all(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
+    let (lowered, plan) = expand_loaded(&mut loaded, &root_dir, want_entry, false)?;
+    Ok((lowered, loaded, plan))
+}
+
+/// The expansion loop of [`expand_all`] over sources already loaded, which it
+/// rewrites in place. `shell` compiles the root as the shell's session.
+fn expand_loaded(
+    loaded: &mut Loaded,
+    root_dir: &Path,
+    want_entry: bool,
+    shell: bool,
+) -> Result<(Vec<frontend::core::CoreProgram>, BuildPlan), ExitCode> {
     let mut plan = BuildPlan::default();
     // The modules whose `$ @build` has already run. A `@build` is a definition, not
     // a directive, so nothing consumes it: this is what stops the expansion loop
@@ -914,7 +965,7 @@ fn expand_all(
     loop {
         // A generator can inject `$ with M` for a module nothing imported yet, so
         // the load set is reopened every round rather than fixed before the first.
-        if let Err(msg) = load_injected_imports(&mut loaded, &root_dir) {
+        if let Err(msg) = load_injected_imports(loaded, root_dir) {
             eprintln!("{}", msg.trim_end());
             return Err(ExitCode::FAILURE);
         }
@@ -922,7 +973,7 @@ fn expand_all(
         // definition that hand-written code forward-references, which would not
         // yet resolve. Unbound names are deferred (fresh vars) so the generators
         // can still run; the final strict compile below validates the result.
-        let compiled = compile_sources(&loaded, true, want_entry)?;
+        let compiled = compile_sources(loaded, true, want_entry, shell)?;
         // Gather every `@e` site this round, as `(module, qualified global, span,
         // how its code is spliced)`: item position (`$ @e X`) replaces the
         // directive with the items, expression and type position splice the code
@@ -960,7 +1011,7 @@ fn expand_all(
         if sites.is_empty() && build_sites.is_empty() {
             // No `@e` remains: re-check strictly so any name still unbound after
             // all injection, or a missing/ill-typed entry, is reported now.
-            let final_compiled = compile_sources(&loaded, false, want_entry)?;
+            let final_compiled = compile_sources(loaded, false, want_entry, shell)?;
             // Fold in any `@link`/`@link_path` directives recorded while running.
             for (is_path, arg) in interpreter::machine::take_link_directives() {
                 let set = if is_path { &mut plan.lib_paths } else { &mut plan.libs };
@@ -968,7 +1019,7 @@ fn expand_all(
                     set.push(arg);
                 }
             }
-            return Ok((final_compiled.0, loaded, plan));
+            return Ok((final_compiled.0, plan));
         }
         rounds += 1;
         if rounds > MAX_META_ROUNDS {
@@ -1000,8 +1051,9 @@ fn expand_all(
                 .collect(),
         );
         let enter = |module: &str| {
-            interpreter::machine::set_meta_eval(Some(round_eval_host(&round_sources, module, &root_dir)));
-            interpreter::machine::set_meta_check(Some(round_check_host(&round_sources, module, &root_dir)));
+            interpreter::machine::set_meta_eval(Some(round_eval_host(&round_sources, module, root_dir)));
+            interpreter::machine::set_meta_check(Some(round_check_host(&round_sources, module, root_dir)));
+            interpreter::machine::set_meta_scope(reflect.scopes.get(&utilities::StrId::intern(module)).cloned());
             interpreter::machine::set_type_host(Some(reflect_host(Rc::clone(&reflect), module.to_string())));
         };
         // `@build` first, and alone in its round: it contributes the definitions
@@ -1126,7 +1178,7 @@ fn expand_all(
             // Nothing will supply what the waiting sites lack any more, so what the
             // lenient check deferred is an error: the strict check reports it.
             if held > 0 {
-                compile_sources(&loaded, false, want_entry)?;
+                compile_sources(loaded, false, want_entry, shell)?;
                 eprintln!("thrax: a compile-time `@e` waits on code that never resolved");
             }
             return Err(ExitCode::FAILURE);
@@ -1207,6 +1259,7 @@ fn clear_meta_hosts() {
     interpreter::machine::set_meta_eval(None);
     interpreter::machine::set_meta_check(None);
     interpreter::machine::set_meta_site(None);
+    interpreter::machine::set_meta_scope(None);
     interpreter::machine::set_type_host(None);
 }
 
@@ -1238,10 +1291,12 @@ fn report_meta_warnings(module: &str, span: utilities::Span, sources: &[(String,
 struct ReflectTables {
     qualified: HashMap<(utilities::StrId, utilities::StrId), interpreter::machine::TypeInfo>,
     bare: HashMap<utilities::StrId, Vec<(utilities::StrId, interpreter::machine::TypeInfo)>>,
+    /// What `@scope` reports, per module with a site.
+    scopes: HashMap<utilities::StrId, Rc<Vec<(String, String)>>>,
 }
 
 /// Index a round's collected type shapes for `$ @e` reflection.
-fn reflect_tables(reflect: frontend::ReflectInfo) -> Rc<ReflectTables> {
+fn reflect_tables(Reflection { info: reflect, scopes }: Reflection) -> Rc<ReflectTables> {
     use interpreter::machine::TypeInfo;
     let mut qualified = HashMap::new();
     let mut bare: HashMap<utilities::StrId, Vec<(utilities::StrId, TypeInfo)>> = HashMap::new();
@@ -1261,7 +1316,7 @@ fn reflect_tables(reflect: frontend::ReflectInfo) -> Rc<ReflectTables> {
     for entries in bare.values_mut() {
         entries.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
     }
-    Rc::new(ReflectTables { qualified, bare })
+    Rc::new(ReflectTables { qualified, bare, scopes })
 }
 
 /// The `$ @e` reflection host for the module whose directive is running: a
@@ -1340,8 +1395,17 @@ pub struct Session {
     /// Per module of `lowered`, the id of the kept module it is, if it is one.
     kept: Vec<Option<u64>>,
     pub decls: Vec<(String, String)>,
-    /// The declared type of the name `queried` asked about, when one was asked for.
-    pub queried: Option<String>,
+    /// What the shell's compile-time operations read, for a shell session.
+    meta: Option<SessionMeta>,
+}
+
+/// The compile-time hosts of a shell session: its reflection tables, and the
+/// sources an `@check`/`@eval` fragment compiles against.
+struct SessionMeta {
+    reflect: Rc<ReflectTables>,
+    sources: Rc<HashMap<String, (String, String)>>,
+    /// Where the evaluated item starts, for `@here`.
+    site: (String, i64, i64),
 }
 
 impl Session {
@@ -1350,6 +1414,43 @@ impl Session {
     pub fn ir(&self) -> frontend::ir::IrProgram {
         resident::lower_reusing(&self.lowered, &self.kept)
     }
+
+    /// Install the compile-time hosts for running the shell's `REPL` module: the
+    /// shell evaluates at compile time, so `<@Meta>` operations work in it as in
+    /// a `$ @e`. Undo with [`leave_session_meta`].
+    pub fn enter_meta(&self, root_dir: &Path) {
+        let Some(meta) = &self.meta else { return };
+        let module = SHELL_MODULE;
+        interpreter::machine::set_meta_eval(Some(round_eval_host(&meta.sources, module, root_dir)));
+        interpreter::machine::set_meta_check(Some(round_check_host(&meta.sources, module, root_dir)));
+        interpreter::machine::set_meta_scope(meta.reflect.scopes.get(&utilities::StrId::intern(module)).cloned());
+        interpreter::machine::set_type_host(Some(reflect_host(Rc::clone(&meta.reflect), module.to_string())));
+        interpreter::machine::set_meta_site(Some(meta.site.clone()));
+    }
+}
+
+/// Clear what [`Session::enter_meta`] installed, keeping the run-time `@eval` host.
+pub fn leave_session_meta(root_dir: &Path) {
+    clear_meta_hosts();
+    install_eval_host(root_dir.to_path_buf());
+}
+
+/// The shell's in-memory root module.
+pub const SHELL_MODULE: &str = "REPL";
+
+/// Expand every `$ @e` (and `@build`) of the shell session `source`, as a file's
+/// are, and return the expanded session. Diagnostics are printed.
+pub fn expand_session(source: &str, root_dir: &Path) -> Option<String> {
+    let fetch = |name: &str| load_module(name, root_dir);
+    let mut loaded = match load_core(SHELL_MODULE.to_string(), "<repl>".to_string(), source.to_string(), &fetch) {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            print!("{}", e.render());
+            return None;
+        }
+    };
+    expand_loaded(&mut loaded, root_dir, false, true).ok()?;
+    Some(loaded.sources[loaded.index[SHELL_MODULE]].2.clone())
 }
 
 /// Compile an in-memory `$ @mod REPL` session `source` against the standard
@@ -1358,17 +1459,7 @@ impl Session {
 /// Unlike the file commands this renders errors into a string instead of exiting,
 /// so the shell can print them and keep going.
 pub fn compile_session(source: &str, root_dir: &Path) -> Result<Session, String> {
-    compile_session_query(source, root_dir, None)
-}
-
-/// [`compile_session`], additionally reporting the declared type of one global name
-/// (with its `@use` fields, which inferring the name as an expression would lose).
-pub fn compile_session_query(
-    source: &str,
-    root_dir: &Path,
-    query: Option<&str>,
-) -> Result<Session, String> {
-    compile_in_memory("REPL", source, &|name| load_module(name, root_dir), InMemory::Session { open_effects: true, query })
+    compile_in_memory(SHELL_MODULE, source, &|name| load_module(name, root_dir), InMemory::Session { open_effects: true })
 }
 
 /// Compile a whole program held in memory: `source` is the root module, named
@@ -1388,10 +1479,9 @@ pub fn compile_program(
 
 /// What [`compile_in_memory`] compiles its root as.
 #[derive(Clone, Copy)]
-enum InMemory<'q> {
-    /// A shell or `@eval` module (see [`SessionRoot`]), reporting the declared
-    /// type of `query` when one is asked for.
-    Session { open_effects: bool, query: Option<&'q str> },
+enum InMemory {
+    /// A shell or `@eval` module (see [`SessionRoot`]).
+    Session { open_effects: bool },
     /// A program, which must have an entry.
     Program,
 }
@@ -1424,15 +1514,35 @@ fn compile_in_memory(
     let lowered = run.desugar(&order, &resolved);
     let kept = run.kept_ids(&order);
 
-    let query = match kind {
-        InMemory::Session { query, .. } => query,
-        InMemory::Program => {
-            check_entry(&lowered[0], &run.results[root], run.checker(root), &loaded.root_name)?;
-            None
+    if let InMemory::Program = kind {
+        check_entry(&lowered[0], &run.results[root], run.checker(root), &loaded.root_name)?;
+    }
+
+    // The shell runs its items at compile time: give it the hosts a `$ @e` has.
+    let meta = match kind {
+        InMemory::Session { open_effects: true, .. } => {
+            let reflect = reflection(&run, &loaded, &resolved, &|m| m == loaded.root_name);
+            // A fragment imports the session, but not the item being evaluated,
+            // whose inferred probe only the session root may hold.
+            let sources = loaded
+                .sources
+                .iter()
+                .map(|(name, path, src)| {
+                    let src = match src.rfind(&format!("\n$ {PROBE}")) {
+                        Some(at) if *name == loaded.root_name => &src[..at + 1],
+                        _ => src.as_str(),
+                    };
+                    (name.clone(), (path.clone(), src.to_string()))
+                })
+                .collect();
+            let src = &loaded.sources[root].2;
+            let at = src.rfind(&format!("\n$ {PROBE}")).map_or(0, |at| at + 1);
+            let site = site_of(&loaded.sources, &loaded.root_name, utilities::Span::at(at));
+            Some(SessionMeta { reflect: reflect_tables(reflect), sources: Rc::new(sources), site })
         }
+        _ => None,
     };
 
-    let queried = query.and_then(|n| run.checker_mut(root).show_name(n.into()));
     let checker = run.checker(root);
     let decls = run.results[root]
         .iter()
@@ -1443,7 +1553,7 @@ fn compile_in_memory(
         lowered,
         kept,
         decls,
-        queried,
+        meta,
     })
 }
 
@@ -1480,10 +1590,14 @@ fn eval_wrapped(
 ) -> std::result::Result<interpreter::machine::OwnedValue, String> {
     let session = compile_wrapped(src, imports, fetch)?;
     let ir = session.ir();
-    let v = interpreter::machine::eval_value(&ir, &format!("REPL.{PROBE}"))
+    let v = interpreter::machine::eval_value(&ir, &format!("{FRAGMENT}.{PROBE}"))
         .map_err(|d| d.render("", "@eval"))?;
     interpreter::machine::reify(&v)
 }
+
+/// The in-memory module `@eval` and `@check` wrap a fragment in. It is not the
+/// shell's `REPL`, which a fragment run from the shell imports.
+const FRAGMENT: &str = "FRAGMENT";
 
 /// Compile `src` as the body of a definition in an in-memory module that opens
 /// with the `$ with` lines `imports`.
@@ -1492,14 +1606,14 @@ fn compile_wrapped(
     imports: &[String],
     fetch: &dyn Fn(&str) -> Result<(String, String), String>,
 ) -> Result<Session, String> {
-    let mut module = String::from("$ @mod REPL\n");
+    let mut module = format!("$ @mod {FRAGMENT}\n");
     for line in imports {
         module.push_str(line);
         module.push('\n');
     }
     module.push_str(&format!("$ {PROBE} =\n"));
     module.push_str(src);
-    compile_in_memory("REPL", &module, fetch, InMemory::Session { open_effects: false, query: None })
+    compile_in_memory(FRAGMENT, &module, fetch, InMemory::Session { open_effects: false })
 }
 
 /// The expansion-time `@eval` host for a directive in `module`. A fragment sees
