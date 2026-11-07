@@ -6,7 +6,11 @@ $ @mod META_TYPE
 #       the annotation before the final compile. This completes `@e` across all
 #       three positions: expression (`let a = @e X`), item (`$ @e X`), and now type
 #       (`Foo : @e X`). The generator picks the type from compile-time data, so one
-#       source can specialize a binding's type by a build-time choice.
+#       source can specialize a binding's type by a build-time choice. A type
+#       splice works at every type position: declaration members (struct fields,
+#       union payloads, alias bodies, effect operations), effect-row arguments,
+#       `@use` fields, and the annotations inside a body (`let x : T`,
+#       `\(x : T)`, `(e : T)`).
 
 # A compile-time generator: choose a type by name.
 $ number_type : @Str -> @Code = \which =>
@@ -21,9 +25,34 @@ $ n : @e (number_type "wide") = 1000 + 24
 # `@e` nests inside a larger type: `xs : @Vec @Int`.
 $ xs : @Vec (@e (elem_type {})) = [3, 4, 5]
 
+# --- declaration members ------------------------------------------------------
+$ Point : @struct = x: @e (elem_type {}), y: @e (number_type "narrow")
+$ Shape : @union = Dot: {}, Square: @e (elem_type {})
+$ Count : @alias = @e (elem_type {})
+$ Cell : @effect = read : {} -> @e (elem_type {})
+
+$ pt : Point = { .x = 3, .y = 4 }
+$ side : Shape -> Count = \ | Shape.Square.{ s } => s | Shape.Dot => 0
+
+# --- annotations inside a body and effect-row arguments -------------------------
+$ annotated : @Int =
+    let a : @e (elem_type {}) = 5 in
+    let sq = \(b : @e (elem_type {})) => b * b in
+    sq (a : @e (elem_type {}))
+
+$ State : @effect s = get : {} -> s
+$ peek : {} -> <State (@e (elem_type {}))> @Int = \_ => State.get {}
+$ peeked : @Int =
+    do peek {}
+    ctl k | State.get u => k 7 | v => v
+
 $ ck_scalar : @Int = if n == 1024 => 0 else 1
 $ ck_nested : @Int = if @vec_len xs == 3 => 0 else 2
+$ ck_struct : @Int = if pt.x + 1 == pt.y => 0 else 4
+$ ck_union : @Int = if side (Shape.Square.{ 6 }) == 6 => 0 else 8
+$ ck_body : @Int = if annotated == 25 => 0 else 16
+$ ck_row : @Int = if peeked == 7 => 0 else 32
 
-$ test : @Int = ck_scalar + ck_nested
+$ test : @Int = ck_scalar + ck_nested + ck_struct + ck_union + ck_body + ck_row
 
 $ @e <| assert (test == 0) "META_TYPE: a check failed"

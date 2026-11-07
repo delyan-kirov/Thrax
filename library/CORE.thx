@@ -196,11 +196,13 @@ $ @option : @Str -> @Str -> <@Meta> {} = @extern "thrax"
 
 # Reflection over a declared type, by name. `@type_kind` is `"struct"` or
 # `"union"`; `@type_fields` lists a struct's fields, `@type_variants` a union's
-# `(tag, arity)` pairs.
-$ @type_kind : @Str -> @Str = @extern "thrax"
-$ @type_params : @Str -> @Vec @Str = @extern "thrax"
-$ @type_fields : @Str -> @Vec @Str = @extern "thrax"
-$ @type_variants : @Str -> @Vec { @Str, @Int } = @extern "thrax"
+# `(tag, arity)` pairs. `@type_of` is a global value's type, as source. They read
+# the program being compiled, so they are `<@Meta>` operations too.
+$ @type_kind : @Str -> <@Meta> @Str = @extern "thrax"
+$ @type_params : @Str -> <@Meta> @Vec @Str = @extern "thrax"
+$ @type_fields : @Str -> <@Meta> @Vec @Str = @extern "thrax"
+$ @type_variants : @Str -> <@Meta> @Vec { @Str, @Int } = @extern "thrax"
+$ @type_of : @Str -> <@Meta> @Str = @extern "thrax"
 
 # Arithmetic. Each operator has its OWN interface, so a type implements exactly the
 # operations it has: `Money` adds but does not divide. An interface is an ordinary

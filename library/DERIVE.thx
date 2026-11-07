@@ -14,7 +14,7 @@ $ @mod DERIVE
 #
 #       after which `to_string` (and `?(...)` interpolation) works on `T`. It uses
 #       the reflection intrinsics `@type_kind` / `@type_params` / `@type_fields` /
-#       `@type_variants`, available only at compile time (inside `$ @e`).
+#       `@type_variants`, `<@Meta>` operations, so each derive runs only inside `@e`.
 #
 #       A GENERIC type derives one GENERIC instance, which takes the renderers of
 #       its parameters as its own context: `$ impl_IToString_for_Pair : @ctx {IToString a,
@@ -35,7 +35,7 @@ $ arg_names : @Int -> @Vec @Str = \n =>
 # The rendering body for a struct: interpolate each field. `\?(` emits a literal
 # `?(` so the interpolation happens when the GENERATED code compiles, not now; `\"`
 # / `\\` emit a literal quote / backslash into the generated source.
-$ struct_show : @Str -> @Str = \base =>
+$ struct_show : @Str -> <@Meta> @Str = \base =>
     let piece = \acc f => acc ++ " " ++ f ++ " = \?(x." ++ f ++ ")" in
     let inner = VEC.foldl piece (base ++ " {") (@type_fields base) in
     "\\x => \"" ++ inner ++ " }\""
@@ -62,7 +62,7 @@ $ arm_for : @Str -> @Str -> @Int -> @Str = \base tag arity =>
             ++ ")\""
 
 # The rendering body for a union: one arm per variant.
-$ union_show : @Str -> @Str = \base =>
+$ union_show : @Str -> <@Meta> @Str = \base =>
     let arms = VEC.foldl (\acc tv => acc ++ arm_for base tv.0 tv.1) "" (@type_variants base) in
     "\\" ++ arms
 
@@ -76,7 +76,7 @@ $ show_ctx : @Vec @Str -> @Str = \params =>
 # The derive: reflect on the type's parameters and kind, then build the instance.
 # A generic type's instance takes its parameters' renderers as its own context, so
 # the body's `?(...)` interpolation resolves each one by type.
-$ derive_show : @Str -> @Code = \ty =>
+$ derive_show : @Str -> <@Meta> @Code = \ty =>
     let params = @type_params ty in
     let applied = if VEC.is_empty params => ty else "(" ++ ty ++ " " ++ join " " params ++ ")" in
     let body = if @type_kind ty == "struct" => struct_show ty else union_show ty in
@@ -178,7 +178,7 @@ $ struct_cmp_chain : @Vec @Str -> @Str = \fields =>
 $ icmp_decl : @Str -> @Str = \ty =>
     "$ impl_ICmp_for_" ++ ty ++ " : ICmp " ++ ty ++ " = .{ .cmp = cmp_" ++ ty ++ " }"
 
-$ struct_cmp : @Str -> @Str = \ty =>
+$ struct_cmp : @Str -> <@Meta> @Str = \ty =>
     "$ cmp_"
         ++ ty
         ++ " : "
@@ -257,7 +257,7 @@ $ payload_arms : @Str -> @Vec { @Str, @Int } -> @Str = \base variants =>
     VEC.foldl (\acc v => acc ++ payload_arm base v) "" variants
 
 # A union's `compare`: order by variant index, then (same variant) by payload.
-$ union_cmp : @Str -> @Str = \ty =>
+$ union_cmp : @Str -> <@Meta> @Str = \ty =>
     let vs = @type_variants ty in
     "$ cmp_"
         ++ ty
@@ -278,7 +278,7 @@ $ union_cmp : @Str -> @Str = \ty =>
         ++ "\n"
         ++ icmp_decl ty
 
-$ derive_ord : @Str -> @Code = \ty =>
+$ derive_ord : @Str -> <@Meta> @Code = \ty =>
     if @type_kind ty == "struct" =>
         @parse_items (struct_cmp ty ++ "\n" ++ bool_ops ty)
     else
@@ -286,10 +286,10 @@ $ derive_ord : @Str -> @Code = \ty =>
 
 # Equality alone, for a type that has no sensible order. The comparison function is
 # the same structural one; only the `IEq` instance is emitted over it.
-$ eq_only : @Str -> @Str = \ty =>
+$ eq_only : @Str -> <@Meta> @Str = \ty =>
     "$ impl_IEq_for_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a b => cmp_" ++ ty ++ " a b == 0 }"
 
-$ derive_eq : @Str -> @Code = \ty =>
+$ derive_eq : @Str -> <@Meta> @Code = \ty =>
     if @type_kind ty == "struct" =>
         @parse_items (struct_cmp ty ++ "\n" ++ eq_only ty)
     else

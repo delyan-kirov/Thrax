@@ -1878,6 +1878,8 @@ pub(crate) fn meta_eval(src: &str) -> Result<OwnedValue> {
 pub enum TypeInfo {
     Struct { params: Vec<StrId>, fields: Vec<StrId> },
     Union { params: Vec<StrId>, variants: Vec<(StrId, usize)> },
+    /// A global value, with its type as source.
+    Value { ty: String },
 }
 
 impl TypeInfo {
@@ -1885,13 +1887,15 @@ impl TypeInfo {
     pub fn params(&self) -> &[StrId] {
         match self {
             TypeInfo::Struct { params, .. } | TypeInfo::Union { params, .. } => params,
+            TypeInfo::Value { .. } => &[],
         }
     }
 }
 
 thread_local! {
     /// The compile-time reflection host: given a type name, the driver answers its
-    /// declared shape (`@type_kind`/`@type_fields`/`@type_variants`). Installed
+    /// declared shape (`@type_kind`/`@type_fields`/`@type_variants`), or a global
+    /// value's type (`@type_of`). Installed
     /// around a `$ @e` like the `@eval` host; absent at runtime, so a stray
     /// reflection call faults cleanly.
     static TYPE_HOST: std::cell::RefCell<Option<Box<dyn Fn(&str) -> Option<TypeInfo>>>> =
@@ -1908,7 +1912,7 @@ pub fn set_type_host(host: Option<Box<dyn Fn(&str) -> Option<TypeInfo>>>) {
 pub(crate) fn type_lookup(name: &str) -> Result<TypeInfo> {
     TYPE_HOST.with(|c| match &*c.borrow() {
         Some(host) => host(name).ok_or_else(|| {
-            fault(format!("reflection: no declared type named `{name}`"))
+            fault(format!("reflection: nothing named `{name}` is declared"))
         }),
         None => Err(fault(
             "type reflection is only available at compile time (inside `$ @e`)",

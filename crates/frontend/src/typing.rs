@@ -29,7 +29,7 @@
 //! Entry point: [`Checker::check_program`].
 
 mod algorithm_w;
-mod declarations;
+pub(crate) mod declarations;
 mod externs;
 mod imports;
 mod instances;

@@ -942,12 +942,14 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // type host (see `crate::machine::set_type_host`), reachable only inside
         // `$ @e`. A derive-style macro reads the shape and generates code for it.
         // `@type_kind` reports `"struct"` / `"union"`; `@type_fields` the struct's
-        // field names; `@type_variants` the union's `(tag, arity)` pairs.
+        // field names; `@type_variants` the union's `(tag, arity)` pairs. `@type_of`
+        // is a global value's type.
         Prim::TypeKind => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let kind = match crate::machine::type_lookup(&ty)? {
                 crate::machine::TypeInfo::Struct { .. } => "struct",
                 crate::machine::TypeInfo::Union { .. } => "union",
+                crate::machine::TypeInfo::Value { .. } => "value",
             };
             Ok(Value::Str(Rc::new(kind.as_bytes().to_vec())))
         }
@@ -964,9 +966,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let fields = match crate::machine::type_lookup(&ty)? {
                 crate::machine::TypeInfo::Struct { fields, .. } => fields,
-                crate::machine::TypeInfo::Union { .. } => {
-                    return Err(fault(format!("@type_fields: `{ty}` is a union, not a struct")))
-                }
+                _ => return Err(fault(format!("@type_fields: `{ty}` is not a struct"))),
             };
             let items: Vec<PVal> = fields
                 .into_iter()
@@ -974,13 +974,18 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .collect();
             Ok(Value::Vector(Rc::new(items)))
         }
+        Prim::TypeOf => {
+            let name = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            match crate::machine::type_lookup(&name)? {
+                crate::machine::TypeInfo::Value { ty } => Ok(Value::Str(Rc::new(ty.into_bytes()))),
+                _ => Err(fault(format!("@type_of: `{name}` is a type, not a value"))),
+            }
+        }
         Prim::TypeVariants => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let variants = match crate::machine::type_lookup(&ty)? {
                 crate::machine::TypeInfo::Union { variants, .. } => variants,
-                crate::machine::TypeInfo::Struct { .. } => {
-                    return Err(fault(format!("@type_variants: `{ty}` is a struct, not a union")))
-                }
+                _ => return Err(fault(format!("@type_variants: `{ty}` is not a union"))),
             };
             let items: Vec<PVal> = variants
                 .into_iter()
@@ -1027,13 +1032,17 @@ pub enum Fragment {
     Items,
 }
 
-/// Check that `src` parses as `kind`, by wrapping it in a scratch module.
+/// Check that `src` parses as `kind`, by wrapping it in a scratch module. A
+/// syntax error carries `src` as its fragment, so the driver can point into the
+/// string the author wrote rather than the wrapper.
 pub fn check_fragment(src: &str, kind: Fragment) -> Result<()> {
-    let wrapped = match kind {
-        Fragment::Expr => format!("$ @mod _META\n$ _e =\n{src}"),
-        Fragment::Items => format!("$ @mod _META\n{src}"),
+    let prefix = match kind {
+        Fragment::Expr => "$ @mod _META\n$ _e =\n",
+        Fragment::Items => "$ @mod _META\n",
     };
-    frontend::parse(&wrapped).map(|_| ())
+    frontend::parse(&format!("{prefix}{src}"))
+        .map(|_| ())
+        .map_err(|d| d.with_fragment(src, prefix.len()))
 }
 
 /// An opaque `@Code` value carrying `src`.

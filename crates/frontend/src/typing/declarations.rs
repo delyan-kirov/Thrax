@@ -932,7 +932,7 @@ pub(super) fn collect_tycons(ast: &Ast, ty: Aol<Ty>, out: &mut Vec<StrId>) {
 }
 
 /// Normalize a variant payload into `(optional-name, type-handle)` pairs.
-pub(super) fn payload_fields(ast: &Ast, p: &Payload) -> Vec<(Option<StrId>, Aol<Ty>)> {
+pub(crate) fn payload_fields(ast: &Ast, p: &Payload) -> Vec<(Option<StrId>, Aol<Ty>)> {
     match p {
         Payload::None => vec![],
         Payload::Bare(ty) => vec![(None, *ty)],
