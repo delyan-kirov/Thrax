@@ -2165,7 +2165,7 @@ impl<'a> Parser<'a> {
             "absurd" => {
                 self.bump()?;
                 let arms = self.ast.make_slice(Vec::new());
-                Ok(self.match_lambda(arms))
+                Ok(self.match_lambda(arms, 1))
             }
             "use" => self.parse_use_arg(),
             "Array" => self.parse_array(),
@@ -2353,12 +2353,35 @@ impl<'a> Parser<'a> {
     }
 
     /// One `| p1 | p2 if guard => body` arm, shared by a multi-arm lambda and a
-    /// handler's value arms.
-    fn parse_arm(&mut self) -> Result<Arm> {
+    /// handler's value arms. Each alternative lists one pattern per argument,
+    /// `| p, q => e`, and becomes one tuple pattern when there are several.
+    /// Returns the arm with its arity, which every alternative shares.
+    /// See Note [Multi-argument arms].
+    fn parse_arm(&mut self) -> Result<(Arm, usize)> {
         let mut patterns = Vec::new();
+        let mut arity = None;
         while self.at_op("|")? {
             self.bump()?; // '|'
-            patterns.push(self.parse_pattern()?);
+            let start = self.here()?;
+            let mut columns = vec![self.parse_pattern()?];
+            while self.eat(|k| matches!(k, Kind::Comma))? {
+                columns.push(self.parse_pattern()?);
+            }
+            let span = Span::new(start, self.last_end);
+            match arity {
+                None => arity = Some(columns.len()),
+                Some(n) if n != columns.len() => return Err(arity_mismatch("alternative", span, n, columns.len())),
+                Some(_) => {}
+            }
+            patterns.push(match columns.as_slice() {
+                [one] => *one,
+                _ => {
+                    let items = self.ast.make_slice(columns);
+                    let tuple = self.pat(Pattern::Tuple(items));
+                    self.ast.pat_spans.insert(tuple, span);
+                    tuple
+                }
+            });
         }
         let guard = if matches!(self.peek_kind()?, Kind::If) {
             self.bump()?;
@@ -2372,16 +2395,17 @@ impl<'a> Parser<'a> {
         if matches!(t.kind, Kind::Word) {
             return Err(self
                 .unexpected(&t, "expected '=>' after the match pattern")
-                .with_help("an arm matches one value; match several as a tuple, `| { a, b } => ...`"));
+                .with_help("separate the patterns of several arguments with `,`, as in `| a, b => ...`"));
         }
         expect!(self, Kind::FatArrow, "expected '=>' after the match pattern");
         let body = self.parse_expr(0)?;
         let patterns = self.ast.make_slice(patterns);
-        Ok(Arm {
+        let arm = Arm {
             patterns,
             guard,
             body,
-        })
+        };
+        Ok((arm, arity.expect("an arm starts with '|'")))
     }
 
     /// Whether the next tokens open a handler operation clause, `| op x` or
@@ -2462,29 +2486,70 @@ impl<'a> Parser<'a> {
         Ok(self.expr(Expr::Lambda { params, body }))
     }
 
-    /// `\ | p => a | q => b`: a lambda of ONE argument, matched against the arms
-    /// top to bottom. It is the lambda `\#arg => <match #arg with the arms>`, so
-    /// the checker, exhaustiveness and both backends see an ordinary match. The
-    /// arms end at a handler's next operation clause.
+    // Note [Multi-argument arms]
+    //
+    // `\ | p1, ..., pn => e` is a lambda of n curried arguments whose arms match
+    // all of them at once, like Lean's `fun | a, b => e`. The comma separates
+    // arguments and never builds a tuple: `| { a, b } => e` is one argument, a
+    // tuple. Every alternative of every arm lists the same number of patterns,
+    // and that number is the arity.
+    //
+    // The parser lowers it to `\#arg0 ... #argn => <match { #arg0, ... } with
+    // the arms>`, each pattern list a tuple pattern, so the checker,
+    // exhaustiveness and both backends see an ordinary match. `arity` on the
+    // match records the shape: coverage shows a missing case as `0, []` rather
+    // than `{ 0, [] }`, and match compilation reads the parameters directly
+    // instead of building the tuple. See Note [Tuple scrutinees].
+    //
+    // A dependent elaborator will match the parameters as a telescope instead,
+    // since a later argument's type may depend on an earlier one.
+
+    /// `\ | p => a | q => b`: a lambda matching its arguments against the arms,
+    /// top to bottom, one argument per comma-separated pattern. The arms end at
+    /// a handler's next operation clause. See Note [Multi-argument arms].
     fn parse_arms_lambda(&mut self) -> Result<Aol<Expr>> {
         // The first arm is never a handler's operation clause: a lambda needs
         // an arm, so `\ | a b => e` is a malformed arm, not a clause.
-        let mut arms = vec![self.parse_arm()?];
+        let (first, arity) = self.parse_arm()?;
+        let mut arms = vec![first];
         while self.at_op("|")? && !self.at_op_clause()? {
-            arms.push(self.parse_arm()?);
+            let start = self.here()?;
+            let (arm, n) = self.parse_arm()?;
+            if n != arity {
+                return Err(arity_mismatch("arm", Span::new(start, self.last_end), arity, n));
+            }
+            arms.push(arm);
         }
         let arms = self.ast.make_slice(arms);
-        Ok(self.match_lambda(arms))
+        Ok(self.match_lambda(arms, arity))
     }
 
-    /// `\#arg => <match #arg with arms>`, the lambda a multi-arm lambda and
-    /// `@absurd` (no arms) both are.
-    fn match_lambda(&mut self, arms: Slice<Arm>) -> Aol<Expr> {
-        let x = self.intern("#arg");
-        let scrut = self.expr(Expr::Var { module: None, name: x });
-        let body = self.expr(Expr::Match { scrut, arms });
-        let param = self.pat(Pattern::Var(x));
-        let params = self.ast.make_slice(vec![LamParam { pat: param, sig: None }]);
+    /// `\#arg0 ... => <match { #arg0, ... } with arms>`, the lambda a multi-arm
+    /// lambda and `@absurd` (no arms, arity 1) both are. A lone argument is
+    /// matched as itself, not as a one-element tuple.
+    fn match_lambda(&mut self, arms: Slice<Arm>, arity: usize) -> Aol<Expr> {
+        let names: Vec<StrId> = match arity {
+            1 => vec![self.intern("#arg")],
+            _ => (0..arity).map(|i| self.intern(&format!("#arg{i}"))).collect(),
+        };
+        let vars: Vec<Aol<Expr>> = names.iter().map(|&name| self.expr(Expr::Var { module: None, name })).collect();
+        let scrut = match vars.as_slice() {
+            [one] => *one,
+            _ => {
+                let items = self.ast.make_slice(vars);
+                self.expr(Expr::Tuple(items))
+            }
+        };
+        let arity = u32::try_from(arity).expect("an arm's pattern count fits u32");
+        let body = self.expr(Expr::Match { scrut, arms, arity });
+        let params: Vec<LamParam> = names
+            .into_iter()
+            .map(|name| LamParam {
+                pat: self.pat(Pattern::Var(name)),
+                sig: None,
+            })
+            .collect();
+        let params = self.ast.make_slice(params);
         self.expr(Expr::Lambda { params, body })
     }
 
@@ -2520,7 +2585,18 @@ impl<'a> Parser<'a> {
         let mut value_arms = Vec::new();
         while self.at_op("|")? {
             if !self.at_op_clause()? {
-                value_arms.push(self.parse_arm()?);
+                let start = self.here()?;
+                let (arm, arity) = self.parse_arm()?;
+                if arity != 1 {
+                    return Err(Diagnostic::error(
+                        Code::UnexpectedToken,
+                        Span::new(start, self.last_end),
+                        0,
+                        format!("a handler's value arm matches one value, but this arm has {arity} patterns"),
+                    )
+                    .with_help("match the value's parts with one pattern, as in `| { a, b } => ...`"));
+                }
+                value_arms.push(arm);
                 continue;
             }
             self.bump()?; // '|'
@@ -2574,7 +2650,7 @@ impl<'a> Parser<'a> {
         let name = self.intern("%ret");
         let scrut = self.expr(Expr::Var { module: None, name });
         let arms = self.ast.make_slice(arms);
-        let node = self.expr(Expr::Match { scrut, arms });
+        let node = self.expr(Expr::Match { scrut, arms, arity: 1 });
         Some((name, self.stamp(start, node)))
     }
 
@@ -3004,4 +3080,16 @@ fn describe(t: &Token, text: &str) -> String {
         Kind::Eof => "end of input".to_string(),
         _ => format!("'{text}'"),
     }
+}
+
+/// An arm, or an alternative of one (`what`), whose pattern count differs from
+/// the ones before it. See Note [Multi-argument arms].
+fn arity_mismatch(what: &str, span: Span, expected: usize, found: usize) -> Diagnostic {
+    let patterns = |n: usize| if n == 1 { "1 pattern".to_string() } else { format!("{n} patterns") };
+    utilities::diag!(
+        Code::UnexpectedToken, span, 0,
+        "this {what} has {}, but the {what}s before it have {}", patterns(found), patterns(expected);
+        note: "a multi-arm lambda takes one argument per comma-separated pattern, the same in every arm";
+        help: "to match a tuple as one argument, write `{{ a, b }}`"
+    )
 }

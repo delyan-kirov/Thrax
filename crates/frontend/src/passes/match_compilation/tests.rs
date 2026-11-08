@@ -90,3 +90,78 @@ fn a_failure_under_a_capturing_binder_keeps_its_thunk() {
     let rendered = t.render(out);
     assert!(rendered.contains("Lam"), "{rendered}");
 }
+
+/// A multi-argument match on the tuple of the lambda's parameters never builds
+/// it: each tuple pattern reads the parameters directly.
+/// See Note [Tuple scrutinees].
+#[test]
+fn a_tuple_of_parameters_is_matched_in_place() {
+    let mut t = Terms::new();
+    let id = StrId::intern;
+    // match { #arg0, #arg1 } | { 0, _ } => 1 | { n, m } => n + m
+    let (a0, a1) = (t.var("#arg0"), t.var("#arg1"));
+    let scrut = t.add(Term::Tuple(vec![a0, a1]));
+    let one = t.add(Term::Int(1));
+    let (n, m) = (t.var("n"), t.var("m"));
+    let sum = t.bin("+", n, m);
+    let case = t.add(Term::Case {
+        scrut,
+        arms: vec![
+            CoreArm { pat: Pat::Tuple(vec![Pat::Int(0), Pat::Wild]), guard: None, body: one },
+            CoreArm { pat: Pat::Tuple(vec![Pat::Var(id("n")), Pat::Var(id("m"))]), guard: None, body: sum },
+        ],
+        default: None,
+    });
+    let out = MatchCompiler::new().go(&mut t, case);
+    let rendered = t.render(out);
+    assert!(!rendered.contains("Tuple") && !rendered.contains("Field"), "{rendered}");
+    assert!(rendered.contains("#arg0") && rendered.contains("#arg1"), "{rendered}");
+}
+
+/// A part that is a user variable is bound to a fresh name first, so a pattern
+/// binding that name cannot capture it: `{ x, y }` against `{ y, x }` reads the
+/// original `x` for its second part.
+#[test]
+fn a_user_variable_part_is_bound_before_matching() {
+    let mut t = Terms::new();
+    let id = StrId::intern;
+    // match { y, x } | { x, z } => z
+    let (y, x) = (t.var("y"), t.var("x"));
+    let scrut = t.add(Term::Tuple(vec![y, x]));
+    let z = t.var("z");
+    let case = t.add(Term::Case {
+        scrut,
+        arms: vec![CoreArm { pat: Pat::Tuple(vec![Pat::Var(id("x")), Pat::Var(id("z"))]), guard: None, body: z }],
+        default: None,
+    });
+    let out = MatchCompiler::new().go(&mut t, case);
+    let Term::Let { name, val, .. } = t.get(out) else {
+        panic!("expected the parts bound first, got {}", t.render(out));
+    };
+    assert!(name.as_str().starts_with("%mc"), "{}", t.render(out));
+    assert!(matches!(t.get(*val), Term::Var { name, .. } if *name == "y"));
+    assert!(!t.render(out).contains("Tuple"), "{}", t.render(out));
+}
+
+/// An arm binding the whole scrutinee rebuilds the tuple, inside that arm only.
+#[test]
+fn a_binder_arm_rebuilds_the_tuple() {
+    let mut t = Terms::new();
+    let id = StrId::intern;
+    // match { #arg0, #arg1 } | { 0, _ } => 1 | p => p
+    let (a0, a1) = (t.var("#arg0"), t.var("#arg1"));
+    let scrut = t.add(Term::Tuple(vec![a0, a1]));
+    let one = t.add(Term::Int(1));
+    let p = t.var("p");
+    let case = t.add(Term::Case {
+        scrut,
+        arms: vec![
+            CoreArm { pat: Pat::Tuple(vec![Pat::Int(0), Pat::Wild]), guard: None, body: one },
+            CoreArm { pat: Pat::Var(id("p")), guard: None, body: p },
+        ],
+        default: None,
+    });
+    let out = MatchCompiler::new().go(&mut t, case);
+    let rendered = t.render(out);
+    assert_eq!(rendered.matches("Tuple").count(), 1, "{rendered}");
+}

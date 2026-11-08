@@ -568,18 +568,28 @@ $ f : @Int -> @Int = \n => n + ???
 # 5. Pattern matching
 
 ## 5.1 The multi-arm lambda and matches
-`\ | pat => e | pat => e ...` is a lambda of ONE argument, matched against the
-arms top to bottom; the first matching pattern wins and binds its variables. A
-match is the multi-arm lambda applied to the scrutinee, usually with `|>`:
+`\ | pat => e | pat => e ...` is a lambda matched against the arms top to
+bottom; the first matching pattern wins and binds its variables. A match is the
+multi-arm lambda applied to the scrutinee, usually with `|>`:
 `scrut |> \ | pat => e ...`. There is no default branch: a catch-all is an
 ordinary arm whose pattern matches anything, `| _ => d` (or `| x => d` to use
-the value). Several arguments are matched as a tuple, and arms belong to the
-innermost multi-arm lambda or handler, so a nested one is parenthesized.
+the value). Arms belong to the innermost multi-arm lambda or handler, so a
+nested one is parenthesized.
+
+An arm lists one pattern per argument, separated by commas: `\ | 0, _ => ...`
+takes two curried arguments and matches both at once. Every alternative of
+every arm has the same number of patterns. The comma separates arguments and
+never builds a tuple; a tuple argument is matched with `{ a, b }`, which is one
+argument. A handler's value arms match its one value, so they take one pattern.
 
 Simple:
 ```ares
 $ classify : @Int -> @Str = \ | 0 => "zero" | 1 => "one" | _ => "many"
 $ yn : @Str -> @Int = \s => s |> \ | "yes" => 1 | "no" => 0 | _ => 99
+$ take : @Int -> List t -> List t = \
+    | 0, _       => []
+    | _, []      => []
+    | n, x :: xs => x :: take (n - 1) xs
 $ total : { @Int, @Int } -> @Int = \ | { 0, acc } => acc | { n, acc } => total { n - 1, acc + n }
 ```
 

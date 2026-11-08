@@ -451,10 +451,14 @@ impl<'a> Checker<'a> {
             ));
         }
         let what = if handler { "the handler's value arms do" } else { "this match does" };
+        let arity = match self.node(e) {
+            Expr::Match { arity, .. } => *arity as usize,
+            _ => 1,
+        };
         Err(diag!(
             Code::NonExhaustiveMatch, span, 0,
-            "non-exhaustive match: {what} not cover `{}`", usefulness::show(&missing);
-            help: "add an arm for it, or a catch-all `| _ => ...`"
+            "non-exhaustive match: {what} not cover `{}`", usefulness::show_args(&missing, arity);
+            help: "add an arm for it, or a catch-all `| {} => ...`", vec!["_"; arity].join(", ")
         ))
     }
 

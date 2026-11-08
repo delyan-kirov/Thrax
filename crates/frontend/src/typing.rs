@@ -1470,7 +1470,7 @@ fn free_globals(
             free_globals(ast, *then, globals, bound, out);
             free_globals(ast, *alt, globals, bound, out);
         }
-        Expr::Match { scrut, arms } => {
+        Expr::Match { scrut, arms, .. } => {
             free_globals(ast, *scrut, globals, bound, out);
             for arm in ast.slice(*arms).iter() {
                 let mark = bound.len();

@@ -752,7 +752,7 @@ fn handler_value_arms_match_the_body_result() {
     let h = only_handler(&p);
     assert_eq!(h.clauses.len(), 1);
     let (name, body) = h.value.expect("a value clause");
-    let Expr::Match { scrut, arms } = p.ast.expr(body) else {
+    let Expr::Match { scrut, arms, .. } = p.ast.expr(body) else {
         panic!("several value arms fold into a match")
     };
     assert_eq!(arms.len(), 3);
@@ -908,10 +908,72 @@ fn a_multi_arm_lambda_is_a_lambda_over_a_match() {
         let params = p.ast.slice(*params);
         assert_eq!(params.len(), 1);
         let Pattern::Var(x) = p.ast.pat(params[0].pat) else { panic!("expected a variable parameter") };
-        let Expr::Match { scrut, arms } = p.ast.expr(*body) else { panic!("expected a match body") };
+        let Expr::Match { scrut, arms, .. } = p.ast.expr(*body) else { panic!("expected a match body") };
         assert!(matches!(p.ast.expr(*scrut), Expr::Var { module: None, name } if name == x));
         assert_eq!(p.ast.slice(*arms).len(), 3);
     }
     // A handler's operation clause still ends the arms of a multi-arm lambda.
     prog("$ @mod M\n$ E : @effect = op: @Int -> @Int\n$ f = \\u => do u {} ctl k | op x => \\ | 0 => 1 | _ => 2 | v => v");
+}
+
+/// `\ | p, q => e` takes one argument per comma-separated pattern: a lambda of
+/// two parameters over a match on their tuple, each pattern list a tuple
+/// pattern. See Note [Multi-argument arms].
+#[test]
+fn comma_separated_arm_patterns_are_several_arguments() {
+    let p = prog("$ @mod M\n$ f = \\ | 0, _ | _, 0 => 0 | a, { b, c } if a > 0 => b | _, _ => 1");
+    let Expr::Lambda { params, body } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let params: Vec<StrId> = p
+        .ast
+        .slice(*params)
+        .iter()
+        .map(|q| match p.ast.pat(q.pat) {
+            Pattern::Var(x) => *x,
+            other => panic!("expected a variable parameter, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(params.len(), 2);
+    let Expr::Match { scrut, arms, arity } = p.ast.expr(*body) else { panic!("expected a match body") };
+    assert_eq!(*arity, 2);
+    let Expr::Tuple(items) = p.ast.expr(*scrut) else { panic!("expected the parameters' tuple") };
+    let items: Vec<StrId> = p
+        .ast
+        .slice(*items)
+        .iter()
+        .map(|e| match p.ast.expr(*e) {
+            Expr::Var { module: None, name } => *name,
+            other => panic!("expected a parameter, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(items, params);
+    let arms = p.ast.slice(*arms);
+    assert_eq!(arms.len(), 3);
+    assert_eq!(p.ast.slice(arms[0].patterns).len(), 2, "an or-pattern of two alternatives");
+    for arm in arms {
+        for pat in p.ast.slice(arm.patterns).iter() {
+            let Pattern::Tuple(cols) = p.ast.pat(*pat) else { panic!("expected a tuple pattern") };
+            assert_eq!(p.ast.slice(*cols).len(), 2);
+        }
+    }
+    // A tuple argument stays one argument.
+    let p = prog("$ @mod M\n$ f = \\ | { a, b } => a");
+    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else { panic!("expected a lambda") };
+    assert!(matches!(p.ast.expr(*body), Expr::Match { arity: 1, .. }));
+}
+
+#[test]
+fn arms_agree_on_their_pattern_count() {
+    for src in [
+        "$ @mod M\n$ f = \\ | 0, b => b | a => a",
+        "$ @mod M\n$ f = \\ | 0, _ | 1 => 0 | _, _ => 1",
+        "$ @mod M\n$ f = do g {} ctl k | op x => 0 | a, b => a",
+    ] {
+        let err = match parse(src) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected an arity error for {src}"),
+        };
+        assert!(err.contains("pattern"), "{err}");
+    }
 }

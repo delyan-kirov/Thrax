@@ -3,3 +3,4 @@ $ @mod NON_EXHAUSTIVE_MATCH
 $ C3 : @union = A: {}, B: {},
 $ f : C3 -> @Int = \c => c |> \ | C3.A => 1  #~ error[NON_EXHAUSTIVE_MATCH]: this match does not cover `C3.B`
 $ g : C3 -> @Int = \ | C3.B => 1  #~ error[NON_EXHAUSTIVE_MATCH]: this match does not cover `C3.A`
+$ h : @Int -> C3 -> @Int = \ | 0, C3.A => 1 | _, C3.B => 2  #~ error[NON_EXHAUSTIVE_MATCH]: this match does not cover `1 ..., C3.A`

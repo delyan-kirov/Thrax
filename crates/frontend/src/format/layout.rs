@@ -895,7 +895,11 @@ impl Layout<'_, '_> {
                 break;
             }
             let Some(bar) = self.expect(ts, pos, is_bar) else { break };
-            let pat_end = |t: &Tok| halt(t) || is_bar(t) || matches!(t.kind, Kind::FatArrow | Kind::If);
+            // Between `|` and `=>` a comma separates the arm's arguments
+            // (`| a, b => e`), never the items of an enclosing list.
+            let pat_end = |t: &Tok| {
+                (halt(t) && !matches!(t.kind, Kind::Comma)) || is_bar(t) || matches!(t.kind, Kind::FatArrow | Kind::If)
+            };
             let mut parts = vec![bar];
             let mut alts = Vec::new();
             loop {

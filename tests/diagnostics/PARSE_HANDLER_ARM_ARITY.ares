@@ -1,0 +1,6 @@
+$ @mod PARSE_HANDLER_ARM_ARITY
+
+$ Ask : @effect = ask: {} -> @Int
+
+# A handler's value arm matches the one value the body returns.
+$ run : @Int = do 1 ctl k | ask u => k 2 | a, b => a  #~ error[UNEXPECTED_TOKEN]: a handler's value arm matches one value, but this arm has 2 patterns

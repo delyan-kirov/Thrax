@@ -1,0 +1,4 @@
+$ @mod PARSE_ARM_ARITY
+
+# Every arm of a multi-arm lambda lists one pattern per argument.
+$ f : @Int -> @Int -> @Int = \ | 0, b => b | a => a  #~ error[UNEXPECTED_TOKEN]: this arm has 1 pattern, but the arms before it have 2

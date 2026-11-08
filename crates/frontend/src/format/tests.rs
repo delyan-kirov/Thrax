@@ -241,3 +241,15 @@ fn a_multi_arm_lambda_keeps_its_backslash_on_the_head_line() {
         "$ @mod M\n$ f = \\s =>\n    s |> \\\n        | \"yes\" => 1\n        | \"no\"  => 0\n        | _     => 99\n"
     );
 }
+
+#[test]
+fn a_comma_in_an_arm_separates_its_arguments() {
+    let src = "$ @mod M\n$ f : @Int -> @Int -> @Int = \\ | 0,_ => 0 | n , x :: xs => n | _, _ => 1\n";
+    assert_eq!(
+        fmt(src),
+        "$ @mod M\n$ f : @Int -> @Int -> @Int = \\\n    | 0, _       => 0\n    | n, x :: xs => n\n    | _, _       => 1\n"
+    );
+    // Inside a list, the comma after an arm's body still ends the element.
+    let rec = "$ @mod M\n$ r = { .f = \\ | 0, _ => 0 | _, _ => 1, .g = 2 }\n";
+    assert_eq!(fmt(rec), rec);
+}
