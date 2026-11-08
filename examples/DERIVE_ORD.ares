@@ -8,7 +8,7 @@ $ @mod DERIVE_ORD
 #       and `==` work on a custom struct or union. A struct compares
 #       lexicographically by field; a union by variant order, then payload.
 
-$ with DERIVE
+$ @import DERIVE
 
 $ Coord : @struct =
     x: @Int,

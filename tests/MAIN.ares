@@ -9,11 +9,11 @@ $ @mod MAIN
 
 #- Imports -#
 
-$ with EXCEPTIONS
-$ with IO
-$ with PATH
-$ with STR
-$ with VEC
+$ @import EXCEPTIONS
+$ @import IO
+$ @import PATH
+$ @import STR
+$ @import VEC
 
 #- Utils -#
 
@@ -50,7 +50,7 @@ $ concat : @Vec @Str -> @Str = STR.concat
 
 $ @build : {} -> <@Meta, @IO> @Code = \_ =>
     let ms = modules {} in
-    let includes = concat (map (\m => "$ with ?(m)\n") ms) in
+    let includes = concat (map (\m => "$ @import ?(m)\n") ms) in
     let main = "$ @main : @Vec @Str -> <@IO> @Int = \\args => 0"
         ++ concat (map (\m => " + \n\t" ++ check_call m) ms)
         ++ concat (map (\e => " + \n\t" ++ skip_call e) (EXCEPTIONS.on TARGET.os)) in

@@ -28,7 +28,7 @@ fn reflection_runs_at_the_prompt() {
         "x : @Int = 1",
         "_= @type_of \"x\"",
         "_= @check <| @parse_str \"x + 1\"",
-        "with VEC",
+        "@import VEC",
         "_= @scope {} |> VEC.filter (\\{name, _} => name == \"x\") |> VEC.length",
     ]);
     assert_eq!(out.matches("# \"@Int\" : @Str").count(), 2, "{out}");

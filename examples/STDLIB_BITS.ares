@@ -6,7 +6,7 @@ $ @mod STDLIB_BITS
 #       float types (what a binary encoder writes for a float). Then CORE's
 #       bitwise operators, which work on every integer type.
 
-$ with BITS
+$ @import BITS
 
 $ ck_and : @Int = if band 12 10 == 8 => 0 else 1
 $ ck_or : @Int = if bor 12 10 == 14 => 0 else 1

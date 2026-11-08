@@ -8,9 +8,9 @@ $ @mod STDLIB_RESULT
 #       `untry` / `expect` bridge Results and Options back into a Fail
 #       computation.
 
-$ with RESULT
-$ with OPT
-$ with STR
+$ @import RESULT
+$ @import OPT
+$ @import STR
 
 $ good : Result @Int @Str = Result.Ok.{ 42 }
 $ bad : Result @Int @Str = Result.Err.{ "boom" }

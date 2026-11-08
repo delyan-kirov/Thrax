@@ -1,5 +1,5 @@
 $ @mod A
 
-$ with NOPE  #~ error[UNKNOWN_MODULE]: cannot find module `NOPE`
+$ @import NOPE  #~ error[UNKNOWN_MODULE]: cannot find module `NOPE`
 
 $ a : @Int = 1

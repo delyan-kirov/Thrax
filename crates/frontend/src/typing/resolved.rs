@@ -100,10 +100,6 @@ pub struct Resolved {
     /// The sites a lenient expansion round left unresolved (from
     /// [`Checker::deferred_sites`]). Lowering marks the globals containing one.
     pub deferred_sites: HashSet<Aol<Expr>>,
-    /// The ordered field names each `with` expression binds, keyed by the `With`
-    /// node (from [`Checker::with_fields`]). Lowering desugars
-    /// `with` into a `let` per field so the Core carries no `with` node.
-    pub with_fields: HashMap<Aol<Expr>, Vec<StrId>>,
     /// Each `@cast` to a type under 64 bits, mapped to the target's signedness
     /// and width (from [`Checker::cast_widths`]).
     pub cast_widths: HashMap<Aol<Expr>, (bool, u32)>,
@@ -180,9 +176,6 @@ pub fn collect_resolved<'c, 'a: 'c>(checkers: impl IntoIterator<Item = &'c Check
             resolved.ctx_args.insert(site, val.clone());
         }
         resolved.deferred_sites.extend(checker.deferred_sites());
-        for (&site, fields) in checker.with_fields() {
-            resolved.with_fields.insert(site, fields.clone());
-        }
         resolved.cast_widths.extend(checker.cast_widths());
         resolved.extern_sigs.extend(checker.extern_sigs());
         let module = checker.module_name();
@@ -262,7 +255,7 @@ impl<'a> Checker<'a> {
     }
 
     /// The module a qualifier written in this module names: an import alias's
-    /// module (`$ with V = VEC` makes `V` name `VEC`), otherwise the qualifier.
+    /// module (`$ @import V = VEC` makes `V` name `VEC`), otherwise the qualifier.
     pub fn qualifier_module(&self, qualifier: StrId) -> StrId {
         self.alias_modules.get(&qualifier).copied().unwrap_or(qualifier)
     }
@@ -271,12 +264,6 @@ impl<'a> Checker<'a> {
     /// value lowering injects ahead of the explicit arguments.
     pub fn ctx_calls(&self) -> &HashMap<Aol<Expr>, CtxVal> {
         &self.ctx_args
-    }
-
-    /// The ordered field names each `with` expression binds, keyed by the `With`
-    /// node. Lowering desugars `with` into a `let` per field using these.
-    pub fn with_fields(&self) -> &HashMap<Aol<Expr>, Vec<StrId>> {
-        &self.with_fields
     }
 
     /// Each `@extern` site's marshalling signature: the flattened argument type
@@ -308,7 +295,7 @@ impl<'a> Checker<'a> {
 // ## Declarations
 
 /// Every module's declared struct and union types, as the checker resolved
-/// them (`with` splices applied), plus the interface wrappers. Desugaring reads
+/// them, plus the interface wrappers. Desugaring reads
 /// it to label positional fields and payloads. Two modules may declare the
 /// same-named type (`Pair`, `Maybe`, ...), so everything is keyed by module, and
 /// a lookup resolves against the desugaring module's own types first, then the
@@ -320,8 +307,11 @@ pub struct Declarations {
     /// module name -> (variant tag -> its union name and payload field names).
     unions: HashMap<StrId, HashMap<StrId, VariantLayout>>,
     /// module name -> (type name -> declared type parameters, in order), for every
-    /// struct and union. Empty for a monomorphic type. Read by reflection.
+    /// struct and union. Empty for a monomorphic type.
     type_params: HashMap<StrId, HashMap<StrId, Vec<StrId>>>,
+    /// Every module's struct and union shapes, for compile-time reflection.
+    reflect_structs: Vec<(StrId, StrId, Shape<StructShape>)>,
+    reflect_unions: Vec<(StrId, StrId, Shape<UnionShape>)>,
     /// Interface WRAPPERS: `(module, name) -> field`, for a context-bearing global
     /// whose body is exactly `\d p1 .. pn => d.field p1 .. pn` (every CORE operator).
     /// A call site then projects the resolved instance's field directly instead of
@@ -329,46 +319,83 @@ pub struct Declarations {
     wrappers: HashMap<(StrId, StrId), StrId>,
 }
 
-/// One variant's layout: its union, its payload field names, and its position
-/// among the union's variants after splicing, which reflection reports them in
-/// (a derived comparison orders variants by it).
+/// One variant's layout: its union and its payload field names.
 struct VariantLayout {
     union: StrId,
     fields: Vec<Option<StrId>>,
-    order: usize,
 }
 
-/// The declared shape of every user type, for compile-time reflection: each
-/// struct with its `(module, name, field names)`, each union with its
-/// `(module, name, variants)` where a variant is `(tag, arity)`. The driver keys
-/// its reflection host by both the bare `name` and the qualified `module.name`,
-/// so a name shared across modules can be disambiguated. Built by
+/// The declared shape of every user type, for compile-time reflection. The
+/// driver keys its reflection host by both the bare `name` and the qualified
+/// `module.name`, so a name shared across modules can be disambiguated. Built by
 /// [`Declarations::reflect`], consumed by the driver's `$ @e` type-reflection host.
 pub struct ReflectInfo {
-    /// `(module, name, type params, field names)` per struct.
-    pub structs: Vec<(StrId, StrId, Vec<StrId>, Vec<StrId>)>,
-    /// `(module, name, type params, variants)` per union, a variant `(tag, arity)`.
-    pub unions: Vec<(StrId, StrId, Vec<StrId>, Vec<(StrId, usize)>)>,
+    pub structs: Vec<(StrId, StrId, Shape<StructShape>)>,
+    pub unions: Vec<(StrId, StrId, Shape<UnionShape>)>,
     /// `(module, name, type)` per global value, the type as source.
     pub values: Vec<(StrId, StrId, String)>,
 }
+
+/// A declared type's parameters and members. `pending` while an `@e` splice in
+/// the declaration has not been spliced in, so the members are not all known.
+#[derive(Clone, Debug)]
+pub struct Shape<M> {
+    pub params: Vec<StrId>,
+    pub members: M,
+    pub pending: bool,
+}
+
+/// A struct's fields, `(name, type as source)`, in declaration order.
+pub type StructShape = Vec<(StrId, String)>;
+
+/// A union's variants in declaration order: `(tag, arity, payload as source)`,
+/// the payload empty for a bare tag.
+pub type UnionShape = Vec<(StrId, usize, String)>;
 
 impl Declarations {
     /// Record one checked module's own types and wrappers.
     fn add_module(&mut self, checker: &Checker) {
         let module = checker.module_name;
         for &name in &checker.own_type_names {
+            let mut pending = checker.pending_types.contains(&name);
+            let mut source = |ty: Aol<Ty>| {
+                checker.ast.ty_source(ty).unwrap_or_else(|| {
+                    pending = true;
+                    String::new()
+                })
+            };
             if let Some(info) = checker.structs.get(&name) {
                 let fields = info.fields.iter().map(|(f, _)| *f).collect();
                 self.structs.entry(module).or_default().insert(name, fields);
                 self.type_params.entry(module).or_default().insert(name, info.params.clone());
+                let members = info.fields.iter().map(|(f, ty)| (*f, source(*ty))).collect();
+                let shape = Shape { params: info.params.clone(), members, pending };
+                self.reflect_structs.push((module, name, shape));
             } else if let Some(info) = checker.unions.get(&name) {
                 let by_tag = self.unions.entry(module).or_default();
-                for (order, v) in info.variants.iter().enumerate() {
+                for v in &info.variants {
                     let fields = v.payload.iter().map(|(f, _)| *f).collect();
-                    by_tag.insert(v.tag, VariantLayout { union: name, fields, order });
+                    by_tag.insert(v.tag, VariantLayout { union: name, fields });
                 }
                 self.type_params.entry(module).or_default().insert(name, info.params.clone());
+                let members = info
+                    .variants
+                    .iter()
+                    .map(|v| {
+                        let fields: Vec<String> = v
+                            .payload
+                            .iter()
+                            .map(|(f, ty)| match f {
+                                Some(f) => format!("{f}: {}", source(*ty)),
+                                None => source(*ty),
+                            })
+                            .collect();
+                        let payload = if fields.is_empty() { String::new() } else { format!("{{{}}}", fields.join(", ")) };
+                        (v.tag, fields.len(), payload)
+                    })
+                    .collect();
+                let shape = Shape { params: info.params.clone(), members, pending };
+                self.reflect_unions.push((module, name, shape));
             }
         }
         for (&name, &field) in &checker.own_wrappers {
@@ -383,50 +410,12 @@ impl Declarations {
     }
 
     /// The declared shape of every struct and union, for compile-time reflection.
-    /// Unions are reconstructed from the tag-keyed table by grouping on the union
-    /// name; a variant's arity is its payload field count (`0` for a unit payload).
     pub fn reflect(&self) -> ReflectInfo {
-        let params_of = |module: StrId, name: StrId| -> Vec<StrId> {
-            self.type_params
-                .get(&module)
-                .and_then(|m| m.get(&name))
-                .cloned()
-                .unwrap_or_default()
-        };
-        let mut structs = Vec::new();
-        for (&module, fields_by_name) in &self.structs {
-            for (&name, fields) in fields_by_name {
-                structs.push((module, name, params_of(module, name), fields.clone()));
-            }
+        ReflectInfo {
+            structs: self.reflect_structs.clone(),
+            unions: self.reflect_unions.clone(),
+            values: Vec::new(),
         }
-        // Group variants per union, carrying each variant's declaration order, then
-        // sort by it so reflection reports variants in SOURCE order (the tag-keyed
-        // map is unordered). A derived comparison orders variants by this.
-        let mut unions_ord: Vec<(StrId, StrId, Vec<(StrId, usize, usize)>)> = Vec::new();
-        for (&module, by_tag) in &self.unions {
-            for (&tag, decl) in by_tag {
-                let arity = decl.fields.len();
-                match unions_ord
-                    .iter_mut()
-                    .find(|(m, n, _)| *m == module && *n == decl.union)
-                {
-                    Some((_, _, variants)) => {
-                        if !variants.iter().any(|(t, _, _)| *t == tag) {
-                            variants.push((tag, arity, decl.order));
-                        }
-                    }
-                    None => unions_ord.push((module, decl.union, vec![(tag, arity, decl.order)])),
-                }
-            }
-        }
-        let unions = unions_ord
-            .into_iter()
-            .map(|(m, n, mut vs)| {
-                vs.sort_by_key(|(_, _, order)| *order);
-                (m, n, params_of(m, n), vs.into_iter().map(|(t, a, _)| (t, a)).collect())
-            })
-            .collect();
-        ReflectInfo { structs, unions, values: Vec::new() }
     }
 
     /// Resolve `pick` against `module`'s own declarations, then each imported

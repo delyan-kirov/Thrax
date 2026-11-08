@@ -7,10 +7,10 @@ $ @mod STDLIB_IO
 #       working directory, which every platform has (unlike /tmp), and clean
 #       up after themselves.
 
-$ with IO
-$ with OPT
-$ with STR
-$ with VEC
+$ @import IO
+$ @import OPT
+$ @import STR
+$ @import VEC
 
 $ path : @Str = "ares_stdlib_io_test.txt"
 

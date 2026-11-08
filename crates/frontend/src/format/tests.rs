@@ -117,7 +117,7 @@ fn a_broken_if_puts_every_body_under_its_arrow_or_else() {
 
 #[test]
 fn a_comment_block_keeps_its_blank_line_before_the_item() {
-    let src = "$ @mod M\n# about\n\n$ with OPT\n";
+    let src = "$ @mod M\n# about\n\n$ @import OPT\n";
     assert_eq!(fmt(src), src);
 }
 
@@ -222,17 +222,10 @@ fn a_trailing_lambda_opens_on_the_calls_line() {
 }
 
 #[test]
-fn an_import_list_keeps_one_line_or_goes_one_entry_per_line() {
-    assert_eq!(fmt("$ @mod M\n$ with V=VEC\n"), "$ @mod M\n$ with V = VEC\n");
-    assert_eq!(fmt("$ @mod M\n$ with VEC ,M=MAP\n"), "$ @mod M\n$ with VEC, M = MAP\n");
-    let exploded = "$ @mod M\n$ with\n    VEC,\n    M = MAP,\n    FOO,\n";
-    assert_eq!(fmt("$ @mod M\n$ with VEC,\n  M = MAP, FOO,\n"), exploded);
-    assert_eq!(fmt(exploded), exploded);
-    assert_eq!(
-        narrow("$ @mod M\n$ with ALPHA, BETA = GAMMA\n", 20),
-        "$ @mod M\n$ with\n    ALPHA,\n    BETA = GAMMA\n"
-    );
-    let commented = "$ @mod M\n$ with\n    # the vectors\n    V = VEC, # qualified\n    LIST,\n";
+fn an_import_stays_on_one_line() {
+    assert_eq!(fmt("$ @mod M\n$ @import V=VEC\n"), "$ @mod M\n$ @import V = VEC\n");
+    assert_eq!(fmt("$ @mod M\n$ @import   A.B\n"), "$ @mod M\n$ @import A.B\n");
+    let commented = "$ @mod M\n# the vectors\n$ @import V = VEC # qualified\n$ @import LIST\n";
     assert_eq!(fmt(commented), commented);
 }
 

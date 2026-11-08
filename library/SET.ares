@@ -8,10 +8,10 @@ $ @mod SET
 #       return an updated copy; `to_list` / `fold` visit elements in
 #       ascending order. Membership, add and remove are O(log n).
 
-$ with MAP
-$ with VEC
-$ with MATH
-$ with STR
+$ @import MAP
+$ @import VEC
+$ @import MATH
+$ @import STR
 
 $ Set : @struct t =
     m: Map t {},

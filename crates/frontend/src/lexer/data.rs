@@ -57,7 +57,6 @@ pub enum Kind {
     If,
     Is,
     Else,
-    With,
     Do,
     Ctl,
 
@@ -73,7 +72,6 @@ pub const KEYWORDS: &[(&str, Kind)] = &[
     ("if", Kind::If),
     ("is", Kind::Is),
     ("else", Kind::Else),
-    ("with", Kind::With),
     ("do", Kind::Do),
     ("ctl", Kind::Ctl),
 ];

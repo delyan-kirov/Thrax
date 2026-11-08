@@ -135,7 +135,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Import another module's exports: bare when `bare`, and qualified under its
-    /// own name then. Each of `aliases` (`$ with V = VEC`) is a further qualifier
+    /// own name then. Each of `aliases` (`$ @import V = VEC`) is a further qualifier
     /// for them, and an aliased-only import (`bare` false) brings no name in bare.
     pub fn import_as(&mut self, other: &Checker<'a>, bare: bool, aliases: &[StrId]) {
         assert!(bare || !aliases.is_empty(), "an import is bare or aliased");
@@ -148,6 +148,7 @@ impl<'a> Checker<'a> {
             self.alias_modules.insert(alias, module);
         }
         self.imported_builtins.extend(other.own_builtins.iter().copied());
+        self.imported_pending |= other.awaits_splices();
         if !other.private_names.is_empty() {
             for &scope in &scopes {
                 self.imported_private
@@ -393,7 +394,7 @@ impl<'a> Checker<'a> {
     pub(super) fn unbound_name(&self, name: StrId) -> Diagnostic {
         if let Some(&alias) = self.alias_values.get(&name).and_then(|a| a.first()) {
             return unbound(name)
-                .with_note(format!("`$ with {alias} = {}` brings in no bare names", self.alias_modules[&alias]))
+                .with_note(format!("`$ @import {alias} = {}` brings in no bare names", self.alias_modules[&alias]))
                 .with_fix(
                     format!("write `{alias}.{name}`"),
                     vec![Edit::new(Span::at(0), format!("{alias}.{name}"))],
@@ -430,11 +431,11 @@ impl<'a> Checker<'a> {
     /// Add a fix that imports `module`, inserted next to this module's other
     /// imports (prose only when the file has no item to anchor it to).
     pub(super) fn with_import_fix(&self, d: Diagnostic, module: &str) -> Diagnostic {
-        let msg = format!("import it with `$ with {module}`");
+        let msg = format!("import it with `$ @import {module}`");
         match self.import_anchor {
             Some((at, before, after)) => d.with_fix(
                 msg,
-                vec![Edit::new(Span::at(at), format!("{before}$ with {module}{after}"))],
+                vec![Edit::new(Span::at(at), format!("{before}$ @import {module}{after}"))],
                 Applicability::MachineApplicable,
             ),
             None => d.with_help(msg),
@@ -464,7 +465,7 @@ impl<'a> Checker<'a> {
             }
             return match utilities::error::closest(module.as_str(), self.qualified.keys().map(|k| k.as_str())) {
                 Some(m) => d.with_help(format!("did you mean `{m}.{name}`?")),
-                None => d.with_help(format!("import it with `$ with {module}`")),
+                None => d.with_help(format!("import it with `$ @import {module}`")),
             };
         };
         let d = diag!(Code::TypeUnbound, Span::at(0), 0, "`{module}` has no value named `{name}`");
@@ -516,7 +517,7 @@ pub(super) fn collect_ty_nodes(ast: &Ast, ty: Aol<Ty>, out: &mut HashSet<Aol<Ty>
     }
 }
 
-/// Where an added `$ with M` line goes: after the last import, or else before the
+/// Where an added `$ @import M` line goes: after the last import, or else before the
 /// first item. `None` for a file with no items to place it by.
 pub(super) fn import_anchor(ast: &Ast, program: &Program) -> Option<(usize, &'static str, &'static str)> {
     let items = ast.slice(program.items);

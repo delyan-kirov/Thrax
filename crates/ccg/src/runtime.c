@@ -1537,10 +1537,12 @@ static Value *compiler_builtin(int id, Value **a) {
     ares_value_free(v);
     return r;
   }
-  case ARESxB_PARSE_STR: case ARESxB_PARSE_ITEMS: case ARESxB_PARSE_TYPE: case ARESxB_PARSE_ROW: {
+  case ARESxB_PARSE_STR: case ARESxB_PARSE_ITEMS: case ARESxB_PARSE_TYPE: case ARESxB_PARSE_ROW:
+  case ARESxB_PARSE_FIELDS: case ARESxB_PARSE_VARIANTS: {
     Value *s = ARESxVALUE_force(a[0]);
     if (s->tag != T_STR) ares_fault("expected a string");
-    int kind = id == ARESxB_PARSE_ITEMS ? 1 : id == ARESxB_PARSE_TYPE ? 2 : id == ARESxB_PARSE_ROW ? 3 : 0;
+    int kind = id == ARESxB_PARSE_ITEMS ? 1 : id == ARESxB_PARSE_TYPE ? 2 : id == ARESxB_PARSE_ROW ? 3
+             : id == ARESxB_PARSE_FIELDS ? 4 : id == ARESxB_PARSE_VARIANTS ? 5 : 0;
     if (ares_parse(s->u.str.data, s->u.str.len, kind, &err) != 0)
       compiler_fault(name, err);
     return code_value((const char *)s->u.str.data, s->u.str.len);

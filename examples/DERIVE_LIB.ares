@@ -7,7 +7,7 @@ $ @mod DERIVE_LIB
 #       dictionary requirement across the import boundary, so a caller in another
 #       module still plans the element dictionary.
 
-$ with DERIVE
+$ @import DERIVE
 
 $ Wrap : @union t =
     Nothing: {},

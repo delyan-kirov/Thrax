@@ -1,0 +1,48 @@
+$ @mod FIELD_SCOPE
+
+# \file FIELD_SCOPE.ares
+# \info Naming a struct's fields in a body. Field access stays explicit
+#       (`q.x`), or a record pattern binds the fields by name: in a match arm,
+#       in a `let`, or in a lambda's parameter. Every name a body uses has a
+#       binder you can see. A metaprogram can still write the bindings for you:
+#       `open_fields` reflects on the struct and generates one `let` per field,
+#       which `@e` splices in, so the names are spelled out in the generated
+#       code rather than appearing from the type.
+
+$ @import VEC
+
+$ Point : @struct = x: @Int, y: @Int
+$ Named : @struct = name: @Str, age: @Int
+
+$ p : Point = Point.{ .x = 3, .y = 4 }
+$ who : Named = Named.{ .name = "Bo", .age = 41 }
+
+# Explicit access.
+$ chk_access : @Int = if p.x + p.y == 7 => 0 else 1
+
+# A record pattern in a match arm binds the fields it lists; `.._` ignores the rest.
+$ sum : Point -> @Int = \q => q |> \ | { .x = x, .y = y, .._ } => x + y
+$ chk_match : @Int = if sum Point.{ .x = 10, .y = 20 } == 30 => 0 else 1
+
+# `.field` alone binds the field under its own name, here in a `let`.
+$ chk_let : @Int = let { .name, .age } = who in if age == 41 && name == "Bo" => 0 else 1
+
+# The pattern can stand for the parameter itself.
+$ x_twice : Point -> @Int = \{ .x, .y } => x + y + x
+$ chk_param : @Int = if x_twice p == 10 => 0 else 1
+
+# A generator for the bindings: `open_fields "q" "Point" "x + y"` is
+# `let x = q.x in let y = q.y in x + y`, built from `Point`'s declared fields.
+$ open_fields : @Str -> @Str -> @Str -> <@Meta> @Code = \subject ty body =>
+    @lookup ty |> \
+        | Decl.Struct.{ _, fields } =>
+            let bind = \acc f => acc ++ "let " ++ f.0 ++ " = " ++ subject ++ "." ++ f.0 ++ " in " in
+            @parse_str <| VEC.foldl bind "" fields ++ body
+        | _ => @fail <| diag <| "`" ++ ty ++ "` is not a struct"
+
+$ scoped : Point -> @Int = \q => @e <| open_fields "q" "Point" "x * y"
+$ chk_open : @Int = if scoped p == 12 => 0 else 1
+
+$ test : @Int = chk_access + chk_match + chk_let + chk_param + chk_open
+
+$ @e <| assert (test == 0) "FIELD_SCOPE: a check failed"

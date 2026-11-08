@@ -59,7 +59,7 @@ impl<'a> Checker<'a> {
             let mut d = diag!(
                 Code::TypeUnbound, Span::at(0), 0,
                 "type `{name}` is imported qualified-only";
-                note: "`$ with {alias} = {}` brings in no bare names", self.alias_modules[&alias]
+                note: "`$ @import {alias} = {}` brings in no bare names", self.alias_modules[&alias]
             );
             if let Some(span) = self.ast.ty_span(ty) {
                 d = d.fill_span(span).with_fix(
@@ -96,7 +96,7 @@ impl<'a> Checker<'a> {
         Some(diag!(
             Code::TypeUnbound, Span::at(0), 0,
             "type `{ty}` is imported qualified-only";
-            note: "`$ with {alias} = {}` brings in no bare names", self.alias_modules[&alias];
+            note: "`$ @import {alias} = {}` brings in no bare names", self.alias_modules[&alias];
             help: "write `{alias}.{ty}.{tag}`"
         ))
     }
@@ -355,7 +355,7 @@ impl<'a> Checker<'a> {
 
     /// Infer the operand of a type or row splice `@e X` under the `<@Meta>`
     /// ambient and require it to build `@Code`. See `Ty::MetaE` in `ty_of_ast`.
-    fn meta_splice_operand(&mut self, expr: Aol<Expr>) {
+    pub(super) fn meta_splice_operand(&mut self, expr: Aol<Expr>) {
         let ambient = self.meta_ambient();
         let saved = std::mem::replace(&mut self.ambient, ambient);
         let sites = self.deferred_sites.clone();

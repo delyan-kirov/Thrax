@@ -1,7 +1,7 @@
 $ @mod MAIN
 
 # Two imports bring `size` in, so the bare name means neither.
-$ with A
-$ with B
+$ @import A
+$ @import B
 
 $ n : @Int = size  #~ error[AMBIGUOUS_NAME]: `size` is imported from more than one module

@@ -75,7 +75,7 @@ out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.
 
 ## Features
 
-- **Algebraic data types**: structs and sum types, generic by default, composed with `with`-splicing.
+- **Algebraic data types**: structs and sum types, generic by default; a declaration can copy another's members with an `@e` splice.
 - **Pattern matching**: nested, literal, string, and range patterns, `++` sequence patterns that match a prefix, a suffix, or both ends, and fall-through guards.
 - **Typed algebraic effects with handlers**: the effect row is part of the type; continuations are first-class and resumable.
 - **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.

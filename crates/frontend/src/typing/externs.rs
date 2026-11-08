@@ -123,8 +123,7 @@ impl<'a> Checker<'a> {
 // ## C layouts
 
 impl<'a> Checker<'a> {
-    /// Compute and validate the C memory layout of every C-repr struct. Runs after
-    /// `with` splicing, so a spliced-in field is laid out too. A C-repr struct may
+    /// Compute and validate the C memory layout of every C-repr struct. A C-repr struct may
     /// not be generic (a C type is monomorphic), and each field must be a
     /// C-representable scalar or a nested C-repr struct.
     pub(super) fn validate_crepr_structs(&mut self) -> Result<()> {

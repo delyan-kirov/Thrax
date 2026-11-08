@@ -7,9 +7,9 @@ $ @mod PATH
 #       the root "/" is its own basename and dirname. Extensions come back
 #       WITHOUT the dot, and a dotfile (".bashrc") has none.
 
-$ with STR
-$ with OPT
-$ with VEC
+$ @import STR
+$ @import OPT
+$ @import VEC
 
 # ---- byte scans (47 = '/', 46 = '.') ----
 

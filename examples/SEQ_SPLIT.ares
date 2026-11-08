@@ -7,7 +7,7 @@ $ @mod SEQ_SPLIT
 #       it step its `@ISeqViewBack` from the back. A sized tensor checks every
 #       length at compile time instead.
 
-$ with LA
+$ @import LA
 
 # Strings: prefix, suffix, and both around one middle.
 $ ext : @Str -> @Str = \s => s |> \ | name ++ ".ares" => name | _ => "?"

@@ -5,8 +5,8 @@ $ @mod STDLIB_LAZY_LIST
 #       rebuilding functions are lazy in the tail, so a pipeline over an
 #       unbounded list streams: only the cells a consumer looks at are built.
 
-$ with LIST
-$ with OPT
+$ @import LIST
+$ @import OPT
 
 $ nums : List @Int = [1, 2, 3, 4, 5]
 $ naturals : List @Int = [0 ...]

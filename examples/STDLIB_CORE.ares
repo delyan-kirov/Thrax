@@ -2,12 +2,12 @@ $ @mod STDLIB_CORE
 
 # \file STDLIB_CORE.ares
 # \info The standard library's small core: `Option` (OPT), tuples and
-#       the integer helpers (MATH). A `$ with MOD` import makes the module's
+#       the integer helpers (MATH). A `$ @import MOD` import makes the module's
 #       public names (and types) usable unqualified; everything stays
 #       reachable qualified (`OPT.is_some`, ...).
 
-$ with OPT
-$ with MATH
+$ @import OPT
+$ @import MATH
 
 # ---- Option ----
 $ o : Option @Int = Option.Some.{ 41 }

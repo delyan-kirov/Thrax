@@ -64,19 +64,13 @@ fn declaration_errors_carry_a_location() {
     // each one has to supply its own; without it they all caret `1:1`, blaming
     // the `@mod` line for an error somewhere else entirely.
     let cases = [
-        // a `with` include that names no such type
+        // a field declared twice
         "$ @mod M
-$ P : @struct = with Nope, a: @Int,
+$ P : @struct = a: @Int, a: @Int,
 $ x : @Int = 1",
-        // a `with` cycle
+        // a variant declared twice
         "$ @mod M
-$ A : @struct = with B, a: @Int,
-$ B : @struct = with A, b: @Int,
-$ x : @Int = 1",
-        // a member a `with` splices in twice
-        "$ @mod M
-$ A : @struct = a: @Int,
-$ B : @struct = with A, a: @Int,
+$ U : @union = A: @Int, A: @Str,
 $ x : @Int = 1",
         // an undeclared type parameter
         "$ @mod M
@@ -323,7 +317,7 @@ fn cross_module_import_brings_in_types_and_values() {
                        $ unwrap_or : Option t -> t -> t = \\o d => \
                        o |> \\ | Option.Some.{x} => x | _ => d";
     let use_src = "$ @mod U\n\
-                       $ with OPT\n\
+                       $ @import OPT\n\
                        $ o : Option @Int = Option.Some.{ 41 }\n\
                        $ present : @Bool = is_some o\n\
                        $ value : @Int = unwrap_or o 0";
@@ -373,12 +367,12 @@ const PRIVATE_DEP: &str = "$ @mod A\n\
 fn public_symbol_above_private_marker_is_importable() {
     // `api` sits before `$ @private`, so it exports even though its body calls a
     // private helper.
-    assert_eq!(cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ with A\n$ r : @Int = api 3"), "");
+    assert_eq!(cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ @import A\n$ r : @Int = api 3"), "");
 }
 
 #[test]
 fn private_symbol_is_not_importable_bare() {
-    assert!(cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ with A\n$ r = helper 3")
+    assert!(cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ @import A\n$ r = helper 3")
         .contains("TYPE_UNBOUND"));
 }
 
@@ -386,7 +380,7 @@ fn private_symbol_is_not_importable_bare() {
 fn private_symbol_is_not_reachable_qualified() {
     // A private name is withheld from the qualified namespace too, so `A.helper`
     // does not resolve either.
-    assert!(!cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ with A\n$ r = A.helper 3").is_empty());
+    assert!(!cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ @import A\n$ r = A.helper 3").is_empty());
 }
 
 #[test]
@@ -397,7 +391,7 @@ fn private_type_is_not_importable() {
         $ Secret : @struct = v: @Int";
     // Naming the private type in the importer fails; only its public constructor's
     // result type leaks (opaquely).
-    assert!(!cross_module_errors(dep, "$ @mod B\n$ with A\n$ x : Secret = mk 3").is_empty());
+    assert!(!cross_module_errors(dep, "$ @mod B\n$ @import A\n$ x : Secret = mk 3").is_empty());
 }
 
 #[test]
@@ -407,8 +401,8 @@ fn private_extends_to_end_of_file() {
         $ @private\n\
         $ hidden : @Int -> @Int = \\x => x\n\
         $ also_hidden : @Int -> @Int = \\x => x";
-    assert!(cross_module_errors(dep, "$ @mod B\n$ with A\n$ r = hidden 1").contains("TYPE_UNBOUND"));
-    assert!(cross_module_errors(dep, "$ @mod B\n$ with A\n$ r = also_hidden 1")
+    assert!(cross_module_errors(dep, "$ @mod B\n$ @import A\n$ r = hidden 1").contains("TYPE_UNBOUND"));
+    assert!(cross_module_errors(dep, "$ @mod B\n$ @import A\n$ r = also_hidden 1")
         .contains("TYPE_UNBOUND"));
 }
 
@@ -435,14 +429,6 @@ fn record_parameters_bind_fields_directly() {
         type_of("$ @mod M\n$ inc : {x: @Int} -> @Int = x + 1", "inc"),
         "{ x: @Int } -> @Int"
     );
-}
-
-#[test]
-fn with_scopes_struct_fields() {
-    let src = "$ @mod M\n\
-                   $ P : @struct = x: @Int, y: @Int\n\
-                   $ sum : P -> @Int = \\p => with p in x + y";
-    assert_eq!(type_of(src, "sum"), "P -> @Int");
 }
 
 #[test]
@@ -1486,20 +1472,30 @@ fn mutual_recursion_keeps_a_row_parameter_open() {
     assert_eq!(type_of(src, "step"), "({} -> St a) -> @Int -> @Int");
 }
 
-/// Reflection lists a spliced union's variants in their order after splicing:
-/// the included union's first, then the union's own.
+/// Reflection reports members in source order with their types as source, and
+/// marks a type whose `@e` entries are not spliced in yet as pending.
 #[test]
-fn reflection_orders_spliced_variants_included_first() {
+fn reflection_reports_member_sources_and_pending_types() {
     let src = "$ @mod M\n\
-               $ Small : @union = A: {}, B: {}\n\
-               $ Big : @union = with Small, C: {}, D: {}\n\
-               $ x : @Int = 0\n";
+               $ Big : @union a = D: {}, C: { n: @Int, a }, B: @Vec (@Vec a), A\n\
+               $ P : @struct b e n = f: b -> <Log, State @Int | e> @Int, g: [@co n + 1]{@Int, {}}\n\
+               $ Q : @struct = @e <| gen {}, x: @Int\n";
     let (ast, prog) = crate::parse_into(Ast::new(), src).expect("parse");
     let mut checker = Checker::new(&ast, std::rc::Rc::new(crate::Types::new()));
-    checker.check_program(&prog).unwrap_or_else(|e| panic!("{}", e.render(src, "test.ares")));
+    checker.set_lenient(true);
+    let _ = checker.check_program(&prog);
     let resolved = crate::collect_resolved(std::slice::from_ref(&checker));
     let reflect = resolved.declarations.reflect();
-    let big = reflect.unions.iter().find(|(_, n, _, _)| n == "Big").expect("Big reflected");
-    let tags: Vec<&str> = big.3.iter().map(|(t, _)| t.as_str()).collect();
-    assert_eq!(tags, ["A", "B", "C", "D"]);
+    let big = &reflect.unions.iter().find(|(_, n, _)| n == "Big").expect("Big reflected").2;
+    let variants: Vec<(&str, usize, &str)> = big.members.iter().map(|(t, n, p)| (t.as_str(), *n, p.as_str())).collect();
+    assert_eq!(
+        variants,
+        [("D", 0, ""), ("C", 2, "{n: @Int, a}"), ("B", 1, "{@Vec (@Vec a)}"), ("A", 0, "")]
+    );
+    let p = &reflect.structs.iter().find(|(_, n, _)| n == "P").expect("P reflected").2;
+    let fields: Vec<&str> = p.members.iter().map(|(_, t)| t.as_str()).collect();
+    assert_eq!(fields, ["b -> <Log, State @Int | e> @Int", "[@co n + 1]{@Int, {}}"]);
+    assert!(!p.pending);
+    let q = &reflect.structs.iter().find(|(_, n, _)| n == "Q").expect("Q reflected").2;
+    assert!(q.pending);
 }

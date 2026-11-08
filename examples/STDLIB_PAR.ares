@@ -8,9 +8,9 @@ $ @mod STDLIB_PAR
 #       on a pool of threads; the interpreter runs each one on the spot. A task
 #       is pure, so both give the same answers.
 
-$ with PAR
-$ with VEC
-$ with LA
+$ @import PAR
+$ @import VEC
+$ @import LA
 
 $ fib : @Int -> @Int = \n => if n < 2 => n else fib (n - 1) + fib (n - 2)
 

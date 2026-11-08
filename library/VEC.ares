@@ -9,7 +9,7 @@ $ @mod VEC
 #       Where an operation needs equality it takes the comparison explicitly
 #       (dictionary passing); there are no type classes.
 
-$ with OPT
+$ @import OPT
 
 # ---- primitives / access ----
 

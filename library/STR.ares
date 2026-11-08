@@ -8,8 +8,8 @@ $ @mod STR
 #       `==` -- already works on `@Str`; this module builds the searching,
 #       splitting and formatting layer on top of it.
 
-$ with OPT
-$ with VEC
+$ @import OPT
+$ @import VEC
 
 $ len : @Str -> @Int = \s => @array_len s
 

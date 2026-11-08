@@ -93,8 +93,8 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
 /// Why [`load_core`] failed.
 pub(crate) enum LoadError {
     Message(String),
-    /// A `$ with` that names no loadable module, as a diagnostic in the
-    /// importing module. `root_span` is the root's own `$ with` that leads,
+    /// A `$ @import` that names no loadable module, as a diagnostic in the
+    /// importing module. `root_span` is the root's own `$ @import` that leads,
     /// possibly through other modules, to that importer; it is `None` when
     /// the importer is not reached from the root (CORE's own imports).
     Import { diag: utilities::Diagnostic, importer: String, path: String, src: String, root_span: Option<utilities::Span> },
@@ -134,14 +134,14 @@ pub(crate) fn load_core(
 ) -> Result<Loaded, LoadError> {
     let mut sources: Vec<(String, String, String)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
-    // Each module reached from the root, mapped to the root's `$ with` it came through.
+    // Each module reached from the root, mapped to the root's `$ @import` it came through.
     let mut via: HashMap<String, utilities::Span> = HashMap::new();
     let mut queue: Vec<(String, String, String)> =
         vec![(root_name.clone(), root_path, root_src)];
 
     // The implicitly imported CORE module (bare names everywhere) is an ordinary
     // standard-library module. Seed it into the load queue so it is always
-    // present, even without an explicit `$ with CORE`.
+    // present, even without an explicit `$ @import CORE`.
     if root_name != "CORE" {
         let (path, src) = fetch("CORE")?;
         queue.push(("CORE".to_string(), path, src));
@@ -192,7 +192,7 @@ pub(crate) fn load_core(
 
 /// Load every module an import names that is not loaded yet, transitively. The
 /// initial set comes from [`load_core`]; this reopens it after an expansion round,
-/// where a `@build` or a `$ @e` may have injected `$ with M` for a module no
+/// where a `@build` or a `$ @e` may have injected `$ @import M` for a module no
 /// hand-written source mentions.
 fn load_injected_imports(loaded: &mut Loaded, root_dir: &Path) -> Result<(), String> {
     let mut queue: Vec<(String, utilities::Span, usize)> = Vec::new();
@@ -216,7 +216,7 @@ fn load_injected_imports(loaded: &mut Loaded, root_dir: &Path) -> Result<(), Str
     Ok(())
 }
 
-/// A module that could not be loaded, reported at the `$ with` in `importer` that
+/// A module that could not be loaded, reported at the `$ @import` in `importer` that
 /// names it.
 fn import_failure(msg: &str, name: &str, importer: &str, span: utilities::Span) -> utilities::Diagnostic {
     if name == BUILD_SCRIPT {
@@ -350,7 +350,7 @@ fn build_import_hints() -> HashMap<utilities::StrId, Vec<utilities::StrId>> {
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
-            if name.starts_with(|c: char| c.is_ascii_lowercase()) && name != "with" {
+            if name.starts_with(|c: char| c.is_ascii_lowercase())  {
                 let homes = hints.entry(name.into()).or_default();
                 let module = utilities::StrId::intern(module);
                 if !homes.contains(&module) {
@@ -551,7 +551,7 @@ pub(crate) struct Setup {
 
 /// A checker for module `i`, with `C` (qualified), `CORE` (bare) and its
 /// direct imports `deps` brought in from their already-run checkers, each as
-/// `program`'s `$ with` items for it say (bare, aliased, or both).
+/// `program`'s `$ @import` items for it say (bare, aliased, or both).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_checker<'a, 'c>(
     ast: &'a frontend::Ast,
@@ -594,8 +594,8 @@ pub(crate) fn prepare_checker<'a, 'c>(
     checker
 }
 
-/// How `program` imports `module`: whether bare (`$ with M`), and under which
-/// aliases (`$ with A = M`).
+/// How `program` imports `module`: whether bare (`$ @import M`), and under which
+/// aliases (`$ @import A = M`).
 fn import_forms(ast: &frontend::Ast, program: &Program, module: &str) -> (bool, Vec<utilities::StrId>) {
     let mut bare = false;
     let mut aliases = Vec::new();
@@ -963,7 +963,7 @@ fn expand_loaded(
     let _ = interpreter::machine::take_link_directives(); // drop any stale directives
     let mut rounds = 0;
     loop {
-        // A generator can inject `$ with M` for a module nothing imported yet, so
+        // A generator can inject `$ @import M` for a module nothing imported yet, so
         // the load set is reopened every round rather than fixed before the first.
         if let Err(msg) = load_injected_imports(loaded, root_dir) {
             eprintln!("{}", msg.trim_end());
@@ -1304,11 +1304,11 @@ fn reflect_tables(Reflection { info: reflect, scopes }: Reflection) -> Rc<Reflec
         qualified.insert((module, name), info.clone());
         bare.entry(name).or_default().push((module, info));
     };
-    for (module, name, params, fields) in reflect.structs {
-        put(module, name, TypeInfo::Struct { params, fields });
+    for (module, name, shape) in reflect.structs {
+        put(module, name, TypeInfo::Struct(shape));
     }
-    for (module, name, params, variants) in reflect.unions {
-        put(module, name, TypeInfo::Union { params, variants });
+    for (module, name, shape) in reflect.unions {
+        put(module, name, TypeInfo::Union(shape));
     }
     for (module, name, ty) in reflect.values {
         put(module, name, TypeInfo::Value { ty });
@@ -1454,7 +1454,7 @@ pub fn expand_session(source: &str, root_dir: &Path) -> Option<String> {
 }
 
 /// Compile an in-memory `$ @mod REPL` session `source` against the standard
-/// library (CORE + C + any `$ with` imports resolved from `root_dir`). Returns
+/// library (CORE + C + any `$ @import` imports resolved from `root_dir`). Returns
 /// the lowered modules and the root's typed bindings, or a rendered diagnostic.
 /// Unlike the file commands this renders errors into a string instead of exiting,
 /// so the shell can print them and keep going.
@@ -1582,7 +1582,7 @@ pub fn eval_fragment(
 }
 
 /// Compile `src` as the body of a definition in an in-memory module that opens
-/// with the `$ with` lines `imports`, and run it.
+/// with the `$ @import` lines `imports`, and run it.
 fn eval_wrapped(
     src: &str,
     imports: &[String],
@@ -1600,7 +1600,7 @@ fn eval_wrapped(
 const FRAGMENT: &str = "FRAGMENT";
 
 /// Compile `src` as the body of a definition in an in-memory module that opens
-/// with the `$ with` lines `imports`.
+/// with the `$ @import` lines `imports`.
 fn compile_wrapped(
     src: &str,
     imports: &[String],
@@ -1649,7 +1649,7 @@ fn round_check_host(
         .get(module)
         .map(|(_, src)| import_lines(src))
         .unwrap_or_default();
-    imports.push(format!("$ with {module}"));
+    imports.push(format!("$ @import {module}"));
     let sources = Rc::clone(sources);
     let root_dir = root_dir.to_path_buf();
     Box::new(move |src| {
@@ -2261,7 +2261,7 @@ pub(crate) fn parse_mod_name(src: &str) -> Option<String> {
     program.ok().map(|p| ast.text(p.module).to_string())
 }
 
-/// The module names a source imports (`$ with MOD`) with the span of each, or
+/// The module names a source imports (`$ @import MOD`) with the span of each, or
 /// empty if even its header does not parse (the errors are reported later, against the
 /// shared arena).
 pub(crate) fn parse_imports(src: &str) -> Vec<(String, utilities::Span)> {
@@ -2298,7 +2298,7 @@ pub(crate) fn parse_imports(src: &str) -> Vec<(String, utilities::Span)> {
     found
 }
 
-/// A source's `$ with` items, re-rendered as source lines.
+/// A source's `$ @import` items, re-rendered as source lines.
 fn import_lines(src: &str) -> Vec<String> {
     let Ok(parsed) = frontend::parse(src) else {
         return Vec::new();
@@ -2307,9 +2307,9 @@ fn import_lines(src: &str) -> Vec<String> {
     ast.slice(parsed.program.items)
         .iter()
         .filter_map(|item| match item {
-            Item::Import { module, alias: None, .. } => Some(format!("$ with {}", dotted(ast, *module))),
+            Item::Import { module, alias: None, .. } => Some(format!("$ @import {}", dotted(ast, *module))),
             Item::Import { module, alias: Some(alias), .. } => {
-                Some(format!("$ with {} = {}", ast.text(*alias), dotted(ast, *module)))
+                Some(format!("$ @import {} = {}", ast.text(*alias), dotted(ast, *module)))
             }
             _ => None,
         })

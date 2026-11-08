@@ -21,7 +21,7 @@ fn project(name: &str) -> PathBuf {
     write(&dir.join("source/GREET.ares"), "$ @mod GREET\n\n$ greeting : @Str = \"hi from source\"\n");
     let main = |m: &str| {
         format!(
-            "$ @mod {m}\n$ with GREET\n$ with IO\n\n$ @main : @Vec @Str -> <@IO> @Int = \\_ => println greeting; 0\n"
+            "$ @mod {m}\n$ @import GREET\n$ @import IO\n\n$ @main : @Vec @Str -> <@IO> @Int = \\_ => println greeting; 0\n"
         )
     };
     write(&dir.join("MAIN.ares"), &main("MAIN"));

@@ -6,13 +6,13 @@ $ @mod HOOKS
  - \note documentation/workflow.md describes the workflow they add up to.
  -#
 
-$ with IO
-$ with OPT
-$ with STR
-$ with VEC
-$ with RESULT
-$ with SH
-$ with FORGE
+$ @import IO
+$ @import OPT
+$ @import STR
+$ @import VEC
+$ @import RESULT
+$ @import SH
+$ @import FORGE
 
 $ trunk : @Str = "master"
 

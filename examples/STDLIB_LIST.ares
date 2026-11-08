@@ -5,8 +5,8 @@ $ @mod STDLIB_LIST
 #       indexing and searching over the prelude's `@Vec`. Operations that
 #       need equality take it explicitly (dictionary passing).
 
-$ with VEC
-$ with OPT
+$ @import VEC
+$ @import OPT
 
 $ xs : @Vec @Int = range 1 5 # [1, 2, 3, 4, 5]
 

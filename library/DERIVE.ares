@@ -22,7 +22,7 @@ $ @mod DERIVE
 #       `to_string` works at every instantiation (`Box @Int`, `Pair @Int @Bool`,
 #       nesting). This is `instance (Show a, Show b) => Show (Pair a b)`.
 
-$ with VEC
+$ @import VEC
 
 # Join non-empty pieces with `sep` (the seed "" is skipped, so no leading sep).
 $ join : @Str -> @Vec @Str -> @Str = \sep xs =>
@@ -294,3 +294,111 @@ $ derive_eq : @Str -> <@Meta> @Code = \ty =>
         @parse_items (struct_cmp ty ++ "\n" ++ eq_only ty)
     else
         @parse_items (union_cmp ty ++ "\n" ++ eq_only ty)
+
+# ---- copying a declaration's members ----
+# `fields_of "Foo"` is the `@Code` of `Foo`'s fields, and `variants_of "Base"` of
+# `Base`'s variants, for an `@e` entry of a declaration. The entries land where
+# the `@e` stands, among the ones written by hand:
+#
+#     $ Bar : @struct = @e <| fields_of "Foo", i: @Int
+#     $ Color : @union = @e <| variants_of "Base", Blue: {}
+#
+# It is a copy of the text, so `Bar` has no relationship to `Foo`. A generic type
+# is named applied to the declaring type's own parameters, which replace its own:
+# with `$ Pair : @struct a = fst: a, snd: a`, `fields_of "Pair b"` is
+# `fst: b, snd: b`. Leaving the arguments off keeps `Pair`'s names.
+
+# A type application split into its head and arguments, a parenthesized argument
+# kept whole: `"Pair b (@Vec c)"` is `["Pair", "b", "( @Vec c )"]`.
+$ Split : @struct = depth: @Int, cur: @Str, out: @Vec @Str
+
+$ split_applied : @Str -> @Vec @Str = \src =>
+    let step =
+        \s tok =>
+            let text = @token_text tok in
+            let kind = @token_kind tok in
+            let cur = if s.cur == "" => text else s.cur ++ " " ++ text in
+            let depth =
+                if kind == "LParen" =>
+                    s.depth + 1
+                else if kind == "RParen" =>
+                    s.depth - 1
+                else
+                    s.depth
+            in
+            if depth == 0 =>
+                Split.{ .depth = 0, .cur = "", .out = VEC.push s.out cur }
+            else
+                Split.{ .depth = depth, .cur = cur, .out = s.out }
+    in
+    (VEC.foldl step Split.{ .depth = 0, .cur = "", .out = [] } (@lex src)).out
+
+# `name` with each of `params` replaced by the argument in the same position.
+$ subst_name : @Vec @Str -> @Vec @Str -> @Int -> @Str -> @Str = \params args i name =>
+    if i >= @vec_len params =>
+        name
+    else if @vec_get params i == name =>
+        @vec_get args i
+    else
+        subst_name params args (i + 1) name
+
+# A member's type source over the declaring type's parameters: every type
+# variable of the copied type renamed to its argument. No arguments, no change.
+$ rename : @Vec @Str -> @Vec @Str -> @Str -> @Str = \params args src =>
+    if VEC.is_empty args =>
+        src
+    else
+        let word =
+            \tok =>
+                let text = @token_text tok in
+                if @token_kind tok == "Word" => subst_name params args 0 text else text
+        in
+        join " " <| VEC.map word (@lex src)
+
+# Refuse an application with the wrong number of arguments, before copying.
+$ check_args : @Str -> @Vec @Str -> @Vec @Str -> <@Meta> {} = \name params args =>
+    if VEC.is_empty args || @vec_len args == @vec_len params =>
+        {}
+    else
+        @fail {
+            .message = "`"
+                ++ name
+                ++ "` takes "
+                ++ to_string (@vec_len params)
+                ++ " type parameter(s), not "
+                ++ to_string (@vec_len args),
+            .notes = [
+                "the arguments replace `" ++ name ++ "`'s own parameters in the copied entries"
+            ],
+            .helps = ["name it bare to keep its parameters, or apply it to one type per parameter"],
+        }
+
+$ fields_of : @Str -> <@Meta> @Code = \ty =>
+    let parts = split_applied ty in
+    let name = VEC.get_or parts 0 ty in
+    let args = VEC.drop 1 parts in
+    @lookup name |> \
+        | Decl.Struct.{ params, fields } =>
+            check_args name params args;
+            let field = \f => f.0 ++ ": " ++ rename params args f.1 in
+            @parse_fields <| join ", " <| VEC.map field fields
+        | _ => @fail {
+            .message = "`" ++ name ++ "` is not a struct",
+            .notes = ["`fields_of` copies a struct's fields into another declaration"],
+            .helps = ["for a union's variants, use `variants_of`"],
+        }
+
+$ variants_of : @Str -> <@Meta> @Code = \ty =>
+    let parts = split_applied ty in
+    let name = VEC.get_or parts 0 ty in
+    let args = VEC.drop 1 parts in
+    let render = \params v => if v.1 == "" => v.0 else v.0 ++ ": " ++ rename params args v.1 in
+    @lookup name |> \
+        | Decl.Union.{ params, variants } =>
+            check_args name params args;
+            @parse_variants <| join ", " <| VEC.map (render params) variants
+        | _ => @fail {
+            .message = "`" ++ name ++ "` is not a union",
+            .notes = ["`variants_of` copies a union's variants into another declaration"],
+            .helps = ["for a struct's fields, use `fields_of`"],
+        }

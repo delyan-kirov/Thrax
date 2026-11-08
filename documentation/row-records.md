@@ -16,7 +16,7 @@ first-class, name-keyed types** (an earlier "decay to pairs" model was replaced)
 - **Auto-bind parameter sugar** (kept): `add : { x:@Int, y:@Int } -> @Int = x + y`
   binds `x`, `y` in the body (an implicit record destructuring).
 - **Update / stack** on an open-row value: `{ .x = v | p }` preserves the shape
-  (tail flows through), `{ .x = 1, with p }` concatenates.
+  (tail flows through), `{ .x = 1, ..p }` concatenates.
 - **Destructuring patterns**: `p |> \ | { .x = a, .y = b, .._ } => ...` and lambda
   shorthand `\{ .x, .y } => ...`, on open-row values and nominal structs.
 
@@ -64,11 +64,11 @@ scoped-label algorithm as effect rows (`unify_row` / `rewrite_row`,
 `RowEmpty` / a row variable in the tail). Concretely:
 
 - **Duplicates are allowed and they stack** (chosen: "A", pure scoped, no
-  warning). `@struct T = with A with B` where both `A` and `B` have `x` yields a
-  row `{ A.x, B.x, ... }`, no error. Nesting rows is the whole point, same as
-  `<Exn | Exn | r>` for effects.
-- **Elimination resolves to the head (first) occurrence.** `.x`, `with rec in
-  body`, and record-rest patterns all read the first `x` in the row; a shadowed
+  warning) in a row built by extension: `{ .x = 1, ..p }` where `p` has `x`
+  yields a row `{ x, p.x, ... }`, no error. Nesting rows is the whole point, same
+  as `<Exn | Exn | r>` for effects. A declared `@struct` names each field once.
+- **Elimination resolves to the head (first) occurrence.** `.x` and record-rest
+  patterns both read the first `x` in the row; a shadowed
   duplicate is inert (reachable only through a future restriction operator
   `rec - x`, deferred). This is not a new rule to enforce: the runtime already
   does it. `Value::Struct.fields` is a `Vec<(name, value)>` and access is
@@ -87,7 +87,7 @@ that:
 - lets a struct be **recursive** (a fully-structural record cannot refer to
   itself without iso-recursive types, out of scope),
 - keeps **overload dispatch by struct type** and display working,
-- is what `with T` / `T.{ .. }` construction name.
+- is what `T.{ .. }` construction names.
 
 On top of that, **function signatures gain open rows**: `{ x:@Int, y:@Int | r }`
 is "any record with at least `x:@Int`, `y:@Int`". A named struct **satisfies** an
@@ -104,29 +104,13 @@ collapse; recursion needs iso-recursive types) and **structural-alongside-
 nominal** (two record systems to teach). Hybrid is additive and least
 disruptive.
 
-## How `with` interacts with rows
+## Copying a declaration's fields
 
-They are the same operation (row extension) at two ends:
-
-- `with Other` in a **declaration** is *closed* concatenation by a **known** row.
-  `@struct Point3 = with Point, z: @Int` is the closed row `{ x, y, z }`. A
-  declaration never carries a free row variable.
-- `| r` in a **signature** is extension by an **unknown** tail. `with` does not
-  appear there; the open tail does.
-
-So `with Other` becomes "splice `Other`'s row", and the declaration-time splice
-already implemented (see [[type-with-splice]]) is the closed case of the same
-mechanism. `with A with B` stacks both rows (duplicates included).
-
-## `with rec in body` on a row
-
-Binds the statically-known **head** labels into scope:
-
-- a duplicated label binds its head occurrence (total rule, no ambiguity);
-- an **open tail** `{ x:@Int | r }` binds only the known labels (`x`); the
-  polymorphic tail `r` contributes nothing to bind, since its labels are unknown.
-
-This resolves the roadmap's note that `with … in` needs the fields known.
+A declaration never carries a free row variable, so copying another struct's
+fields into one is not row extension: it is text, generated at build time. An
+`@e` entry splices in the fields a generator builds (`$ Point3 : @struct = @e <|
+DERIVE.fields_of "Point", z: @Int` is the closed row `{ x, y, z }`). `| r` in a
+**signature** is extension by an **unknown** tail.
 
 ## What this unlocks
 
@@ -169,9 +153,9 @@ Runtime (`Value::Struct`, `Term::Struct`, `Term::Field`, C `ARESxVALUE_field`) i
   records and in nominal `Type.{ .f = v | base }` / bare `.{ .f = v | base }`
   literals alike (the old `..base` spread has been removed). Update preserves
   `base`'s row (or, for a nominal literal, its struct type).
-- **Stack:** `{ .foo = 1, with area }` -- row is `{foo} ++ area`. Duplicates
-  allowed (head wins), so this can add a field the target's closed row rejects but
-  an open row absorbs. This is the value-level mirror of declaration `with`.
+- **Extend:** `{ .foo = 1, ..area }` -- row is `{foo} ++ area`, the expression
+  mirror of the `{ .x = a, ..rest }` pattern. Duplicates allowed (head wins), so
+  this can add a field the target's closed row rejects but an open row absorbs.
 
 ## Deferred / open
 

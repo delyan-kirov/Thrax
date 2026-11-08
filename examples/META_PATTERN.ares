@@ -10,7 +10,7 @@ $ @mod META_PATTERN
 #       hand-written literal. A spliced pattern may bind names, which the arm
 #       body uses as if they were written there.
 
-$ with OPT
+$ @import OPT
 
 # A generator that computes at build time and renders the result as a pattern.
 $ lit : @Int -> @Code = \n => @parse_str <| to_string n

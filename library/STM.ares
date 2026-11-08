@@ -16,7 +16,7 @@ $ @mod STM
 #       there never conflicts, and a `retry` runs the tasks still waiting to
 #       start until one changes what it read.
 
-$ with OPT
+$ @import OPT
 
 $ TVar : @alias a = @TVar a
 

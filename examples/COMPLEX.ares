@@ -6,9 +6,9 @@ $ @mod COMPLEX
 #       the `Cpx` struct. So the arithmetic below is ordinary interface resolution,
 #       and CPX holds the math.
 
-$ with CPX
-$ with LA
-$ with MATH
+$ @import CPX
+$ @import LA
+$ @import MATH
 
 # ---- literals ----
 # The suffix takes any numeric literal form: whole, fractional, or scientific.

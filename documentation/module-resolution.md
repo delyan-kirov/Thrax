@@ -17,9 +17,9 @@ how a module name resolves to a file.
 
 Every source file opens with `$ @mod NAME`. Files that share a name are one
 module. A module exposes its public names to any module that imports it with
-`$ with NAME`. The guiding rule for a name that an importer uses:
+`$ @import NAME`. The guiding rule for a name that an importer uses:
 
-**Strip by default.** A public name is used unqualified. `$ with LIST` makes
+**Strip by default.** A public name is used unqualified. `$ @import LIST` makes
 `length`, `map`, ... available as bare `length`, `map`, and they also stay
 reachable qualified as `LIST.length`.
 
@@ -59,9 +59,9 @@ usual type-directed pick runs among just its candidates.
 
 ### 1d. Aliased imports are qualified only
 
-`$ with V = VEC` brings none of `VEC`'s names in bare. Its values, types and
+`$ @import V = VEC` brings none of `VEC`'s names in bare. Its values, types and
 constructors are reachable only as `V.name`, `V.Type` and `V.Type.Tag`, and not
-as `VEC.name` either. `$ with VEC = VEC` keeps the module's own name as the
+as `VEC.name` either. `$ @import VEC = VEC` keeps the module's own name as the
 qualifier. The checker registers the module's exports under each alias, and
 lowering rewrites the alias back to the module, so `V.len` reaches `VEC.len`.
 Effect operations keep their effect's name as the qualifier (`State.get`).
@@ -165,7 +165,7 @@ records a directory, relative to `BUILD.ares`, that step 2 searches. The result 
 cached per file and modification time, so the LSP, the REPL and `@eval` pay for
 it once, and they reach it through the same `resolve_module_file`. While
 `BUILD.ares` itself compiles, step 2 is empty: it cannot import from the
-directories it adds. `@import_path` faults anywhere else, and `$ with BUILD` is
+directories it adds. `@import_path` faults anywhere else, and `$ @import BUILD` is
 rejected, so the search never depends on load order. All three are
 `BUILD_SCRIPT` errors (language reference, section 11.4).
 

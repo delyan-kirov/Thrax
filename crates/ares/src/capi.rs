@@ -216,7 +216,9 @@ pub unsafe extern "C" fn ares_parse(
         0 => Fragment::Expr,
         1 => Fragment::Items,
         2 => Fragment::Type,
-        _ => Fragment::Row,
+        3 => Fragment::Row,
+        4 => Fragment::Fields,
+        _ => Fragment::Variants,
     };
     let ok = guarded(err, || {
         let src = source(src, len)?;

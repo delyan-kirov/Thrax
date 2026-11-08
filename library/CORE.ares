@@ -185,6 +185,10 @@ $ @parse_items : @Str -> @Code = @extern "ares"
 $ @parse_type : @Str -> @Code = @extern "ares"
 # The entries of an effect row, for `<@e (X)>`: `"Log, State @Int"`.
 $ @parse_row : @Str -> @Code = @extern "ares"
+# A struct's fields, for an `@e` entry of a `@struct`: `"x: @Int, y: @Int"`.
+$ @parse_fields : @Str -> @Code = @extern "ares"
+# A union's variants, for an `@e` entry of a `@union`: `"Red, Rgb: {@Int, @Int, @Int}"`.
+$ @parse_variants : @Str -> @Code = @extern "ares"
 # Top-level items in canonical layout, exactly as `ares fmt` writes them. Text
 # the formatter refuses (it does not lex, or would change meaning) traps.
 $ @format : @Str -> @Str = @extern "ares"
@@ -224,7 +228,6 @@ $ Token : @union =
     If: @Str,
     Is: @Str,
     Else: @Str,
-    With: @Str,
     Do: @Str,
     Ctl: @Str,
     Comment: @Str,
@@ -254,12 +257,15 @@ $ @type_fields : @Str -> <@Meta> @Vec @Str = @extern "ares"
 $ @type_variants : @Str -> <@Meta> @Vec { @Str, @Int } = @extern "ares"
 $ @type_of : @Str -> <@Meta> @Str = @extern "ares"
 
-# What `@lookup` finds under a name: a struct or union with its declared shape, a
-# global value with its type as source, or nothing. It never faults, so a
-# generator matches `Missing` to handle a name nobody declared.
+# What `@lookup` finds under a name: a struct with its `{name, type}` fields, a
+# union with its `{tag, payload}` variants (the payload empty for a bare tag), a
+# global value with its type as source, or nothing. Types are source text, over
+# the declaration's own `params`. A generator matches `Missing` to handle a name
+# nobody declared; a type whose own `@e` entries have not been spliced in yet
+# faults, so the generator runs again once they are.
 $ Decl : @union =
-    Struct: { params: @Vec @Str, fields: @Vec @Str },
-    Union: { params: @Vec @Str, variants: @Vec { @Str, @Int } },
+    Struct: { params: @Vec @Str, fields: @Vec { @Str, @Str } },
+    Union: { params: @Vec @Str, variants: @Vec { @Str, @Str } },
     Value: @Str,
     Missing: {},
 $ @lookup : @Str -> <@Meta> Decl = @extern "ares"

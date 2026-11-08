@@ -214,7 +214,7 @@ pub fn analyze(root_path: &Path, overlay: &HashMap<PathBuf, String>) -> Result<S
 
 /// A failed load, with the error placed in the root document: an import of the
 /// root's own is reported as it is; one further down is reported at the
-/// root's `$ with` it is reached through.
+/// root's `$ @import` it is reached through.
 fn load_failure(e: driver::LoadError, root_name: &str) -> LoadFailure {
     let message = e.render().trim_end().to_string();
     let driver::LoadError::Import { diag, importer, path, root_span, .. } = e else {

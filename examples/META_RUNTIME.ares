@@ -9,8 +9,8 @@ $ @mod META_RUNTIME
 #       returns the value, which must be first-order data (no functions). The
 #       result type is whatever the use site says, so annotate it.
 
-$ with STR
-$ with VEC
+$ @import STR
+$ @import VEC
 
 # The source is only known when the program runs.
 $ source : @Str = STR.concat ["6", " * ", "7"]

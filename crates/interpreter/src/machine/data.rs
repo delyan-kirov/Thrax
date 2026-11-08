@@ -841,7 +841,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
         // The fragment is carried as its source text, which `@eval` and splicing
         // re-enter the driver's pipeline with.
-        Prim::ParseStr | Prim::ParseItems | Prim::ParseType | Prim::ParseRow => {
+        Prim::ParseStr | Prim::ParseItems | Prim::ParseType | Prim::ParseRow | Prim::ParseFields | Prim::ParseVariants => {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
                 .map_err(|_| fault(format!("{name}: the argument is not valid UTF-8")))?;
@@ -849,6 +849,8 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 Prim::ParseStr => Fragment::Expr,
                 Prim::ParseItems => Fragment::Items,
                 Prim::ParseType => Fragment::Type,
+                Prim::ParseFields => Fragment::Fields,
+                Prim::ParseVariants => Fragment::Variants,
                 _ => Fragment::Row,
             };
             check_fragment(src, kind)?;
@@ -943,8 +945,8 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         Prim::TypeKind => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let kind = match crate::machine::type_lookup(&ty)? {
-                crate::machine::TypeInfo::Struct { .. } => "struct",
-                crate::machine::TypeInfo::Union { .. } => "union",
+                crate::machine::TypeInfo::Struct(_) => "struct",
+                crate::machine::TypeInfo::Union(_) => "union",
                 crate::machine::TypeInfo::Value { .. } => "value",
             };
             Ok(Value::Str(Rc::new(kind.as_bytes().to_vec())))
@@ -961,12 +963,12 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         Prim::TypeFields => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let fields = match crate::machine::type_lookup(&ty)? {
-                crate::machine::TypeInfo::Struct { fields, .. } => fields,
+                crate::machine::TypeInfo::Struct(shape) => shape.members,
                 _ => return Err(fault(format!("@type_fields: `{ty}` is not a struct"))),
             };
             let items: Vec<PVal> = fields
                 .into_iter()
-                .map(|f| mk(Value::Str(Rc::new(f.bytes().to_vec()))))
+                .map(|(f, _)| mk(Value::Str(Rc::new(f.bytes().to_vec()))))
                 .collect();
             Ok(Value::Vector(Rc::new(items)))
         }
@@ -981,25 +983,20 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         // `Missing` rather than a fault when nothing is declared under the name.
         Prim::Lookup => {
             let name = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
-            let strs = |xs: &[StrId]| -> PVal<'p> {
-                mk(Value::Vector(Rc::new(xs.iter().map(|x| mk(Value::Str(Rc::new(x.as_str().as_bytes().to_vec())))).collect())))
+            let text = |s: &str| -> PVal<'p> { mk(Value::Str(Rc::new(s.as_bytes().to_vec()))) };
+            let strs = |xs: &[StrId]| -> PVal<'p> { mk(Value::Vector(Rc::new(xs.iter().map(|x| text(x.as_str())).collect()))) };
+            let pairs = |xs: Vec<(StrId, String)>| -> PVal<'p> {
+                let items = xs.iter().map(|(n, src)| mk(Value::Tuple(vec![text(n.as_str()), text(src)]))).collect();
+                mk(Value::Vector(Rc::new(items)))
             };
-            let (tag, fields) = match crate::machine::type_lookup(&name) {
-                Ok(crate::machine::TypeInfo::Struct { params, fields }) => ("Struct", vec![strs(&params), strs(&fields)]),
-                Ok(crate::machine::TypeInfo::Union { params, variants }) => {
-                    let vs = variants
-                        .iter()
-                        .map(|(tag, arity)| {
-                            mk(Value::Tuple(vec![
-                                mk(Value::Str(Rc::new(tag.as_str().as_bytes().to_vec()))),
-                                mk(Value::Int(*arity as i64)),
-                            ]))
-                        })
-                        .collect();
-                    ("Union", vec![strs(&params), mk(Value::Vector(Rc::new(vs)))])
+            let (tag, fields) = match crate::machine::find_declared(&name)? {
+                Some(crate::machine::TypeInfo::Struct(s)) => ("Struct", vec![strs(&s.params), pairs(s.members)]),
+                Some(crate::machine::TypeInfo::Union(s)) => {
+                    let vs = s.members.into_iter().map(|(tag, _, payload)| (tag, payload)).collect();
+                    ("Union", vec![strs(&s.params), pairs(vs)])
                 }
-                Ok(crate::machine::TypeInfo::Value { ty }) => ("Value", vec![mk(Value::Str(Rc::new(ty.into_bytes())))]),
-                Err(_) => ("Missing", vec![]),
+                Some(crate::machine::TypeInfo::Value { ty }) => ("Value", vec![text(&ty)]),
+                None => ("Missing", vec![]),
             };
             Ok(Value::Variant { ty: "Decl".into(), tag: tag.into(), fields })
         }
@@ -1052,12 +1049,12 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         Prim::TypeVariants => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let variants = match crate::machine::type_lookup(&ty)? {
-                crate::machine::TypeInfo::Union { variants, .. } => variants,
+                crate::machine::TypeInfo::Union(shape) => shape.members,
                 _ => return Err(fault(format!("@type_variants: `{ty}` is not a union"))),
             };
             let items: Vec<PVal> = variants
                 .into_iter()
-                .map(|(tag, arity)| {
+                .map(|(tag, arity, _)| {
                     mk(Value::Tuple(vec![
                         mk(Value::Str(Rc::new(tag.bytes().to_vec()))),
                         mk(Value::Int(arity as i64)),
@@ -1099,6 +1096,10 @@ pub enum Fragment {
     Items,
     Type,
     Row,
+    /// A struct's fields, for an `@e` entry in a `@struct` declaration.
+    Fields,
+    /// A union's variants, for an `@e` entry in a `@union` declaration.
+    Variants,
 }
 
 /// Check that `src` parses as `kind`, by wrapping it in a scratch module. A
@@ -1110,6 +1111,8 @@ pub fn check_fragment(src: &str, kind: Fragment) -> Result<()> {
         Fragment::Items => ("$ @mod _META\n", ""),
         Fragment::Type => ("$ @mod _META\n$ _t :\n", "\n= {}"),
         Fragment::Row => ("$ @mod _META\n$ _r : {} -> <\n", "\n> {} = {}"),
+        Fragment::Fields => ("$ @mod _META\n$ Fields : @struct =\n", ""),
+        Fragment::Variants => ("$ @mod _META\n$ Variants : @union =\n", ""),
     };
     frontend::parse(&format!("{prefix}{src}{suffix}"))
         .map(|_| ())
@@ -1157,7 +1160,6 @@ fn token_kind_name(kind: frontend::Kind) -> &'static str {
         If => "If",
         Is => "Is",
         Else => "Else",
-        With => "With",
         Do => "Do",
         Ctl => "Ctl",
         Comment => "Comment",

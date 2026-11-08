@@ -47,8 +47,8 @@ use std::fmt::Display;
 use std::rc::Rc;
 
 use crate::parser::data::{
-    Ast, Binding, EffectRow, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField,
-    RowEntry, SliceSlot, Ty, UseField,
+    Ast, Binding, EffectRow, EntrySplice, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program,
+    RecField, RowEntry, SliceSlot, Ty, UseField,
 };
 use utilities::{Aol, Slice, StrId};
 use utilities::{diag, Applicability, Code, Diagnostic, Edit, ExternArg, Result, Span};
@@ -59,7 +59,10 @@ use crate::typing::unify::Unifier;
 use algorithm_w::*;
 use declarations::*;
 use imports::*;
-pub use resolved::{collect_resolved, CtxVal, Declarations, ExternSpec, HookImpl, LazySlots, ReflectInfo, Resolved};
+pub use resolved::{
+    collect_resolved, CtxVal, Declarations, ExternSpec, HookImpl, LazySlots, ReflectInfo, Resolved, Shape, StructShape,
+    UnionShape,
+};
 pub use types::BASE_TYPES;
 use types::*;
 
@@ -78,11 +81,6 @@ struct StructInfo {
     /// struct otherwise; only its layout and single-member construction differ.
     c_union: bool,
 }
-
-/// Pending `with Other` splices, keyed by the type that wrote them: whether it
-/// is a struct (rather than a union), and each included name with the span it
-/// was written at, so a bad include carets its own `with`.
-type PendingIncludes = HashMap<StrId, (bool, Vec<(StrId, Span)>)>;
 
 /// A declared union type: implicit `params` and one [`VariantSig`] per variant.
 #[derive(Clone)]
@@ -192,10 +190,13 @@ pub struct Checker<'a> {
     instances: HashMap<StrId, Vec<Inst>>,
     /// This module's own instances, re-exported to importers.
     own_instances: Vec<(StrId, Inst)>,
-    /// Types with unresolved `with Other` splices, `name -> (is_struct, includes)`.
-    /// Drained as each type's members are copied in (see `splice_includes`). This
-    /// is a declaration-time convenience only; no type relationship is recorded.
-    pending_includes: PendingIncludes,
+    /// This module's types that still hold `@e` entry splices. A lenient round
+    /// holds back a global whose body fails while any remain, since the entries a
+    /// generator has yet to splice in may be what it is missing.
+    pending_types: HashSet<StrId>,
+    /// Whether a module this one imports awaits `@e` entry splices, itself or
+    /// through its own imports: their types reach this module incomplete too.
+    imported_pending: bool,
     /// Type variables introduced by integer literals, which may be Int or Real;
     /// leftovers default to Int at the definition boundary. Each carries the
     /// literal's source span so a defaulting error can point at it.
@@ -230,7 +231,7 @@ pub struct Checker<'a> {
     imported: HashMap<StrId, Vec<(Type, StrId)>>,
     /// Imported names reachable qualified as `MOD.name` (or `ALIAS.name`).
     qualified: HashMap<StrId, HashMap<StrId, Vec<Type>>>,
-    /// Each import alias in scope (`$ with V = VEC`), mapped to its module.
+    /// Each import alias in scope (`$ @import V = VEC`), mapped to its module.
     alias_modules: HashMap<StrId, StrId>,
     /// Values an aliased-only import exports, mapped to the aliases that reach
     /// them, so a bare use can name the qualified form.
@@ -296,7 +297,7 @@ pub struct Checker<'a> {
     /// Names of items the parser could not read. A use of one is not reported
     /// again: it gets the error type.
     broken: HashSet<StrId>,
-    /// Where a missing `$ with M` goes, and the text around the module name:
+    /// Where a missing `$ @import M` goes, and the text around the module name:
     /// after the last import, or before the first item.
     import_anchor: Option<(usize, &'static str, &'static str)>,
     /// Modules the driver could import, by the value names they define, for an
@@ -308,10 +309,6 @@ pub struct Checker<'a> {
     /// Each expression's inferred type, kept only when an editor asks
     /// ([`Self::set_record_types`]): hover reads it after the check.
     expr_types: Option<HashMap<Aol<Expr>, Type>>,
-    /// The ordered field names each `with subject in body` brings into scope,
-    /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
-    /// so the Core has no name-binding-by-type node and stays De-Bruijn indexable.
-    with_fields: HashMap<Aol<Expr>, Vec<StrId>>,
     /// Each `@extern` node's type variable, zonked after solving to recover the
     /// concrete arrow the declaration constrained it to. Lowering reads the
     /// flattened arg/result marshalling names off this.
@@ -486,7 +483,8 @@ impl<'a> Checker<'a> {
             ctx_override: HashMap::new(),
             instances: HashMap::new(),
             own_instances: Vec::new(),
-            pending_includes: HashMap::new(),
+            pending_types: HashSet::new(),
+            imported_pending: false,
             numeric: Vec::new(),
             own_values: Vec::new(),
             own_type_names: Vec::new(),
@@ -521,7 +519,6 @@ impl<'a> Checker<'a> {
             import_hints: Rc::new(HashMap::new()),
             expr_types: None,
             holes: Vec::new(),
-            with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
             extern_specs: HashMap::new(),
             own_externs: HashMap::new(),
@@ -556,6 +553,12 @@ impl<'a> Checker<'a> {
     /// The sites a lenient check deferred. See [`Self::deferred_sites`].
     pub fn deferred_sites(&self) -> &HashSet<Aol<Expr>> {
         &self.deferred_sites
+    }
+
+    /// Whether some type this module sees, its own or an imported one, still
+    /// waits for its `@e` entries, so a body failing against it may only be early.
+    pub(crate) fn awaits_splices(&self) -> bool {
+        !self.pending_types.is_empty() || self.imported_pending
     }
 
     /// Take a lenient branch at `site`: leave it unresolved for a later round.
@@ -774,6 +777,16 @@ impl<'a> Checker<'a> {
             self.report_holes();
             match checked {
                 Ok(()) => self.require_signatures(&component, &defs, &types),
+                // A type still waiting on its generated entries may be what this
+                // component lacks, so a lenient round holds it back for a later one
+                // rather than failing. See Note [Deferred sites hold back generators].
+                Err(_) if self.lenient && self.awaits_splices() => {
+                    self.unknown_type = None;
+                    for &i in &component {
+                        self.defer(Some(defs[i].body));
+                    }
+                    self.recover_component(level, &component, &defs, &mut types);
+                }
                 Err(d) => {
                     let d = self.unknown_type.take().unwrap_or(d);
                     self.errors.push(d);
@@ -823,14 +836,26 @@ impl<'a> Checker<'a> {
             .collect();
         for e in runs {
             self.ambient = self.meta_ambient();
-            let t = self.infer(e)?;
-            self.require_code(t)?;
-            // A directive is its own boundary: whatever it planned (an overload, a
-            // context) is resolved here, since no definition encloses it.
-            self.solve_pending()?;
-            self.resolve_pending_ctx()?;
+            let checked = self.check_run(e);
+            if checked.is_err() && self.lenient && self.awaits_splices() {
+                self.pending.clear();
+                self.ctx_pending.clear();
+                self.defer(Some(e));
+                continue;
+            }
+            checked?;
         }
         Ok(out)
+    }
+
+    /// Check a `$ @e` directive's operand builds `@Code`. A directive is its own
+    /// boundary: whatever it planned (an overload, a context) is resolved here,
+    /// since no definition encloses it.
+    fn check_run(&mut self, e: Aol<Expr>) -> Result<()> {
+        let t = self.infer(e)?;
+        self.require_code(t)?;
+        self.solve_pending()?;
+        self.resolve_pending_ctx()
     }
 
     /// The ambient a top-level body starts under: the pure closed row normally, or
@@ -1399,11 +1424,11 @@ fn free_globals(
         }
         Expr::Record {
             fields,
-            with,
+            extend,
             update,
         } => {
             free_globals_field_inits(ast, ast.slice(*fields), globals, bound, out);
-            for base in with.iter().chain(update.iter()) {
+            for base in extend.iter().chain(update.iter()) {
                 free_globals(ast, *base, globals, bound, out);
             }
         }
@@ -1452,10 +1477,6 @@ fn free_globals(
             free_globals_meta_patterns(ast, metas, globals, out);
             free_globals(ast, *body, globals, bound, out);
             bound.truncate(mark);
-        }
-        Expr::With { subject, body } => {
-            free_globals(ast, *subject, globals, bound, out);
-            free_globals(ast, *body, globals, bound, out);
         }
         Expr::Handle { body, handler } => {
             free_globals(ast, *body, globals, bound, out);

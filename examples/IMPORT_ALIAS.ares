@@ -2,13 +2,12 @@ $ @mod IMPORT_ALIAS
 
 # \file IMPORT_ALIAS.ares
 # \info Qualified-only imports: `V = VEC` reaches VEC's names only as `V.name`,
-#       and `LIST = LIST` keeps LIST's own name as the qualifier. One `$ with`
-#       lists several imports, separated by commas.
+#       and `LIST = LIST` keeps LIST's own name as the qualifier. Each
+#       `$ @import` names one module.
 
-$ with
-    V = VEC,
-    LIST = LIST,
-    O = OPT,
+$ @import V = VEC
+$ @import LIST = LIST
+$ @import O = OPT
 
 # VEC and LIST both export `length`, `map`, `foldl` and `find`. Neither import
 # brings them in bare, so there is nothing to disambiguate.

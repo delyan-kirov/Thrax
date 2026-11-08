@@ -19,7 +19,7 @@ $ @mod ASYNC
 #       where `run_async` stops. Scheduling is otherwise deterministic, so both
 #       engines run a group identically.
 
-$ with OPT
+$ @import OPT
 
 # A channel of the group, carrying messages of type `m`.
 $ Chan : @struct m = id: @Int,

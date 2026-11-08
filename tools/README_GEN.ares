@@ -1,6 +1,6 @@
 $ @mod README_GEN
 
-$ with STR
+$ @import STR
 
 # \file README_GEN.ares
 # \info Parse and test examples in readme and generate the README file
@@ -185,7 +185,7 @@ $ compiling : @Str =
 
 $ features : @Str =
     "\n## Features\n\n"
-        ++ "- **Algebraic data types**: structs and sum types, generic by default, composed with `with`-splicing.\n"
+        ++ "- **Algebraic data types**: structs and sum types, generic by default; a declaration can copy another's members with an `@e` splice.\n"
         ++ "- **Pattern matching**: nested, literal, string, and range patterns, `++` sequence patterns that match a prefix, a suffix, or both ends, and fall-through guards.\n"
         ++ "- **Typed algebraic effects with handlers**: the effect row is part of the type; continuations are first-class and resumable.\n"
         ++ "- **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.\n"

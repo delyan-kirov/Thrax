@@ -1931,12 +1931,12 @@ pub(crate) fn meta_check(src: &str) -> Result<String> {
 }
 
 /// The declared shape of a user type, as compile-time reflection reports it: its
-/// type parameters, plus a struct's field names or a union's variants (each with
-/// its payload arity).
+/// type parameters, plus a struct's fields or a union's variants, with their
+/// types as source.
 #[derive(Clone)]
 pub enum TypeInfo {
-    Struct { params: Vec<StrId>, fields: Vec<StrId> },
-    Union { params: Vec<StrId>, variants: Vec<(StrId, usize)> },
+    Struct(frontend::typing::Shape<frontend::typing::StructShape>),
+    Union(frontend::typing::Shape<frontend::typing::UnionShape>),
     /// A global value, with its type as source.
     Value { ty: String },
 }
@@ -1945,8 +1945,18 @@ impl TypeInfo {
     /// The type's declared parameter names, in order (empty for a monomorphic type).
     pub fn params(&self) -> &[StrId] {
         match self {
-            TypeInfo::Struct { params, .. } | TypeInfo::Union { params, .. } => params,
+            TypeInfo::Struct(s) => &s.params,
+            TypeInfo::Union(s) => &s.params,
             TypeInfo::Value { .. } => &[],
+        }
+    }
+
+    /// Whether the declaration still waits for an `@e` splice of its members.
+    fn pending(&self) -> bool {
+        match self {
+            TypeInfo::Struct(s) => s.pending,
+            TypeInfo::Union(s) => s.pending,
+            TypeInfo::Value { .. } => false,
         }
     }
 }
@@ -1991,14 +2001,23 @@ pub fn set_type_host(host: Option<Box<dyn Fn(&str) -> Option<TypeInfo>>>) {
 /// Look up a declared type's shape, or fault if reflection is unavailable (called
 /// outside compile time) or the name is unknown.
 pub(crate) fn type_lookup(name: &str) -> Result<TypeInfo> {
-    TYPE_HOST.with(|c| match &*c.borrow() {
-        Some(host) => host(name).ok_or_else(|| {
-            fault(format!("reflection: nothing named `{name}` is declared"))
-        }),
-        None => Err(fault(
-            "type reflection is only available at compile time (inside `$ @e`)",
-        )),
-    })
+    find_declared(name)?.ok_or_else(|| fault(format!("reflection: nothing named `{name}` is declared")))
+}
+
+/// What is declared under `name`, if anything. Faults outside compile time, and
+/// on a type whose members an `@e` splice has yet to generate: the generator
+/// asking then runs again next round, once they are spliced in.
+pub(crate) fn find_declared(name: &str) -> Result<Option<TypeInfo>> {
+    let info = TYPE_HOST.with(|c| match &*c.borrow() {
+        Some(host) => Ok(host(name)),
+        None => Err(fault("type reflection is only available at compile time (inside `$ @e`)")),
+    })?;
+    match info {
+        Some(info) if info.pending() => Err(fault(format!(
+            "reflection: `{name}`'s declaration holds an `@e` splice that has not run yet"
+        ))),
+        info => Ok(info),
+    }
 }
 
 /// Run the program entry (`@main`): apply it to `argv` as a `@Vec @Str` and
