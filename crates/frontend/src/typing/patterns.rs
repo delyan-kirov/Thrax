@@ -31,10 +31,7 @@ impl<'a> Checker<'a> {
         }
         match self.pnode(pat) {
             Pattern::Wild => Ok(()),
-            Pattern::Var(name) => {
-                self.bind(*name, expected);
-                Ok(())
-            }
+            Pattern::Var(name) => self.bind_local(*name, expected),
             // The spliced pattern is unknown until the driver runs `X`, so it
             // matches the scrutinee at any type and binds nothing here. Only a
             // lenient round sees one; the final compile sees the spliced source.
@@ -165,7 +162,7 @@ impl<'a> Checker<'a> {
         for (name, t, pat) in entries {
             match pat {
                 Some(p) => self.type_pattern(p, t)?,
-                None => self.bind(name, t),
+                None => self.bind_local(name, t)?,
             }
         }
         // `..name` binds the leftover fields as a record over the row tail (which
@@ -222,7 +219,7 @@ impl<'a> Checker<'a> {
                     let name = *name;
                     let want = self.struct_field_ty(&info, &mut subst, Some(name), i);
                     let want = want.ok_or_else(|| no_such_field("struct", ty, name))?;
-                    self.bind(name, want);
+                    self.bind_local(name, want)?;
                 }
             }
         }
@@ -287,7 +284,7 @@ impl<'a> Checker<'a> {
                     let want = variant_field_ty(&payload, Some(name), i);
                     let want =
                         want.ok_or_else(|| no_such_field("constructor", &label, name))?;
-                    self.bind(name, want);
+                    self.bind_local(name, want)?;
                 }
             }
         }

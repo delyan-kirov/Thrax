@@ -167,6 +167,7 @@ pub const ALL_CODES: &[Code] = &[
     Code::FilenameMismatch,
     Code::AmbiguousName,
     Code::DuplicateSymbol,
+    Code::ShadowedGlobal,
     Code::UnknownModule,
     Code::PrivateSymbol,
     Code::NoEntry,

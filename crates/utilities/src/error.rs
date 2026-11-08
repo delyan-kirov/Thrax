@@ -82,6 +82,8 @@ pub enum Code {
     FilenameMismatch,
     AmbiguousName,
     DuplicateSymbol,
+    /// A local binder reuses the name of one of its module's globals.
+    ShadowedGlobal,
     UnknownModule,
     PrivateSymbol,
     NoEntry,
@@ -129,6 +131,7 @@ impl Code {
             FilenameMismatch => "FILENAME_MISMATCH",
             AmbiguousName => "AMBIGUOUS_NAME",
             DuplicateSymbol => "DUPLICATE_SYMBOL",
+            ShadowedGlobal => "SHADOWED_GLOBAL",
             UnknownModule => "UNKNOWN_MODULE",
             PrivateSymbol => "PRIVATE_SYMBOL",
             NoEntry => "NO_ENTRY",

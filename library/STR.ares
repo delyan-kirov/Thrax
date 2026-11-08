@@ -196,13 +196,13 @@ $ digits_val : @Str -> @Int -> @Int -> Option @Int = \s i acc =>
         let c = @array_get s i in
         if is_digit c => digits_val s (i + 1) (acc * 10 + (c - 48)) else Option.None
 
-# Does `needle` occur in `s` at byte `at`, from needle byte `j` on? Compares in
+# Does `needle` occur in `s` at byte `pos`, from needle byte `j` on? Compares in
 # place, so a search allocates nothing per position.
-$ matches_at : @Str -> @Str -> @Int -> @Int -> @Bool = \s needle at j =>
+$ matches_at : @Str -> @Str -> @Int -> @Int -> @Bool = \s needle pos j =>
     if j >= @array_len needle =>
         @true
-    else if (@array_get s (at + j)) == (@array_get needle j) =>
-        matches_at s needle at (j + 1)
+    else if (@array_get s (pos + j)) == (@array_get needle j) =>
+        matches_at s needle pos (j + 1)
     else
         @false
 

@@ -55,7 +55,7 @@ $ logged_value : @Int =
     do logged {}
     ctl k
     | State.get u => k 9
-    | Log.log n   => k {}
+    | Log.log _   => k {}
     | v           => v
 
 $ ck_scalar : @Int = if n == 1024 => 0 else 1

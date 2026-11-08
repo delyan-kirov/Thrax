@@ -887,6 +887,11 @@ two imports bring in has no bare meaning, so a use of it says so and names the
 owners (`A.name` and `B.name` still reach either). An operation that covers several
 types is an interface (§7.4), not several definitions.
 
+A local binder (a lambda parameter, a `let`, a pattern variable, a record
+parameter's field, a handler binder) cannot reuse the name of a global defined in
+the same module (`SHADOWED_GLOBAL`), so inside a module a global's name always
+means that global. Imported names may be shadowed locally.
+
 ## 7.4 Interfaces and `@use` parameters
 An interface is an ordinary `@struct` whose fields are its operations; implementing
 it is defining a value of that type. A function that needs one declares a `@use`

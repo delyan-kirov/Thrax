@@ -251,7 +251,7 @@ fn comparison_intrinsics_match_interpreter() {
 /// per-type overload for a primitive.
 #[test]
 fn user_comparison_instance_compiles() {
-    let src = "$ @mod M\n$ T : @struct = v: @Int\n               $ ord_t : IOrd T = .{ .lt = \\a b => a.v < b.v }\n               $ a : @Int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
+    let src = "$ @mod M\n$ T : @struct = v: @Int\n               $ ord_t : IOrd T = .{ .lt = \\x y => x.v < y.v }\n               $ a : @Int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
     assert_matches(src, "a");
 }
 
@@ -952,7 +952,7 @@ fn lists_and_length() {
     let src = "$ @mod T\n\
                $ len : @Vec t -> @Int =\n\
                \tlet helper : @Vec t -> @Int -> @Int = \\l n =>\n\
-               \t\tl |> \\ | [] => n | _ :: xs => helper xs (n + 1)\n\
+               \t\tl |> \\ | [] => n | _ :: rest => helper rest (n + 1)\n\
                \t in \\l => helper l 0\n\
                $ xs : @Vec @Int = [1, 2, 3]\n\
                $ test : @Int = len xs\n";
@@ -1139,7 +1139,7 @@ fn bracket_hooks_match_interpreter() {
                $ v : @Vec @Int = [1 ... 4]\n\
                $ w : @Vec @Int = 9 :: v.[1 ... 2]\n\
                $ b : @Array = [7, 8, 9]\n\
-               $ head : @Array -> @Int = \\a => a |> \\ | [x] ++ r => x + @array_len r | _ => 0\n\
+               $ head : @Array -> @Int = \\a => a |> \\ | [x] ++ rest => x + @array_len rest | _ => 0\n\
                $ r : @Int = (s.hi - s.lo) + @vec_len v + @vec_get w 0 + head b";
     // 4 + 4 + 9 + (7+2)
     assert_matches(src, "r");

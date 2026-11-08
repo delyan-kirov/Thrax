@@ -788,7 +788,7 @@ fn indexing_hook_returns_non_element() {
                $ Maybe : @union a = Nada: {}, Just: {a}\n\
                $ Dict : @struct = base: @Int\n\
                $ ix_dict : @IIndex Dict @Int (Maybe @Int) = .{\n\
-               \t.index = \\d k => if k < d.base => Maybe.Just.{ d.base + k } else Maybe.Nada,\n\
+               \t.index = \\m k => if k < m.base => Maybe.Just.{ m.base + k } else Maybe.Nada,\n\
                }\n\
                $ d : Dict = .{ .base = 10 }\n\
                $ r : @Int = d.[3] |> \\ | Maybe.Just.{v} => v | _ => 0"; // 10 + 3
@@ -802,7 +802,7 @@ fn literal_construction_hooks() {
     // user type instead of the built-in default.
     let src = "$ @mod M\n\
         $ MyStr : @struct = bytes: @Str\n\
-        $ sl : @IStrLit MyStr = .{ .of_str = \\s => MyStr.{ .bytes = s } }\n\
+        $ sl : @IStrLit MyStr = .{ .of_str = \\b => MyStr.{ .bytes = b } }\n\
         $ Wrap : @struct = n: @Int\n\
         $ il : @IIntLit Wrap = .{ .of_int = \\x => Wrap.{ .n = x } }\n\
         $ RWrap : @struct = r: @Float64\n\
@@ -893,7 +893,7 @@ fn list_literal_defaults_to_vec_with_patterns() {
         $ xs : @Vec @Int = [10, 20, 30]\n\
         $ len : @Int = @vec_len xs\n\
         $ head : @Int = xs |> \\ | h :: _ => h | _ => 0\n\
-        $ tak2 : @Int = [1, 2, 3, 4] |> \\ | [a, b] ++ r => a + b + @vec_len r | _ => 0\n\
+        $ tak2 : @Int = [1, 2, 3, 4] |> \\ | [a, b] ++ rest => a + b + @vec_len rest | _ => 0\n\
         $ r : @Int = len * 100 + head + tak2"; // 300 + 10 + (1+2+2)
     assert_eq!(run(src, "r"), "315");
 }
@@ -976,7 +976,7 @@ fn cons_operator_takes_an_instance() {
     // defining an instance, as with any other interface.
     let src = "$ @mod M\n\
         $ Stack : @struct a = items: @Vec a\n\
-        $ cons_stack : ICons a (Stack a) = .{ .cons = \\x s => Stack.{ .items = x :: s.items } }\n\
+        $ cons_stack : ICons a (Stack a) = .{ .cons = \\x st => Stack.{ .items = x :: st.items } }\n\
         $ s : Stack @Int = 1 :: 2 :: Stack.{ .items = [] }\n\
         $ v : @Vec @Int = 9 :: [8]\n\
         $ r : @Int = @vec_get s.items 0 * 100 + @vec_len s.items * 10 + @vec_get v 0";
@@ -990,7 +990,7 @@ fn slice_hook_covers_sequences_and_user_types() {
     let src = "$ @mod M\n\
         $ Tape : @struct = cells: @Vec @Int\n\
         $ sl : @ISlice Tape Tape = .{\n\
-        \t.slice = \\t lo hi => Tape.{ .cells = t.cells.[lo ... hi] },\n\
+        \t.slice = \\tp lo hi => Tape.{ .cells = tp.cells.[lo ... hi] },\n\
         }\n\
         $ v : @Vec @Int = [10, 20, 30, 40]\n\
         $ s : @Str = \"hello\"\n\
@@ -1160,7 +1160,7 @@ fn finale_runs_cleanup_on_completion_abort_and_nesting() {
         $ Y : @effect = yield : @Int -> {},\n\
         $ Exn : @effect = throw : @Str -> a,\n\
         $ sum : ({} -> <Y> @Int) -> @Int = \
-          \\body => do body {} ctl k | Y.yield v => v + k {} | r => r\n";
+          \\body => do body {} ctl k | Y.yield v => v + k {} | x => x\n";
     // Normal completion: body yields 1 and returns 100, cleanup yields 2 -> 103.
     let normal =
         format!("{prelude}$ r : @Int = sum (\\_ => @finale (\\_ => Y.yield 2) (\\_ => let _ = Y.yield 1 in 100))");

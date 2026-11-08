@@ -1,0 +1,14 @@
+$ @mod SHADOWED_GLOBAL
+
+# A module's globals cannot be rebound by any local binder.
+$ c : @Int = 5
+$ P : @struct = c: @Int, d: @Int
+
+$ lambda : @Int -> @Int = \c => c + 1  #~ error[SHADOWED_GLOBAL]: `c` shadows the global `c` of module `SHADOWED_GLOBAL`
+$ arm : @Int -> @Int = \n => n |> \ | 1 => c + 10 | c => c + 20  #~ error[SHADOWED_GLOBAL]: `c` shadows the global `c`
+$ bound : @Int = let c = 1 in c  #~ error[SHADOWED_GLOBAL]: `c` shadows the global `c`
+$ field : P -> @Int = \p => p |> \ | P.{ c, d } => c + d  #~ error[SHADOWED_GLOBAL]: `c` shadows the global `c`
+$ record : { c: @Int } -> @Int = c  #~ error[SHADOWED_GLOBAL]: `c` shadows the global `c`
+
+# Imported names may be shadowed: `max` comes from CORE.
+$ imported : @Int -> @Int = \max => max + c

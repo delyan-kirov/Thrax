@@ -160,6 +160,23 @@ definition.
 To give an operation several types, declare an interface and define one
 instance per type.
 
+## SHADOWED_GLOBAL
+
+A local binder (a lambda parameter, a `let`, a pattern variable, a field of a
+record parameter, or a handler binder) has the name of a global defined in the
+same module. Inside a module a name means one thing, so a global cannot be
+rebound locally:
+
+```text
+$ c : @Int = 5
+$ f : @Int -> @Int = \n => n |> \ | 1 => c + 10 | c => c + 20  # error
+```
+
+Rename the local. A pattern cannot test against a global's value; bind a new
+name and compare it in a guard, `| x if x == c => ...`. Names imported from
+other modules may be shadowed, so a library adding a name never breaks the
+modules that import it.
+
 ## UNKNOWN_MODULE
 
 A `$ @import MODULE` names a module that cannot be found, or a qualified name
