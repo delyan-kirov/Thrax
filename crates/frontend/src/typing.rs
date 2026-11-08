@@ -557,7 +557,7 @@ impl<'a> Checker<'a> {
 
     /// Whether some type this module sees, its own or an imported one, still
     /// waits for its `@e` entries, so a body failing against it may only be early.
-    pub(crate) fn awaits_splices(&self) -> bool {
+    pub fn awaits_splices(&self) -> bool {
         !self.pending_types.is_empty() || self.imported_pending
     }
 

@@ -16,19 +16,62 @@ mod resident;
 use resident::ModuleRun;
 
 // These shadow the std macros for this whole module, so a diagnostic printed
-// while a progress line is open starts on a line of its own.
+// while a progress line is open starts on a line of its own. Under
+// [`capture_stderr`] they write to its buffer instead.
 macro_rules! eprint {
-    ($($arg:tt)*) => {{
-        utilities::progress::seal();
-        std::eprint!($($arg)*)
-    }};
+    ($($arg:tt)*) => {
+        match format_args!($($arg)*) {
+            args => {
+                if !$crate::driver::write_captured(args) {
+                    utilities::progress::seal();
+                    std::eprint!("{args}")
+                }
+            }
+        }
+    };
 }
 
 macro_rules! eprintln {
-    ($($arg:tt)*) => {{
-        utilities::progress::seal();
-        std::eprintln!($($arg)*)
-    }};
+    ($($arg:tt)*) => {
+        eprint!("{}\n", format_args!($($arg)*))
+    };
+}
+
+thread_local! {
+    /// What the driver's `eprint!` writes while [`capture_stderr`] runs.
+    static CAPTURED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Append to the [`capture_stderr`] buffer; false when nothing is capturing.
+pub(crate) fn write_captured(args: std::fmt::Arguments<'_>) -> bool {
+    CAPTURED.with(|c| match c.borrow_mut().as_mut() {
+        Some(buf) => {
+            std::fmt::Write::write_fmt(buf, args).expect("writing to a String");
+            true
+        }
+        None => false,
+    })
+}
+
+/// Run `f` with the driver's diagnostics kept in a buffer rather than printed,
+/// for a host with no stderr to read (the browser playground). A failure
+/// returns what `f` would have printed.
+fn capture_stderr<T>(f: impl FnOnce() -> Result<T, ExitCode>) -> Result<T, String> {
+    let outer = CAPTURED.with(|c| c.borrow_mut().replace(String::new()));
+    let result = f();
+    let text = CAPTURED.with(|c| std::mem::replace(&mut *c.borrow_mut(), outer)).unwrap_or_default();
+    result.map_err(|_| text)
+}
+
+/// How a compile finds a module it imports: the module's diagnostic path and
+/// source. A file compile searches the disk ([`disk_fetch`]); a host with no
+/// filesystem hands over its own ([`compile_program`]).
+type Fetch = Rc<dyn Fn(&str) -> Result<(String, String), String>>;
+
+/// The [`Fetch`] of a file compile: modules resolved around `root_dir`.
+fn disk_fetch(root_dir: &Path) -> Fetch {
+    let root_dir = root_dir.to_path_buf();
+    Rc::new(move |name| load_module(name, &root_dir))
 }
 
 /// Report the `steps` steps of a command on stderr, as it takes them, when that
@@ -194,7 +237,7 @@ pub(crate) fn load_core(
 /// initial set comes from [`load_core`]; this reopens it after an expansion round,
 /// where a `@build` or a `$ @e` may have injected `$ @import M` for a module no
 /// hand-written source mentions.
-fn load_injected_imports(loaded: &mut Loaded, root_dir: &Path) -> Result<(), String> {
+fn load_injected_imports(loaded: &mut Loaded, fetch: &Fetch) -> Result<(), String> {
     let mut queue: Vec<(String, utilities::Span, usize)> = Vec::new();
     for (i, (_, _, src)) in loaded.sources.iter().enumerate() {
         queue.extend(parse_imports(src).into_iter().map(|(name, span)| (name, span, i)));
@@ -203,7 +246,7 @@ fn load_injected_imports(loaded: &mut Loaded, root_dir: &Path) -> Result<(), Str
         if loaded.index.contains_key(&name) {
             continue;
         }
-        let fetched = if name == BUILD_SCRIPT { Err(String::new()) } else { load_module(&name, root_dir) };
+        let fetched = if name == BUILD_SCRIPT { Err(String::new()) } else { fetch(&name) };
         let (path, src) = fetched.map_err(|msg| {
             let (importer, imp_path, imp_src) = &loaded.sources[importer];
             import_failure(&msg, &name, importer, span).render(imp_src, imp_path)
@@ -943,15 +986,16 @@ fn expand_all(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    let (lowered, plan) = expand_loaded(&mut loaded, &root_dir, want_entry, false)?;
+    let (lowered, plan) = expand_loaded(&mut loaded, &disk_fetch(&root_dir), want_entry, false)?;
     Ok((lowered, loaded, plan))
 }
 
 /// The expansion loop of [`expand_all`] over sources already loaded, which it
-/// rewrites in place. `shell` compiles the root as the shell's session.
+/// rewrites in place, finding modules a generator imports through `fetch`.
+/// `shell` compiles the root as the shell's session.
 fn expand_loaded(
     loaded: &mut Loaded,
-    root_dir: &Path,
+    fetch: &Fetch,
     want_entry: bool,
     shell: bool,
 ) -> Result<(Vec<frontend::core::CoreProgram>, BuildPlan), ExitCode> {
@@ -965,7 +1009,7 @@ fn expand_loaded(
     loop {
         // A generator can inject `$ @import M` for a module nothing imported yet, so
         // the load set is reopened every round rather than fixed before the first.
-        if let Err(msg) = load_injected_imports(loaded, root_dir) {
+        if let Err(msg) = load_injected_imports(loaded, fetch) {
             eprintln!("{}", msg.trim_end());
             return Err(ExitCode::FAILURE);
         }
@@ -1051,8 +1095,8 @@ fn expand_loaded(
                 .collect(),
         );
         let enter = |module: &str| {
-            interpreter::machine::set_meta_eval(Some(round_eval_host(&round_sources, module, root_dir)));
-            interpreter::machine::set_meta_check(Some(round_check_host(&round_sources, module, root_dir)));
+            interpreter::machine::set_meta_eval(Some(round_eval_host(&round_sources, module, fetch)));
+            interpreter::machine::set_meta_check(Some(round_check_host(&round_sources, module, fetch)));
             interpreter::machine::set_meta_scope(reflect.scopes.get(&utilities::StrId::intern(module)).cloned());
             interpreter::machine::set_type_host(Some(reflect_host(Rc::clone(&reflect), module.to_string())));
         };
@@ -1421,8 +1465,9 @@ impl Session {
     pub fn enter_meta(&self, root_dir: &Path) {
         let Some(meta) = &self.meta else { return };
         let module = SHELL_MODULE;
-        interpreter::machine::set_meta_eval(Some(round_eval_host(&meta.sources, module, root_dir)));
-        interpreter::machine::set_meta_check(Some(round_check_host(&meta.sources, module, root_dir)));
+        let fetch = disk_fetch(root_dir);
+        interpreter::machine::set_meta_eval(Some(round_eval_host(&meta.sources, module, &fetch)));
+        interpreter::machine::set_meta_check(Some(round_check_host(&meta.sources, module, &fetch)));
         interpreter::machine::set_meta_scope(meta.reflect.scopes.get(&utilities::StrId::intern(module)).cloned());
         interpreter::machine::set_type_host(Some(reflect_host(Rc::clone(&meta.reflect), module.to_string())));
         interpreter::machine::set_meta_site(Some(meta.site.clone()));
@@ -1449,7 +1494,7 @@ pub fn expand_session(source: &str, root_dir: &Path) -> Option<String> {
             return None;
         }
     };
-    expand_loaded(&mut loaded, root_dir, false, true).ok()?;
+    expand_loaded(&mut loaded, &disk_fetch(root_dir), false, true).ok()?;
     Some(loaded.sources[loaded.index[SHELL_MODULE]].2.clone())
 }
 
@@ -1459,52 +1504,40 @@ pub fn expand_session(source: &str, root_dir: &Path) -> Option<String> {
 /// Unlike the file commands this renders errors into a string instead of exiting,
 /// so the shell can print them and keep going.
 pub fn compile_session(source: &str, root_dir: &Path) -> Result<Session, String> {
-    compile_in_memory(SHELL_MODULE, source, &|name| load_module(name, root_dir), InMemory::Session { open_effects: true })
+    compile_in_memory(SHELL_MODULE, source, &|name| load_module(name, root_dir), true)
 }
 
 /// Compile a whole program held in memory: `source` is the root module, named
 /// by its own `$ @mod`, and `fetch` maps every module it imports (directly or
 /// not, `CORE` and `C` included) to a diagnostic path and source. The root must
-/// have an entry. Returns the lowered modules, root first, or a rendered
-/// diagnostic. This is the pipeline for a host with no filesystem to search,
-/// such as the browser playground; it runs no `$ @e` expansion.
+/// have an entry. Returns the lowered modules, root first, or the rendered
+/// diagnostics. This is the pipeline for a host with no filesystem to search,
+/// such as the browser playground. It expands every `$ @e` (and `@build`) as a
+/// file compile does, so a generated item or member works the same there.
 pub fn compile_program(
     source: &str,
-    fetch: &dyn Fn(&str) -> Result<(String, String), String>,
+    fetch: impl Fn(&str) -> Result<(String, String), String> + 'static,
 ) -> Result<Vec<frontend::core::CoreProgram>, String> {
+    let fetch: Fetch = Rc::new(fetch);
     let root_name = parse_mod_name(source).unwrap_or_else(|| "MAIN".to_string());
-    let session = compile_in_memory(&root_name, source, fetch, InMemory::Program)?;
-    Ok(session.lowered)
+    let mut loaded = load_core(root_name.clone(), root_name, source.to_string(), &*fetch).map_err(|e| e.render())?;
+    let (lowered, _plan) = capture_stderr(|| expand_loaded(&mut loaded, &fetch, true, false))?;
+    Ok(lowered)
 }
 
-/// What [`compile_in_memory`] compiles its root as.
-#[derive(Clone, Copy)]
-enum InMemory {
-    /// A shell or `@eval` module (see [`SessionRoot`]).
-    Session { open_effects: bool },
-    /// A program, which must have an entry.
-    Program,
-}
-
-/// Compile an in-memory root module. A `Session` with `open_effects` checks its
-/// top level under an open effect row, as the shell needs to run IO; without it
-/// the module must be pure, like a file's top level.
+/// Compile an in-memory shell or `@eval` root module (see [`SessionRoot`]).
+/// With `open_effects` its top level is checked under an open effect row, as
+/// the shell needs to run IO; without it the module must be pure, like a
+/// file's top level.
 fn compile_in_memory(
     root_name: &str,
     source: &str,
     fetch: &dyn Fn(&str) -> Result<(String, String), String>,
-    kind: InMemory,
+    open_effects: bool,
 ) -> Result<Session, String> {
-    let root_path = match kind {
-        InMemory::Session { .. } => "<repl>".to_string(),
-        InMemory::Program => root_name.to_string(),
-    };
-    let loaded = load_core(root_name.to_string(), root_path, source.to_string(), fetch)?;
+    let loaded = load_core(root_name.to_string(), "<repl>".to_string(), source.to_string(), fetch)?;
 
-    let session = match kind {
-        InMemory::Session { open_effects, .. } => Some(SessionRoot { module: &loaded.root_name, open_effects }),
-        InMemory::Program => None,
-    };
+    let session = Some(SessionRoot { module: &loaded.root_name, open_effects });
     let mut run = check_all(&loaded, false, session)?;
     let resolved = frontend::collect_resolved(run.checkers());
 
@@ -1514,33 +1547,28 @@ fn compile_in_memory(
     let lowered = run.desugar(&order, &resolved);
     let kept = run.kept_ids(&order);
 
-    if let InMemory::Program = kind {
-        check_entry(&lowered[0], &run.results[root], run.checker(root), &loaded.root_name)?;
-    }
-
     // The shell runs its items at compile time: give it the hosts a `$ @e` has.
-    let meta = match kind {
-        InMemory::Session { open_effects: true, .. } => {
-            let reflect = reflection(&run, &loaded, &resolved, &|m| m == loaded.root_name);
-            // A fragment imports the session, but not the item being evaluated,
-            // whose inferred probe only the session root may hold.
-            let sources = loaded
-                .sources
-                .iter()
-                .map(|(name, path, src)| {
-                    let src = match src.rfind(&format!("\n$ {PROBE}")) {
-                        Some(at) if *name == loaded.root_name => &src[..at + 1],
-                        _ => src.as_str(),
-                    };
-                    (name.clone(), (path.clone(), src.to_string()))
-                })
-                .collect();
-            let src = &loaded.sources[root].2;
-            let at = src.rfind(&format!("\n$ {PROBE}")).map_or(0, |at| at + 1);
-            let site = site_of(&loaded.sources, &loaded.root_name, utilities::Span::at(at));
-            Some(SessionMeta { reflect: reflect_tables(reflect), sources: Rc::new(sources), site })
-        }
-        _ => None,
+    let meta = if open_effects {
+        let reflect = reflection(&run, &loaded, &resolved, &|m| m == loaded.root_name);
+        // A fragment imports the session, but not the item being evaluated,
+        // whose inferred probe only the session root may hold.
+        let sources = loaded
+            .sources
+            .iter()
+            .map(|(name, path, src)| {
+                let src = match src.rfind(&format!("\n$ {PROBE}")) {
+                    Some(at) if *name == loaded.root_name => &src[..at + 1],
+                    _ => src.as_str(),
+                };
+                (name.clone(), (path.clone(), src.to_string()))
+            })
+            .collect();
+        let src = &loaded.sources[root].2;
+        let at = src.rfind(&format!("\n$ {PROBE}")).map_or(0, |at| at + 1);
+        let site = site_of(&loaded.sources, &loaded.root_name, utilities::Span::at(at));
+        Some(SessionMeta { reflect: reflect_tables(reflect), sources: Rc::new(sources), site })
+    } else {
+        None
     };
 
     let checker = run.checker(root);
@@ -1613,7 +1641,7 @@ fn compile_wrapped(
     }
     module.push_str(&format!("$ {PROBE} =\n"));
     module.push_str(src);
-    compile_in_memory(FRAGMENT, &module, fetch, InMemory::Session { open_effects: false })
+    compile_in_memory(FRAGMENT, &module, fetch, false)
 }
 
 /// The expansion-time `@eval` host for a directive in `module`. A fragment sees
@@ -1622,18 +1650,18 @@ fn compile_wrapped(
 fn round_eval_host(
     sources: &Rc<HashMap<String, (String, String)>>,
     module: &str,
-    root_dir: &Path,
+    fetch: &Fetch,
 ) -> Box<dyn Fn(&str) -> std::result::Result<interpreter::machine::OwnedValue, String>> {
     let imports = sources
         .get(module)
         .map(|(_, src)| import_lines(src))
         .unwrap_or_default();
     let sources = Rc::clone(sources);
-    let root_dir = root_dir.to_path_buf();
+    let fetch = Rc::clone(fetch);
     Box::new(move |src| {
         eval_wrapped(src, &imports, &|name| match sources.get(name) {
             Some((path, text)) => Ok((path.clone(), text.clone())),
-            None => load_module(name, &root_dir),
+            None => fetch(name),
         })
     })
 }
@@ -1643,7 +1671,7 @@ fn round_eval_host(
 fn round_check_host(
     sources: &Rc<HashMap<String, (String, String)>>,
     module: &str,
-    root_dir: &Path,
+    fetch: &Fetch,
 ) -> Box<dyn Fn(&str) -> std::result::Result<String, String>> {
     let mut imports = sources
         .get(module)
@@ -1651,11 +1679,11 @@ fn round_check_host(
         .unwrap_or_default();
     imports.push(format!("$ @import {module}"));
     let sources = Rc::clone(sources);
-    let root_dir = root_dir.to_path_buf();
+    let fetch = Rc::clone(fetch);
     Box::new(move |src| {
         let session = compile_wrapped(src, &imports, &|name| match sources.get(name) {
             Some((path, text)) => Ok((path.clone(), text.clone())),
-            None => load_module(name, &root_dir),
+            None => fetch(name),
         })?;
         let ty = session.decls.iter().find(|(n, _)| n == PROBE).map(|(_, t)| t.clone());
         Ok(ty.expect("the probe of a checked fragment has a type"))
