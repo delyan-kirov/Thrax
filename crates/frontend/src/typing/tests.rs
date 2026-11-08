@@ -1071,7 +1071,7 @@ fn a_pattern_may_bind_fewer_fields_but_never_more() {
             .is_empty()
     );
     // More binds a name with no field behind it, which faults when read.
-    let surplus = rendered_errors(&format!("{p}$ y : @Int = P.{{1,2}} |> \\ | P.{{x, y, z}} => x | _ => 0"));
+    let surplus = rendered_errors(&format!("{p}$ y : @Int = P.{{1,2}} |> \\ | P.{{x, w, z}} => x | _ => 0"));
     assert!(surplus.contains("no field 2"), "{surplus}");
     let surplus = rendered_errors(
         "$ @mod M\n$ y : @Int = List.Cons.{1, List.Nil} |> \\ | List.Cons.{h, t, u} => h | _ => 0",

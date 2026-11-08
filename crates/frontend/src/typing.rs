@@ -1161,6 +1161,24 @@ impl<'a> Checker<'a> {
             .insert(name, ty);
     }
 
+    /// Bind a local (lambda, `let`, pattern, or handler binder). A module's own
+    /// globals cannot be shadowed, so `\c => c` inside a module that defines `c`
+    /// is an error rather than a silent rebinding. Imported names may still be
+    /// shadowed: a library adding a name must not break its importers.
+    fn bind_local(&mut self, name: StrId, ty: Type) -> Result<()> {
+        debug_assert!(self.scopes.len() > 1, "a local binder outside any local scope");
+        if self.local_defs.contains(&name) {
+            return Err(diag!(
+                Code::ShadowedGlobal, Span::at(0), 0,
+                "`{name}` shadows the global `{name}` of module `{}`", self.module_name;
+                note: "a module's globals cannot be rebound locally";
+                help: "rename the local `{name}`"
+            ));
+        }
+        self.bind(name, ty);
+        Ok(())
+    }
+
     /// `(a -> a -> a) -> (a -> a -> a) -> a -> x -> rest`: a tensor kernel's
     /// `add`, `mul`, `zero`, then its first tensor operand.
     fn kernel_type(&self, a: Type, x: Type, rest: Type) -> Type {

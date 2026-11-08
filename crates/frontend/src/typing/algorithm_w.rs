@@ -191,7 +191,10 @@ impl<'a> Checker<'a> {
                 .find(|(n, _)| *n == name)
                 .map(|(_, t)| *t)
                 .unwrap_or_else(|| self.unifier.fresh());
-            self.bind(name, t);
+            self.bind_local(name, t).map_err(|d| match self.ast.ty_span(f.ty) {
+                Some(span) => d.fill_span(span),
+                None => d,
+            })?;
         }
         Ok(())
     }
@@ -1040,12 +1043,12 @@ impl<'a> Checker<'a> {
                 None => (self.unifier.fresh(), self.unifier.fresh()),
             };
             self.enter_scope();
-            self.bind(clause.arg, arg_ty);
+            self.bind_local(clause.arg, arg_ty)?;
             // Deep handler: resuming continues the computation under the outer
             // ambient, so `k : Res -[amb]-> R`.
             let amb = self.ambient;
             let k_ty = self.unifier.types.arrow_eff(res_ty, result, amb);
-            self.bind(handler.continuation, k_ty);
+            self.bind_local(handler.continuation, k_ty)?;
             let cb = self.infer(clause.body).map_err(|d| {
                 if !d.root().msg.contains(&format!(" of `{shown}`")) {
                     return d;
@@ -1065,7 +1068,7 @@ impl<'a> Checker<'a> {
         match &handler.value {
             Some((name, value_body)) => {
                 self.enter_scope();
-                self.bind(*name, body_ty);
+                self.bind_local(*name, body_ty)?;
                 let vb = self.infer(*value_body)?;
                 self.unifier.unify(vb, result, "in a handler value arm")?;
                 self.leave_scope();
@@ -1348,7 +1351,10 @@ impl<'a> Checker<'a> {
             Pattern::Var(name) => {
                 let name = *name;
                 let v = self.unifier.fresh();
-                self.bind(name, v);
+                self.bind_local(name, v).map_err(|d| match self.ast.pat_span(b.pat) {
+                    Some(span) => d.fill_span(span),
+                    None => d,
+                })?;
                 Some(v)
             }
             _ => None,
