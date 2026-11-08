@@ -1,0 +1,4 @@
+$ @mod BUILTIN_OUTSIDE_CORE
+
+# A builtin is the compiler's own, so only CORE declares one.
+$ @my_add : t -> t -> t = @extern "ares"  #~ error[TYPE_MISMATCH]: only CORE and ARES_SHELL may declare a builtin

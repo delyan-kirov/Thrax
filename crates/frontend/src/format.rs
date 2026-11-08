@@ -1,4 +1,4 @@
-//! `thrax fmt`: the canonical layout of a Thrax source.
+//! `ares fmt`: the canonical layout of a Ares source.
 //!
 //! The formatter works on tokens, not on the AST, because the AST already
 //! desugars surface forms (string interpolation, `&&`, `<|>`) that a formatter

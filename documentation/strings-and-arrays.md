@@ -61,10 +61,10 @@ byte block with a capacity:
   **semantic reference** and simply ALWAYS returns a fresh value from a mutator
   (value semantics are identical to in-place, so copying is always correct and
   simplest). `array_cap` reports `std::string::capacity()`.
-- **Native** (`platforms/THxVALUE.h`): add `size_t cap` to the `s` arm
-  (`{ char *p; size_t n; size_t cap; }`). `THxRT_str`/`THxRT_bytes` set
+- **Native** (`platforms/ARESxVALUE.h`): add `size_t cap` to the `s` arm
+  (`{ char *p; size_t n; size_t cap; }`). `ARESxRT_str`/`ARESxRT_bytes` set
   `cap = n`. A mutator grows in place (realloc-and-append; there is no
-  `THxMEM_realloc`, so alloc+memcpy+free) when `THxMEM_unique(v)`, added to the
+  `ARESxMEM_realloc`, so alloc+memcpy+free) when `ARESxMEM_unique(v)`, added to the
   allocator seam: `rc == 1` under the RC engine (every durable holder retains,
   so anything shared is `rc >= 2`; a value still in the temp pool carries the
   pool's extra ref and so reads non-unique, conservative but sound), and NEVER
@@ -84,7 +84,7 @@ nominally distinct (Str carries the UTF-8 invariant, `Array` is raw bytes, Rust
 OVERLOADED on both** via `overload_db` (TCxDATA.cpp), resolved by the first
 operand's type; a mutator returns the same kind it took. Each op needs: an
 overload set (`overload_db`), an impl in IT `impls`, and an arity entry + dispatch
-arm in `platforms/THxRT.c`. `%array` (from `@Array.{n}`) stays a `%`-internal
+arm in `platforms/ARESxRT.c`. `%array` (from `@Array.{n}`) stays a `%`-internal
 `m_prim` primitive. All byte-valued args/results are `@Int` (a byte is `0..255`;
 `Nat8` later).
 
@@ -155,14 +155,14 @@ key *is* `array_push`, so emitting it post-TC dispatches correctly.
 > **Superseded.** `[a, ..rest]` is gone. The rest of a sequence is matched with
 > `++`, which also matches suffixes and both ends: `[a] ++ rest`, `rest ++ [z]`,
 > `[a] ++ mid ++ [z]`, at most one part of unknown length. See
-> documentation/language-reference.md 5.7 and `examples/SEQ_SPLIT.thx`.
+> documentation/language-reference.md 5.7 and `examples/SEQ_SPLIT.ares`.
 
 `[p1, .., pn, ..rest]` binds the leading cells and a `rest` tail (the remaining
 list), so it matches *at least* n elements; it is pure parser sugar
 `[a, ..t]` folds to `a :: t` (open) exactly as `[a, b]` folds to
 `a :: b :: Nil` (closed). `..` is two `.` tokens (a lone `.` is a variant tag).
 Both engines reuse the existing `List.Cons` nested-pattern machinery.
-`examples/LISTS.thx`.
+`examples/LISTS.ares`.
 
 ## Pattern matching arrays  *(DONE)*
 
@@ -181,29 +181,29 @@ stays List-only.
 ## Phasing (each phase ends green on both engines)
 
 1. **DONE Representation + `array_len`/`array_cap`/`array_get`.** Added `cap`;
-   read-only built-ins. `examples/A1` proof; `ARRAY.thx`/`STRINGS.thx` unchanged.
+   read-only built-ins. `examples/A1` proof; `ARRAY.ares`/`STRINGS.ares` unchanged.
 2. **DONE `array_push`/`array_set`/`array_slice` (opportunistic in-place).**
-   The mutation core (`THxMEM_unique` gate). `examples/ARRAYS_MUT.thx`.
+   The mutation core (`ARESxMEM_unique` gate). `examples/ARRAYS_MUT.ares`.
 3. **DONE `++` operator + `%concat` + `?=@Str`.** Concatenation and string
-   equality, overloaded on Str/Array. `examples/STR_OPS.thx`. (Also: the
+   equality, overloaded on Str/Array. `examples/STR_OPS.ares`. (Also: the
    `resolve_sites` fixpoint rewrite, above.)
 4. **DONE Exact string patterns.** `test_of` / `match_pat` emit a `?=@Str`
-   test; string matches route to `lower_match_guarded`. `examples/STR_MATCH.thx`.
+   test; string matches route to `lower_match_guarded`. `examples/STR_MATCH.ares`.
 5. **DONE Literal-prefix string patterns** (`is "GET " ++ rest`). A new
    `PatStrPrefix` (parser: a `Str` literal followed by `++`) lowers, in LL's
    guarded path, to a length-safe prefix test (`?=@Str (array_slice s 0 plen)
    "GET "`, the slice clamps so a short subject just compares unequal) plus a
    tail binding (`rest = array_slice s plen (array_len s)`); the `rest`
-   sub-pattern may itself be refutable and nest. `examples/STR_PREFIX.thx`.
+   sub-pattern may itself be refutable and nest. `examples/STR_PREFIX.ares`.
    Since #324 string literals are pieces of the general `++` pattern, so suffixes
-   (`name ++ ".thx"`) and both ends (`"<" ++ body ++ ">"`) match too.
+   (`name ++ ".ares"`) and both ends (`"<" ++ body ++ ">"`) match too.
 6a. **DONE Type-directed `[..]` sequence literals** (List vs Array inferred,
-    no `@`). `examples/SEQ_INFER.thx`.
+    no `@`). `examples/SEQ_INFER.ares`.
 6b. **DONE Array `[..]` patterns** (symmetric with 6a). The pipeline reorder
     landed (patterns typed in TC, lowered
     after), so a new `EX::PatSeq` is typed via a seq-pattern lit-site and
     `PatLower` dispatches List (cons/nil) vs Array (length test + `array_get`/
-    `array_slice`). `::` stays List-only. `examples/ARRAY_PATTERNS.thx`.
+    `array_slice`). `::` stays List-only. `examples/ARRAY_PATTERNS.ares`.
 
 Phases 1-6 all DONE: the core "Rust `String`" experience (grow, concat, compare,
 switch), inferred sequence literals, and the full type-directed pattern surface
@@ -221,7 +221,7 @@ switch), inferred sequence literals, and the full type-directed pattern surface
 
 ## Testing
 
-Every phase adds/updates an `examples/*.thx` that the interpreter suite
+Every phase adds/updates an `examples/*.ares` that the interpreter suite
 (`build test`) force-evaluates and the native suite (`build native-test`)
 compiles+runs, so both engines and the RC leak-check (exit 97) cover it. Prefer
 `ck` globals (`if <cond> then 0 else 1/0`) so a wrong answer faults visibly.

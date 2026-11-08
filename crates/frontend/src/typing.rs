@@ -317,7 +317,7 @@ pub struct Checker<'a> {
     /// flattened arg/result marshalling names off this.
     extern_tys: HashMap<Aol<Expr>, Type>,
     /// Each `@extern` node's marshalling spec, built from `extern_tys` once the
-    /// program is solved (see `build_extern_specs`): how the single applied Thrax
+    /// program is solved (see `build_extern_specs`): how the single applied Ares
     /// value maps to positional C arguments, the flattened C argument type names,
     /// and the result type name.
     extern_specs: HashMap<Aol<Expr>, ExternSpec>,
@@ -326,7 +326,7 @@ pub struct Checker<'a> {
     /// owner module) so lowering can flatten a foreign call it did not itself
     /// resolve across modules.
     own_externs: HashMap<StrId, ExternSpec>,
-    /// This module's `@extern "thrax"` definitions, each named for the runtime
+    /// This module's `@extern "ares"` definitions, each named for the runtime
     /// builtin it declares.
     own_builtins: HashSet<StrId>,
     /// The builtins imported modules declare, which no definition may reuse.
@@ -693,7 +693,7 @@ impl<'a> Checker<'a> {
                 self.errors.push(diag!(
                     Code::DuplicateSymbol, span, 0,
                     "`{}` is a builtin and cannot be redefined", d.name;
-                    note: "CORE declares it with `@extern \"thrax\"`, and the compiler \
+                    note: "CORE declares it with `@extern \"ares\"`, and the compiler \
                            relies on its meaning"
                 ));
                 dups.push(i);
@@ -1162,7 +1162,7 @@ impl<'a> Checker<'a> {
 
 impl<'a> Checker<'a> {
     fn install_builtins(&mut self) {
-        // Most builtins are declared in CORE with `@extern "thrax"`. These stay here
+        // Most builtins are declared in CORE with `@extern "ares"`. These stay here
         // because their types have no surface syntax.
         let int = self.unifier.types.con(ty::INT);
 

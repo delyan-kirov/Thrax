@@ -2,7 +2,7 @@
 
 Every change goes through an issue and a pull request, and the git hooks keep
 track of both. You commit and push, nothing else. Entering the nix shell
-installs the hooks (`thxdo hooks` does it by hand).
+installs the hooks (`thrax hooks` does it by hand).
 
 ## The loop
 
@@ -25,11 +25,11 @@ To start something else, `git switch master` and commit there.
 ## What each hook does
 
 The hooks are one-line shims in `tools/hooks/`; their logic is
-`tools/HOOKS.thx`, reached through `thxdo hook NAME`.
+`tools/HOOKS.ares`, reached through `thrax hook NAME`.
 
 | Hook | Does |
 | --- | --- |
-| `pre-commit` | formats the staged `.thx` files; `cargo check` when Rust is staged; the grammar check when `documentation/thrax.y` is; refuses a staged `tools/editors` whose Zed extension pins an older grammar commit |
+| `pre-commit` | formats the staged `.ares` files; `cargo check` when Rust is staged; the grammar check when `documentation/ares.y` is; refuses a staged `tools/editors` whose Zed extension pins an older grammar commit |
 | `commit-msg` | requires `#N` (an open issue) on `master`, opens the issue for `#new`, adds the branch's `#N` elsewhere |
 | `post-commit` | moves a `master` commit to its issue's branch; rebuilds what an installed Zed or Helix compiles when it is stale (tools/editors has hooks of its own, see its README) |
 | `pre-push` | refuses pushes to `master`, and pushes of a commit pinning an `applications` or `tools/editors` commit not on its remote; opens the pull request of a pushed issue branch |
@@ -48,13 +48,13 @@ git's comment character is set to `;`.
 and the commit stays there, `git push --no-verify` pushes `master`. GitHub
 refuses a direct push to `master` from anyone not on the ruleset's bypass list.
 
-Without `thxdo` on `PATH` (outside the nix shell) the hooks do nothing.
+Without `thrax` on `PATH` (outside the nix shell) the hooks do nothing.
 
 ## The forge
 
-Issues and pull requests go through the `Forge` effect in `tools/FORGE.thx`.
+Issues and pull requests go through the `Forge` effect in `tools/FORGE.ares`.
 The `github` handler runs `gh`; another host is another handler. The host is
-the one `origin` points at, or `git config thxdo.forge` (`github`, or
+the one `origin` points at, or `git config thrax.forge` (`github`, or
 `offline`: issues go unchecked and no pull request opens). When the host does
 not answer, a commit's issue goes unchecked rather than the commit failing.
 

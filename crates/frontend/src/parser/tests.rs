@@ -2,7 +2,7 @@ use crate::*;
 use utilities::Aol;
 
 fn prog(src: &str) -> Parsed {
-    parse(src).unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")))
+    parse(src).unwrap_or_else(|e| panic!("{}", e.render(src, "test.ares")))
 }
 
 #[test]
@@ -537,7 +537,7 @@ fn blessed_interface_prefix_rule() {
     // Any other `@`-name is a compiler intrinsic, not extensible in user code.
     assert!(err("$ @mod M\n$ @my_hook : @Int -> @Int = \\x => x").contains("not extensible"));
     // ...except a builtin declaration, which the checker confines to CORE.
-    let p = prog("$ @mod M\n$ @iadd : t -> t -> t = @extern \"thrax\"");
+    let p = prog("$ @mod M\n$ @iadd : t -> t -> t = @extern \"ares\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Builtin));
 }
 
@@ -672,7 +672,7 @@ fn lambda_parameters_are_juxtaposed_and_take_annotations() {
 #[test]
 fn a_misqualified_literal_points_at_the_expression() {
     let err = |src: &str| match parse(src) {
-        Err(e) => e.render(src, "t.thx"),
+        Err(e) => e.render(src, "t.ares"),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
 
@@ -681,19 +681,19 @@ fn a_misqualified_literal_points_at_the_expression() {
     let text = err("$ @mod M\n$ y = (List @Int32).Cons.{1}");
     assert!(text.contains("applied to arguments"), "{text}");
     assert!(text.contains("ascribe"), "{text}");
-    assert!(text.contains("--> t.thx:2:7"), "{text}");
+    assert!(text.contains("--> t.ares:2:7"), "{text}");
     assert!(text.contains("  |       ^^^^^^^^^^^^^^^^^^\n"), "{text}");
 
     // A lowercase head is a value name, not a type.
     let text = err("$ @mod M\n$ y = (list @Int32).Cons.{1}");
     assert!(text.contains("`list` names a value"), "{text}");
-    assert!(text.contains("--> t.thx:2:7"), "{text}");
+    assert!(text.contains("--> t.ares:2:7"), "{text}");
 
     // A struct literal on an arbitrary expression carets that expression, not
     // the first line of the file.
     let text = err("$ @mod M\n$ y = (1 + 2).{3}");
     assert!(text.contains("a struct literal must be qualified"), "{text}");
-    assert!(text.contains("--> t.thx:2:7"), "{text}");
+    assert!(text.contains("--> t.ares:2:7"), "{text}");
     assert!(text.contains("  |       ^^^^^^^^^\n"), "{text}");
 }
 
@@ -717,7 +717,7 @@ fn a_binding_site_annotation_takes_any_pattern() {
 #[test]
 fn a_stray_annotation_names_where_the_type_goes() {
     let err = |src: &str| match parse(src) {
-        Err(e) => e.render(src, "t.thx"),
+        Err(e) => e.render(src, "t.ares"),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
 
@@ -822,7 +822,7 @@ fn negative_literal_patterns() {
 #[test]
 fn a_dot_after_a_number_is_an_unfinished_decimal() {
     let err = |src: &str| match parse(src) {
-        Err(e) => e.render(src, "t.thx"),
+        Err(e) => e.render(src, "t.ares"),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
     let text = err("$ @mod M\n$ x = 1.1 / 2.\n");
@@ -839,7 +839,7 @@ fn a_dot_after_a_number_is_an_unfinished_decimal() {
 #[test]
 fn a_rest_left_unnamed_or_a_dotted_string_prefix_says_how_to_write_it() {
     let err = |src: &str| match parse(src) {
-        Err(e) => e.render(src, "t.thx"),
+        Err(e) => e.render(src, "t.ares"),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
     let text = err("$ @mod M\n$ y = r |> \\ | { .a = 1, .. } => 1 | _ => 2");

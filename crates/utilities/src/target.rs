@@ -41,7 +41,7 @@ pub enum Arch {
 pub enum Libc {
     /// musl, linked statically: a self-contained executable with no `.so`
     /// lookups. It cannot link shared libraries, so a program that needs one
-    /// (raylib, libthrax) must use the system C library.
+    /// (raylib, libares) must use the system C library.
     Musl,
     /// glibc, linked dynamically: the platform's own C library.
     Gnu,
@@ -290,8 +290,8 @@ fn decorate(lib: &str, prefix: &str, suffix: &str) -> String {
 
 /// How the host invokes a C compiler for a target: the compiler call as data.
 /// The host target uses the system `cc` (`gcc` on Windows, where MinGW-w64
-/// ships no `cc`; either overridable via `THRAX_CC`); a wasm target uses `emcc`
-/// (overridable via `THRAX_WASM_CC`), so tool LOCATIONS stay out of the
+/// ships no `cc`; either overridable via `ARES_CC`); a wasm target uses `emcc`
+/// (overridable via `ARES_WASM_CC`), so tool LOCATIONS stay out of the
 /// compiler the way `@extern` library locations do. An empty `cc` means no toolchain was found
 /// and `hint` says what to provide.
 #[derive(Clone, Debug)]
@@ -324,7 +324,7 @@ pub fn toolchain(target: Target) -> Toolchain {
     if target == Target::host() {
         let windows = target.os == Os::Windows;
         let default_cc = if windows { "gcc" } else { "cc" };
-        tc.cc = std::env::var("THRAX_CC").unwrap_or_else(|_| default_cc.to_string());
+        tc.cc = std::env::var("ARES_CC").unwrap_or_else(|_| default_cc.to_string());
         // PE has no rpath: a DLL is found beside the executable or on PATH.
         tc.rpath = !windows;
         if windows {
@@ -333,9 +333,9 @@ pub fn toolchain(target: Target) -> Toolchain {
         return tc;
     }
     if target.os == Os::Wasi && target.arch == Arch::Wasm32 {
-        tc.cc = std::env::var("THRAX_WASM_CC").unwrap_or_else(|_| "emcc".to_string());
+        tc.cc = std::env::var("ARES_WASM_CC").unwrap_or_else(|_| "emcc".to_string());
         tc.hint =
-            "no wasm C compiler found: install emscripten (emcc) or set THRAX_WASM_CC".to_string();
+            "no wasm C compiler found: install emscripten (emcc) or set ARES_WASM_CC".to_string();
         tc.runner = "node".to_string();
         // The program runs under node, so it reads and writes the real file
         // system rather than emscripten's in-memory one.
@@ -354,7 +354,7 @@ pub fn toolchain(target: Target) -> Toolchain {
     tc
 }
 
-/// The toolchain that links a program statically against musl. `THRAX_MUSL_CC`
+/// The toolchain that links a program statically against musl. `ARES_MUSL_CC`
 /// names a complete musl compiler (e.g. `x86_64-unknown-linux-musl-gcc`) and
 /// wins; otherwise the system gcc is pointed at the musl `sysroot` through the
 /// GCC specs file at `specs` (see [`musl_specs`]), which is what musl's own
@@ -363,7 +363,7 @@ pub fn musl_toolchain(sysroot: &std::path::Path, specs: &std::path::Path) -> Too
     let mut tc = Toolchain {
         cc: "cc".to_string(),
         hint: format!(
-            "the musl link failed; check the sysroot at {} or set THRAX_MUSL_CC",
+            "the musl link failed; check the sysroot at {} or set ARES_MUSL_CC",
             sysroot.display()
         ),
         cflags: vec!["-O2".to_string(), "-static".to_string()],
@@ -371,7 +371,7 @@ pub fn musl_toolchain(sysroot: &std::path::Path, specs: &std::path::Path) -> Too
         exe_suffix: String::new(),
         rpath: false,
     };
-    match std::env::var("THRAX_MUSL_CC") {
+    match std::env::var("ARES_MUSL_CC") {
         Ok(cc) if !cc.is_empty() => tc.cc = cc,
         _ => tc.cflags.push(format!("-specs={}", specs.display())),
     }

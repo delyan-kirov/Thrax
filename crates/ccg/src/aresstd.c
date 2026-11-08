@@ -1,0 +1,206 @@
+/* The standard library's native support functions: the scalar conversions the
+   language runtime needs but that are not plain C library calls. This is the
+   SINGLE source of truth, shared by both engines: the native backend appends it
+   to every emitted program (crates/ccg/src/lib.rs), and the interpreter compiles
+   and links it into the `ares` binary, resolving these symbols in-process
+   through the normal `@extern "C" "..." ""` seam (see library/C.ares, CORE.ares).
+
+   Everything here depends on libc only (snprintf/strtod/strtof, dirent), so it
+   compiles standalone on native and, later, to a companion wasm module. A
+   generated program already carries portable.h ahead of this file, so the
+   include below is skipped there. */
+
+#ifndef ARX_PORTABLE_H
+#include "portable.h"
+#endif
+
+#include <dirent.h>
+
+/* Integer <-> real conversions. `@cast` crosses only integer widths, so these
+   bridge the integer/real boundary. `long long`, not `long`: an `@Int` is 64
+   bits everywhere, and Windows' `long` is 32. */
+ARX_EXPORT double arx_i2d(long long n) { return (double)n; }
+ARX_EXPORT long long arx_d2i(double x) { return (long long)(x < 0 ? x - 0.5 : x + 0.5); }
+ARX_EXPORT float arx_i2f(long long n) { return (float)n; }
+ARX_EXPORT long long arx_f2i(float x) { return (long long)(x < 0 ? x - 0.5f : x + 0.5f); }
+
+/* Float width conversions. `@Float32` and `@Float64` have distinct runtime
+   representations, so widening/narrowing is real work (unlike the erased `@cast`
+   between integer widths). */
+ARX_EXPORT double arx_f2d(float f) { return (double)f; }
+ARX_EXPORT float arx_d2f(double d) { return (float)d; }
+
+/* Format a real as its shortest decimal that round-trips (the same rule as the
+   runtime's `fmt_real`/`fmt_real32` display path, and Rust's `f64::to_string`,
+   so both engines print a float identically). The result lives in a static
+   buffer that the FFI copies into a Ares `@Str` immediately on return, so it
+   need not outlive the call. */
+ARX_EXPORT const char *arx_real_to_str(double r) {
+  static char buf[64];
+  for (int prec = 1; prec <= 17; prec++) {
+    snprintf(buf, sizeof(buf), "%.*g", prec, r);
+    if (strtod(buf, NULL) == r) break;
+  }
+  return buf;
+}
+ARX_EXPORT const char *arx_f32_to_str(float r) {
+  static char buf[64];
+  for (int prec = 1; prec <= 9; prec++) {
+    snprintf(buf, sizeof(buf), "%.*g", prec, (double)r);
+    if (strtof(buf, NULL) == r) break;
+  }
+  return buf;
+}
+
+/* Reinterpret a machine word as a raw pointer (`@Ptr` travels as an Int), so
+   the standard library can spell a null pointer as `C.null` (= i2p 0). */
+ARX_EXPORT void *arx_i2p(long long n) { return (void *)(intptr_t)n; }
+ARX_EXPORT long long arx_p2i(void *p) { return (long long)(intptr_t)p; }
+
+/* The address `n` bytes past `p`, for indexing into C memory. */
+ARX_EXPORT void *arx_ptr_add(void *p, long long n) { return (char *)p + n; }
+
+/* A directory's entry names, `.` and `..` excluded, each followed by a newline,
+   in whatever order the system lists them (`IO.read_dir` sorts). NULL when the
+   directory cannot be opened. The FFI cannot walk a `struct dirent *`, whose
+   layout differs per platform, so the walk happens here. Like the formatters
+   above, the result lives in a static buffer the FFI copies on return. */
+ARX_EXPORT const char *arx_read_dir(const char *path) {
+  static char *buf = NULL;
+  static size_t cap = 0;
+  DIR *dir = opendir(path);
+  if (!dir) return NULL;
+  size_t len = 0;
+  struct dirent *e;
+  while ((e = readdir(dir)) != NULL) {
+    const char *name = e->d_name;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+    size_t n = strlen(name);
+    if (len + n + 2 > cap) {
+      size_t grown = cap ? cap * 2 : 256;
+      while (grown < len + n + 2) grown *= 2;
+      char *p = realloc(buf, grown);
+      if (!p) break;
+      buf = p;
+      cap = grown;
+    }
+    memcpy(buf + len, name, n);
+    len += n;
+    buf[len++] = '\n';
+  }
+  closedir(dir);
+  if (!buf) return "";
+  buf[len] = '\0';
+  return buf;
+}
+
+/* Like `arx_read_dir`, but each name is prefixed with its kind: `d` a
+   directory, `f` a regular file, `l` a symbolic link, `o` anything else. The
+   kind comes from `d_type` where the system fills it in, so a directory walk
+   needs no `stat` per entry; otherwise (or for DT_UNKNOWN) it falls back to
+   `lstat` on the joined path. */
+#include <sys/stat.h>
+static char arx_kind_of_mode(mode_t m) {
+  if (S_ISDIR(m)) return 'd';
+  if (S_ISREG(m)) return 'f';
+#ifdef S_ISLNK
+  if (S_ISLNK(m)) return 'l';
+#endif
+  return 'o';
+}
+static char arx_entry_kind(const char *dir, struct dirent *e) {
+#ifdef DT_DIR
+  switch (e->d_type) {
+  case DT_DIR: return 'd';
+  case DT_REG: return 'f';
+  case DT_LNK: return 'l';
+  case DT_UNKNOWN: break;
+  default: return 'o';
+  }
+#endif
+  char path[4096];
+  int n = snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+  if (n < 0 || (size_t)n >= sizeof(path)) return 'o';
+  struct stat st;
+#ifdef _WIN32
+  if (stat(path, &st) != 0) return 'o';
+#else
+  if (lstat(path, &st) != 0) return 'o';
+#endif
+  return arx_kind_of_mode(st.st_mode);
+}
+ARX_EXPORT const char *arx_list_dir(const char *path) {
+  /* Per thread: a walk may list directories from several tasks at once. */
+  static _Thread_local char *buf = NULL;
+  static _Thread_local size_t cap = 0;
+  DIR *dir = opendir(path);
+  if (!dir) return NULL;
+  size_t len = 0;
+  struct dirent *e;
+  while ((e = readdir(dir)) != NULL) {
+    const char *name = e->d_name;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+    size_t n = strlen(name);
+    if (len + n + 3 > cap) {
+      size_t grown = cap ? cap * 2 : 256;
+      while (grown < len + n + 3) grown *= 2;
+      char *p = realloc(buf, grown);
+      if (!p) break;
+      buf = p;
+      cap = grown;
+    }
+    buf[len++] = arx_entry_kind(path, e);
+    memcpy(buf + len, name, n);
+    len += n;
+    buf[len++] = '\n';
+  }
+  closedir(dir);
+  if (!buf) return "";
+  buf[len] = '\0';
+  return buf;
+}
+
+/* When `path` was last modified, in nanoseconds since the epoch (seconds where
+   the system keeps no finer time); -1 when it cannot be stat'ed. */
+ARX_EXPORT long long arx_mtime(const char *path) {
+  struct stat st;
+  if (stat(path, &st) != 0) return -1;
+#if defined(__APPLE__)
+  return (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
+#elif defined(__linux__)
+  return (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
+#else
+  return (long long)st.st_mtime * 1000000000LL;
+#endif
+}
+
+/* Raw file descriptors, behind shims rather than direct libc bindings: `open`
+   is variadic, which wasm passes differently from a fixed prototype; `off_t`
+   is 64 bits on wasm32 where `long` is not; Windows' `_read` counts in an
+   `unsigned int`, and its text mode would rewrite "\r\n". Every width here is
+   an `@Int`. */
+#include <fcntl.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+ARX_EXPORT long long arx_open(const char *path, long long flags) {
+#ifdef _WIN32
+  return _open(path, (int)flags | _O_BINARY);
+#else
+  return open(path, (int)flags);
+#endif
+}
+ARX_EXPORT long long arx_read(long long fd, void *buf, long long n) {
+#ifdef _WIN32
+  return _read((int)fd, buf, (unsigned)(n > 0x7fffffff ? 0x7fffffff : n));
+#else
+  return (long long)read((int)fd, buf, (size_t)n);
+#endif
+}
+ARX_EXPORT long long arx_lseek(long long fd, long long off, long long whence) {
+#ifdef _WIN32
+  return _lseeki64((int)fd, off, (int)whence);
+#else
+  return (long long)lseek((int)fd, (off_t)off, (int)whence);
+#endif
+}

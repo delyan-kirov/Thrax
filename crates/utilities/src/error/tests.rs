@@ -21,7 +21,7 @@ fn caret_lands_under_the_span() {
         1,
         "unknown symbol '?'",
     );
-    let text = d.render(src, "test.thx");
+    let text = d.render(src, "test.ares");
     assert!(text.contains("UNKNOWN_SYMBOL"));
     assert!(
         text.contains("        ^"),
@@ -35,7 +35,7 @@ fn caret_pad_preserves_leading_tabs() {
     // the same tab stop and the caret still lands under the span.
     let src = "\tab\n";
     let d = Diagnostic::error(Code::UnknownSymbol, Span::new(1, 3), 1, "bad");
-    let text = d.render(src, "test.thx");
+    let text = d.render(src, "test.ares");
     assert!(
         text.contains("  | \t^^"),
         "caret pad should keep the leading tab:\n{text}"
@@ -58,7 +58,7 @@ fn note_renders_as_trailing_line() {
         Code::UnknownSymbol, Span::new(8, 9), 1, "unknown symbol {}", "'?'";
         note: "remove the {} character", "stray"
     );
-    let text = d.render(src, "test.thx");
+    let text = d.render(src, "test.ares");
     let (body, last) = text.trim_end().rsplit_once('\n').unwrap();
     assert!(body.contains("unknown symbol '?'"));
     assert_eq!(last, "note: remove the stray character");
@@ -68,7 +68,7 @@ fn note_renders_as_trailing_line() {
 fn diag_without_note_has_no_note_line() {
     let src = "x\n";
     let d = diag!(Code::UnknownSymbol, Span::new(0, 1), 1, "bad {}", 1);
-    assert!(!d.render(src, "t.thx").contains("note:"));
+    assert!(!d.render(src, "t.ares").contains("note:"));
 }
 
 #[test]
@@ -102,10 +102,10 @@ fn a_located_frame_still_renders_when_the_root_has_no_span() {
         2,
         "while checking",
     );
-    let text = d.render(src, "t.thx");
-    assert!(text.contains("error[TYPE_MISMATCH]: root\n  --> t.thx\n"), "{text}");
+    let text = d.render(src, "t.ares");
+    assert!(text.contains("error[TYPE_MISMATCH]: root\n  --> t.ares\n"), "{text}");
     assert!(
-        text.contains("note [UNEXPECTED_TOKEN]: while checking\n  --> t.thx:2:1\n"),
+        text.contains("note [UNEXPECTED_TOKEN]: while checking\n  --> t.ares:2:1\n"),
         "{text}"
     );
     assert!(text.contains("2 | cd\n  | ^^\n"), "{text}");
@@ -118,7 +118,7 @@ fn a_multi_line_span_underlines_each_line() {
     // row outruns the line above it.
     let src = "\"aaa\"\n\t\"bbb\"\n";
     let d = Diagnostic::error(Code::TypeMismatch, Span::new(0, 12), 1, "not a function");
-    let text = d.render(src, "t.thx");
+    let text = d.render(src, "t.ares");
     assert!(text.contains("1 | \"aaa\"\n  | ^^^^^\n"), "{text}");
     assert!(text.contains("2 | \t\"bbb\"\n  | \t^^^^^\n"), "{text}");
 }
@@ -127,7 +127,7 @@ fn a_multi_line_span_underlines_each_line() {
 fn a_long_span_elides_its_middle() {
     let src = "a\nb\nc\nd\ne\nf\n";
     let d = Diagnostic::error(Code::TypeMismatch, Span::new(0, 11), 1, "long");
-    let text = d.render(src, "t.thx");
+    let text = d.render(src, "t.ares");
     assert!(text.contains("3 | c\n"), "{text}");
     assert!(!text.contains("4 | d\n"), "{text}");
     assert!(text.contains("  ...\n6 | f\n"), "{text}");
@@ -139,8 +139,8 @@ fn end_of_input_points_after_the_last_character() {
     // must caret where the text stopped, not an empty line after it.
     let src = "x = 2.\n\n";
     let d = Diagnostic::error(Code::UnexpectedToken, Span::at(src.len()), 3, "eof");
-    let text = d.render(src, "t.thx");
-    assert!(text.contains("--> t.thx:1:7\n"), "{text}");
+    let text = d.render(src, "t.ares");
+    assert!(text.contains("--> t.ares:1:7\n"), "{text}");
     assert!(text.contains("1 | x = 2.\n  |       ^\n"), "{text}");
 }
 
@@ -149,7 +149,7 @@ fn a_label_underlines_a_secondary_span() {
     let src = "f (\"s\" : @Int)\n";
     let d = Diagnostic::error(Code::TypeMismatch, Span::new(3, 6), 1, "mismatch")
         .with_label(Span::new(9, 13), "expected because of this");
-    let text = d.render(src, "t.thx");
+    let text = d.render(src, "t.ares");
     assert!(text.contains("  |    ^^^\n"), "{text}");
     assert!(text.contains("  |          ---- expected because of this\n"), "{text}");
 }
@@ -162,7 +162,7 @@ fn asides_keep_their_kind_and_order() {
         note: "why {}", 1;
         help: "fix {}", 2
     );
-    let text = d.render(src, "t.thx");
+    let text = d.render(src, "t.ares");
     assert!(text.ends_with("note: why 1\nhelp: fix 2\n"), "{text}");
     assert!(!d.root().msg.contains("fix"), "{text}");
 }
@@ -183,7 +183,7 @@ fn caret_counts_characters_not_bytes() {
     // span must not draw one caret per byte.
     let src = "\"héllo\"\n";
     let d = Diagnostic::error(Code::TypeMismatch, Span::new(0, 8), 1, "bad");
-    let text = d.render(src, "t.thx");
+    let text = d.render(src, "t.ares");
     assert!(text.contains("  | ^^^^^^^\n"), "{text}");
 }
 
@@ -196,7 +196,7 @@ fn fix_renders_the_patched_line() {
             vec![Edit::new(Span::new(6, 12), "println")],
             Applicability::MaybeIncorrect,
         );
-    let text = d.render(src, "t.thx");
+    let text = d.render(src, "t.ares");
     assert!(text.contains("help: did you mean `println`?\n  |\n1 | $ x = println 1\n  |       ~~~~~~~\n"), "{text}");
 }
 
@@ -205,7 +205,7 @@ fn insertion_is_marked_with_plus() {
     let src = "f x\n";
     let d = Diagnostic::error(Code::TypeMismatch, Span::new(0, 1), 1, "bad")
         .with_fix("add a bang", vec![Edit::new(Span::at(1), "!")], Applicability::MachineApplicable);
-    assert!(d.render(src, "t.thx").contains("1 | f! x\n  |  +\n"), "{}", d.render(src, "t.thx"));
+    assert!(d.render(src, "t.ares").contains("1 | f! x\n  |  +\n"), "{}", d.render(src, "t.ares"));
 }
 
 #[test]
@@ -230,7 +230,7 @@ fn a_sentinel_edit_takes_the_filled_primary_span() {
 #[test]
 fn severity_leads_the_render() {
     let d = Diagnostic::error(Code::UnreachableArm, Span::new(0, 1), 1, "dead").with_severity(Severity::Warning);
-    assert!(d.render("x\n", "t.thx").starts_with("warning[UNREACHABLE_ARM]"));
+    assert!(d.render("x\n", "t.ares").starts_with("warning[UNREACHABLE_ARM]"));
 }
 
 #[test]

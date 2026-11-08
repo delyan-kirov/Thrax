@@ -1,8 +1,8 @@
 //! The IR-to-C emitter: the port of `engines/CC.cpp`. Each lifted [`Code`] is
 //! lowered to BLOCK FUNCTIONS driven by the CEK machine in the runtime
 //! (`runtime.c`): a block runs straight-line C (atoms, pure lets, case branching)
-//! and ends by calling exactly one TERMINATOR (`THxK_ret` / `THxK_tailcall` /
-//! `THxK_apply` / `THxK_jump` / `THxK_handle` / `THxK_defer_run`). A non-tail
+//! and ends by calling exactly one TERMINATOR (`ARESxK_ret` / `ARESxK_tailcall` /
+//! `ARESxK_apply` / `ARESxK_jump` / `ARESxK_handle` / `ARESxK_defer_run`). A non-tail
 //! application is a suspension point: the rest of the computation becomes a
 //! continuation block, so the delimited continuation a handler captures is a pure
 //! heap object rather than live C-stack frames.
@@ -122,7 +122,7 @@ fn known_fn(prog: &IrProgram, caf: usize) -> Option<KnownFn> {
 /// Where a computed value goes.
 #[derive(Clone, Copy)]
 enum Sink {
-    /// Delivered up the continuation stack (`THxK_ret` / `THxK_tailcall`).
+    /// Delivered up the continuation stack (`ARESxK_ret` / `ARESxK_tailcall`).
     Ret,
     /// Written into frame `slot` (a let-box back-patch); then, if `cont` is
     /// `Some`, control jumps to that continuation block. `None` is the pure-into
@@ -146,7 +146,7 @@ enum Sink {
 // anywhere become C calls, and its self tail calls a loop.
 //
 // The callee owns its arguments so that a move survives the call: a caller's
-// last use of a value gives its reference away (`THxVALUE_give`) instead of
+// last use of a value gives its reference away (`ARESxVALUE_give`) instead of
 // parking it in the caller's temporary pool, and the callee's parameter row is
 // its frame's env, from which a last use moves out again. A vector threaded
 // through a chain of direct calls is then held once and `@vec_set` /
@@ -160,7 +160,7 @@ enum Sink {
 // does for the block code.
 //
 // The C stack is finite where the machine's heap continuation is not, so a call
-// is made directly only while `THxD_room()` says the stack has room. Past that
+// is made directly only while `ARESxD_room()` says the stack has room. Past that
 // a direct function runs the callee on a nested machine, and blocks take the
 // ordinary machine path, where further recursion grows the heap. So deep
 // recursion still works, only slower.
@@ -176,8 +176,8 @@ struct Direct {
 }
 
 /// A distinct `@extern` binding the C backend emits a wrapper for. Deduplicated
-/// by symbol + library + signature; a `THxRT_extern(idx, arity)` value points at
-/// its wrapper in the generated `THxRT_extern_table`. The wrapper is N-ary (one
+/// by symbol + library + signature; a `ARESxRT_extern(idx, arity)` value points at
+/// its wrapper in the generated `ARESxRT_extern_table`. The wrapper is N-ary (one
 /// positional C argument per `arg_types` entry, or one unit argument for a
 /// nullary C function): the record grouping several C parameters is flattened
 /// into positional arguments at the call site during lowering.
@@ -216,10 +216,10 @@ pub struct Emitter<'p> {
     reachable: HashSet<usize>,
     tmp: usize,
     /// Whether an emitted block names a [`BuiltinHost::Compiler`] builtin, so
-    /// the program must link `libthrax`.
+    /// the program must link `libares`.
     uses_compiler: std::cell::Cell<bool>,
     /// Whether an emitted block names a [`BuiltinHost::Parallel`] builtin, so
-    /// the runtime must be built thread-ready (`THRAX_THREADS`); every other
+    /// the runtime must be built thread-ready (`ARES_THREADS`); every other
     /// program keeps plain, non-atomic counts.
     uses_threads: std::cell::Cell<bool>,
     /// The known global functions, by the code of their CAF.
@@ -255,7 +255,7 @@ pub struct Emitter<'p> {
 // rebound after its scalar's last use is boxed as usual from then on.
 
 /// The C enum constant the runtime dispatches a built-in on: `@vec_get` is
-/// `THxB_VEC_GET`, an operator spells its symbol out.
+/// `ARESxB_VEC_GET`, an operator spells its symbol out.
 pub fn builtin_ident(name: &str) -> String {
     let stem = match name {
         "==" => "EQ".to_string(),
@@ -273,19 +273,19 @@ pub fn builtin_ident(name: &str) -> String {
             stem.to_ascii_uppercase()
         }
     };
-    format!("THxB_{stem}")
+    format!("ARESxB_{stem}")
 }
 
-/// The `THxB_*` enum, emitted ahead of the runtime, and the names it indexes
+/// The `ARESxB_*` enum, emitted ahead of the runtime, and the names it indexes
 /// (only the compiler builtins report one).
 pub fn emit_builtin_enum() -> String {
     let mut out = String::from("enum {\n");
     for b in native_builtins() {
         out.push_str(&format!("  {},\n", builtin_ident(b.name)));
     }
-    out.push_str("  THxB_COUNT\n};\n");
-    out.push_str("#ifdef THRAX_WITH_COMPILER\n");
-    out.push_str("static const char *const THxB_names[] = {\n");
+    out.push_str("  ARESxB_COUNT\n};\n");
+    out.push_str("#ifdef ARES_WITH_COMPILER\n");
+    out.push_str("static const char *const ARESxB_names[] = {\n");
     for b in native_builtins() {
         out.push_str(&format!("  {},\n", cstr(b.name.as_bytes())));
     }
@@ -367,9 +367,9 @@ fn for_each_atom(e: &IrExpr, f: &mut impl FnMut(&Atom)) {
 /// box; any other slot is left empty and the value moves straight in.
 fn emit_let_slot(rhs: &IrExpr, slot: usize, out: &mut String) {
     if rhs.mentions(slot) {
-        out.push_str(&format!("  THxK_setbox(fr, {slot});\n"));
+        out.push_str(&format!("  ARESxK_setbox(fr, {slot});\n"));
     } else {
-        out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
+        out.push_str(&format!("  ARESxK_drop(fr, {slot});\n"));
     }
 }
 
@@ -385,7 +385,7 @@ enum Opnd {
 }
 
 /// The operands of a builtin generated code computes inline; `None` for one
-/// that goes through `THxK_prim`. See Note [Unboxed integers].
+/// that goes through `ARESxK_prim`. See Note [Unboxed integers].
 fn intrinsic_operands(name: &str) -> Option<&'static [Opnd]> {
     use Opnd::*;
     Some(match name {
@@ -421,18 +421,18 @@ fn int_intrinsic(name: &str, args: &[String]) -> Option<(String, bool)> {
         "@iadd" => (wrap("+"), false),
         "@isub" => (wrap("-"), false),
         "@imul" => (wrap("*"), false),
-        "@idiv" => (format!("THxI_div({a}, {b})"), false),
-        "@imod" => (format!("THxI_mod({a}, {b})"), false),
-        "@udiv" => (format!("THxI_udiv({a}, {b})"), false),
-        "@umod" => (format!("THxI_umod({a}, {b})"), false),
+        "@idiv" => (format!("ARESxI_div({a}, {b})"), false),
+        "@imod" => (format!("ARESxI_mod({a}, {b})"), false),
+        "@udiv" => (format!("ARESxI_udiv({a}, {b})"), false),
+        "@umod" => (format!("ARESxI_umod({a}, {b})"), false),
         "@ieq" => (format!("(({a}) == ({b}))"), true),
         "@ilt" => (format!("(({a}) < ({b}))"), true),
         "@ult" => (format!("((uint64_t)({a}) < (uint64_t)({b}))"), true),
         "not" => (format!("(!({a}))"), true),
-        "@array_len" => (format!("THxA_len({a})"), false),
-        "@array_get" => (format!("THxA_get({a}, {b})"), false),
-        "@array_scan" => (format!("THxA_scan({a}, {b}, {})", args[2]), false),
-        "@array_match" => (format!("THxA_match({a}, {b}, {})", args[2]), true),
+        "@array_len" => (format!("ARESxA_len({a})"), false),
+        "@array_get" => (format!("ARESxA_get({a}, {b})"), false),
+        "@array_scan" => (format!("ARESxA_scan({a}, {b}, {})", args[2]), false),
+        "@array_match" => (format!("ARESxA_match({a}, {b}, {})", args[2]), true),
         _ => return None,
     })
 }
@@ -606,7 +606,7 @@ fn cdbl(v: f64) -> String {
     format!("{v:.17e}")
 }
 
-/// How a Thrax scalar crosses the C ABI in a generated `@extern` wrapper.
+/// How a Ares scalar crosses the C ABI in a generated `@extern` wrapper.
 /// `Int(t)` names the exact C integer type; the word-sized fallback (`Int`, a
 /// type variable, or any unrecognized name) is `int64_t`, matching the C++
 /// `desc_of`.
@@ -642,13 +642,13 @@ fn cabi(name: &str) -> Cabi {
 /// The C parameter type and the expression marshalling `args[i]` into it.
 fn c_param(name: &str, i: usize) -> (&'static str, String) {
     match cabi(name) {
-        Cabi::Bytes => ("char*", format!("(char*)THxVALUE_str(args[{i}])")),
-        Cabi::Ptr => ("void*", format!("(void*)(intptr_t)THxVALUE_as_int(args[{i}])")),
-        Cabi::F32 => ("float", format!("(float)THxVALUE_as_num(args[{i}])")),
-        Cabi::F64 => ("double", format!("THxVALUE_as_num(args[{i}])")),
+        Cabi::Bytes => ("char*", format!("(char*)ARESxVALUE_str(args[{i}])")),
+        Cabi::Ptr => ("void*", format!("(void*)(intptr_t)ARESxVALUE_as_int(args[{i}])")),
+        Cabi::F32 => ("float", format!("(float)ARESxVALUE_as_num(args[{i}])")),
+        Cabi::F64 => ("double", format!("ARESxVALUE_as_num(args[{i}])")),
         // A `{}` parameter is unusual; treat it as a word.
-        Cabi::Unit => ("int64_t", format!("(int64_t)THxVALUE_as_int(args[{i}])")),
-        Cabi::Int(t) => (t, format!("({t})THxVALUE_as_int(args[{i}])")),
+        Cabi::Unit => ("int64_t", format!("(int64_t)ARESxVALUE_as_int(args[{i}])")),
+        Cabi::Int(t) => (t, format!("({t})ARESxVALUE_as_int(args[{i}])")),
     }
 }
 
@@ -656,12 +656,12 @@ fn c_param(name: &str, i: usize) -> (&'static str, String) {
 /// C result `_r` back into a `Value*`.
 fn c_ret(name: &str) -> (&'static str, Option<&'static str>) {
     match cabi(name) {
-        Cabi::Bytes => ("char*", Some("_r ? THxRT_str(_r, strlen(_r)) : THxRT_str(\"\", 0)")),
-        Cabi::Ptr => ("void*", Some("THxRT_int((long long)(intptr_t)_r)")),
-        Cabi::F32 => ("float", Some("THxRT_real32(_r)")),
-        Cabi::F64 => ("double", Some("THxRT_real(_r)")),
+        Cabi::Bytes => ("char*", Some("_r ? ARESxRT_str(_r, strlen(_r)) : ARESxRT_str(\"\", 0)")),
+        Cabi::Ptr => ("void*", Some("ARESxRT_int((long long)(intptr_t)_r)")),
+        Cabi::F32 => ("float", Some("ARESxRT_real32(_r)")),
+        Cabi::F64 => ("double", Some("ARESxRT_real(_r)")),
         Cabi::Unit => ("void", None),
-        Cabi::Int(t) => (t, Some("THxRT_int((long long)_r)")),
+        Cabi::Int(t) => (t, Some("ARESxRT_int((long long)_r)")),
     }
 }
 
@@ -690,7 +690,7 @@ fn cstruct_name(ty: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    format!("THx_cstruct_{safe}")
+    format!("ARESx_cstruct_{safe}")
 }
 
 /// The C type of a struct field: a scalar leaf's C type, or a nested struct's
@@ -702,7 +702,7 @@ fn c_field_type(kind: &utilities::CKind) -> String {
     }
 }
 
-/// Emit `typedef struct { ... } THx_cstruct_<name>;`, recursing into nested
+/// Emit `typedef struct { ... } ARESx_cstruct_<name>;`, recursing into nested
 /// struct fields first (a nested typedef must precede its use). `done` dedups.
 fn emit_cstruct_typedef(
     name: &str,
@@ -726,7 +726,7 @@ fn emit_cstruct_typedef(
     out.push_str(&format!("}} {};\n", cstruct_name(name)));
 }
 
-/// Emit statements filling the C struct lvalue `dst` from the Thrax struct
+/// Emit statements filling the C struct lvalue `dst` from the Ares struct
 /// `Value*` expression `src`, recursing through nested struct fields. For a union
 /// only the members the value actually carries are written (each guarded by a
 /// presence check), so a value built with one member writes just that one.
@@ -739,7 +739,7 @@ fn emit_pack(dst: &str, src: &str, layout: &utilities::CLayout, out: &mut String
             emit_field_assign(&fdst, "_u", &f.kind, out);
             out.push_str("  } }\n");
         } else {
-            let fsrc = format!("THxVALUE_field({src}, {field})");
+            let fsrc = format!("ARESxVALUE_field({src}, {field})");
             emit_field_assign(&fdst, &fsrc, &f.kind, out);
         }
     }
@@ -804,50 +804,50 @@ fn cb_fnptr_type(args: &[String], ret: &str) -> String {
     format!("{} (*)({params})", cb_ctype(ret))
 }
 
-/// The C runtime supporting Thrax closures passed to C as function pointers,
+/// The C runtime supporting Ares closures passed to C as function pointers,
 /// via libffi closures. Emitted only when a program has a callback parameter.
 const CALLBACK_RUNTIME: &str = r#"
-/* -- callbacks: a Thrax closure as a C function pointer (libffi closures) -- */
+/* -- callbacks: a Ares closure as a C function pointer (libffi closures) -- */
 #include <ffi.h>
 #include <stdlib.h>
-static ffi_type* thx_cbty(int k){
+static ffi_type* arx_cbty(int k){
   switch(k){case 0:return &ffi_type_void;case 1:return &ffi_type_sint8;case 2:return &ffi_type_sint16;
   case 3:return &ffi_type_sint32;case 4:return &ffi_type_sint64;case 5:return &ffi_type_uint8;
   case 6:return &ffi_type_uint16;case 7:return &ffi_type_uint32;case 8:return &ffi_type_uint64;
   case 9:return &ffi_type_float;case 10:return &ffi_type_double;default:return &ffi_type_pointer;}
 }
-typedef struct { Value* closure; int nargs; int akinds[16]; int rkind; ffi_cif cif; ffi_type* aty[16]; ffi_closure* clo; void* code; } ThxCb;
-static Value* thx_cb_argval(void* p, int k){
-  switch(k){case 9:return THxRT_real32(*(float*)p);case 10:return THxRT_real(*(double*)p);
-  case 1:return THxRT_int(*(int8_t*)p);case 2:return THxRT_int(*(int16_t*)p);case 3:return THxRT_int(*(int32_t*)p);
-  case 4:return THxRT_int(*(int64_t*)p);case 5:return THxRT_int(*(uint8_t*)p);case 6:return THxRT_int(*(uint16_t*)p);
-  case 7:return THxRT_int(*(uint32_t*)p);case 8:return THxRT_int((long long)*(uint64_t*)p);
-  default:return THxRT_int((long long)(intptr_t)*(void**)p);}
+typedef struct { Value* closure; int nargs; int akinds[16]; int rkind; ffi_cif cif; ffi_type* aty[16]; ffi_closure* clo; void* code; } ARESxCB;
+static Value* arx_cb_argval(void* p, int k){
+  switch(k){case 9:return ARESxRT_real32(*(float*)p);case 10:return ARESxRT_real(*(double*)p);
+  case 1:return ARESxRT_int(*(int8_t*)p);case 2:return ARESxRT_int(*(int16_t*)p);case 3:return ARESxRT_int(*(int32_t*)p);
+  case 4:return ARESxRT_int(*(int64_t*)p);case 5:return ARESxRT_int(*(uint8_t*)p);case 6:return ARESxRT_int(*(uint16_t*)p);
+  case 7:return ARESxRT_int(*(uint32_t*)p);case 8:return ARESxRT_int((long long)*(uint64_t*)p);
+  default:return ARESxRT_int((long long)(intptr_t)*(void**)p);}
 }
-static void thx_cb_setret(void* ret, int k, Value* v){
-  switch(k){case 0:break;case 9:*(float*)ret=(float)THxVALUE_as_num(v);break;case 10:*(double*)ret=THxVALUE_as_num(v);break;
-  default:*(ffi_arg*)ret=(ffi_arg)THxVALUE_as_int(v);break;}
+static void arx_cb_setret(void* ret, int k, Value* v){
+  switch(k){case 0:break;case 9:*(float*)ret=(float)ARESxVALUE_as_num(v);break;case 10:*(double*)ret=ARESxVALUE_as_num(v);break;
+  default:*(ffi_arg*)ret=(ffi_arg)ARESxVALUE_as_int(v);break;}
 }
-static void thx_cb_bind(ffi_cif* cif, void* ret, void** args, void* user){
-  (void)cif; ThxCb* cb=user;
-  Value* r=cb->closure; THxMEM_retain(r);           /* own a starting reference */
+static void arx_cb_bind(ffi_cif* cif, void* ret, void** args, void* user){
+  (void)cif; ARESxCB* cb=user;
+  Value* r=cb->closure; ARESxMEM_retain(r);           /* own a starting reference */
   for(int i=0;i<cb->nargs;i++){
-    Value* nr = THxK_call(r, thx_cb_argval(args[i], cb->akinds[i])); /* owned */
-    THxMEM_release(r);                               /* drop the previous owned value */
+    Value* nr = ARESxK_call(r, arx_cb_argval(args[i], cb->akinds[i])); /* owned */
+    ARESxMEM_release(r);                               /* drop the previous owned value */
     r = nr;
   }
-  thx_cb_setret(ret, cb->rkind, r);
-  THxMEM_release(r);                                 /* drop the final result */
+  arx_cb_setret(ret, cb->rkind, r);
+  ARESxMEM_release(r);                                 /* drop the final result */
 }
-static void* thx_cb_make(Value* closure, int nargs, const int* kinds, int rkind, void** code){
-  ThxCb* cb=calloc(1,sizeof(ThxCb)); cb->closure=closure; THxMEM_retain(closure); cb->nargs=nargs; cb->rkind=rkind;
-  for(int i=0;i<nargs;i++){cb->akinds[i]=kinds[i];cb->aty[i]=thx_cbty(kinds[i]);}
-  ffi_prep_cif(&cb->cif, FFI_DEFAULT_ABI, nargs, thx_cbty(rkind), cb->aty);
+static void* arx_cb_make(Value* closure, int nargs, const int* kinds, int rkind, void** code){
+  ARESxCB* cb=calloc(1,sizeof(ARESxCB)); cb->closure=closure; ARESxMEM_retain(closure); cb->nargs=nargs; cb->rkind=rkind;
+  for(int i=0;i<nargs;i++){cb->akinds[i]=kinds[i];cb->aty[i]=arx_cbty(kinds[i]);}
+  ffi_prep_cif(&cb->cif, FFI_DEFAULT_ABI, nargs, arx_cbty(rkind), cb->aty);
   cb->clo=ffi_closure_alloc(sizeof(ffi_closure), &cb->code);
-  ffi_prep_closure_loc(cb->clo,&cb->cif,thx_cb_bind,cb,cb->code);
+  ffi_prep_closure_loc(cb->clo,&cb->cif,arx_cb_bind,cb,cb->code);
   *code=cb->code; return cb;
 }
-static void thx_cb_free(void* h){ ThxCb* cb=h; if(cb){ THxMEM_release(cb->closure); ffi_closure_free(cb->clo); free(cb);} }
+static void arx_cb_free(void* h){ ARESxCB* cb=h; if(cb){ ARESxMEM_release(cb->closure); ffi_closure_free(cb->clo); free(cb);} }
 "#;
 
 /// Assign one field: recurse for a nested struct, or read a scalar leaf.
@@ -856,13 +856,13 @@ fn emit_field_assign(fdst: &str, fsrc: &str, kind: &utilities::CKind, out: &mut 
         utilities::CKind::Struct(_, inner) => emit_pack(fdst, fsrc, inner, out),
         leaf => {
             let (cty, is_float) = c_leaf(leaf);
-            let read = if is_float { "THxVALUE_as_num" } else { "THxVALUE_as_int" };
+            let read = if is_float { "ARESxVALUE_as_num" } else { "ARESxVALUE_as_int" };
             out.push_str(&format!("  {fdst} = ({cty}){read}({fsrc});\n"));
         }
     }
 }
 
-/// Emit statements building a Thrax struct `Value*` from the C struct expression
+/// Emit statements building a Ares struct `Value*` from the C struct expression
 /// `src`, recursing through nested struct fields. Returns the temp holding it.
 fn emit_build(
     src: &str,
@@ -880,9 +880,9 @@ fn emit_build(
                 utilities::CKind::Struct(inner_name, inner) => {
                     emit_build(&cf, inner_name, inner, out, ctr)
                 }
-                utilities::CKind::F32 => format!("THxRT_real32({cf})"),
-                leaf if c_leaf(leaf).1 => format!("THxRT_real((double){cf})"),
-                _ => format!("THxRT_int((long long){cf})"),
+                utilities::CKind::F32 => format!("ARESxRT_real32({cf})"),
+                leaf if c_leaf(leaf).1 => format!("ARESxRT_real((double){cf})"),
+                _ => format!("ARESxRT_int((long long){cf})"),
             }
         })
         .collect();
@@ -892,14 +892,14 @@ fn emit_build(
     out.push_str(&format!("  const char* _fn{id}[] = {{{}}};\n", fnames.join(", ")));
     out.push_str(&format!("  Value* _fv{id}[] = {{{}}};\n", vals.join(", ")));
     out.push_str(&format!(
-        "  Value* _t{id} = THxRT_struct({}, {}, _fn{id}, _fv{id});\n",
+        "  Value* _t{id} = ARESxRT_struct({}, {}, _fn{id}, _fv{id});\n",
         cstr(name.as_bytes()),
         layout.fields.len()
     ));
     format!("_t{id}")
 }
 
-/// Emit the foreign-function wrappers and the `THxRT_extern_table` the runtime
+/// Emit the foreign-function wrappers and the `ARESxRT_extern_table` the runtime
 /// dispatches through. Each wrapper declares the C symbol with an `__asm__`
 /// label (a direct call, resolved by the linker) and marshals the collected
 /// arguments across the seam. C-repr structs (`@struct @extern`) referenced by a
@@ -922,7 +922,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
             }
         }
     }
-    // The libffi-closure runtime, only when a program passes a Thrax closure to C.
+    // The libffi-closure runtime, only when a program passes a Ares closure to C.
     let has_callbacks = externs
         .iter()
         .any(|e| e.arg_types.iter().any(|t| t.as_str().starts_with("@fn(")));
@@ -948,8 +948,8 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
         // playground this program is interpreted, not compiled to C.)
         if e.abi == "WASM" {
             out.push_str(&format!(
-                "static Value* THx_extern_{n}(Value** args) {{\n  (void)args;\n  \
-                 thrax_fault({});\n}}\n",
+                "static Value* ARESx_extern_{n}(Value** args) {{\n  (void)args;\n  \
+                 ares_fault({});\n}}\n",
                 cstr(format!("@extern \"WASM\" host import `{}` unavailable in native C", e.symbol)
                     .as_bytes())
             ));
@@ -966,10 +966,10 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
         // arguments) and wraps it as a C call's result would be.
         if e.abi == "load" {
             out.push_str(&format!(
-                "static Value* THx_extern_{n}(Value** args) {{\n  \
-                 const char* _p = (const char*)(intptr_t)THxVALUE_as_int(args[0]);\n  \
-                 int64_t _i = THxVALUE_as_int(args[1]);\n  \
-                 if (!_p) thrax_fault(\"load from a null pointer\");\n  \
+                "static Value* ARESx_extern_{n}(Value** args) {{\n  \
+                 const char* _p = (const char*)(intptr_t)ARESxVALUE_as_int(args[0]);\n  \
+                 int64_t _i = ARESxVALUE_as_int(args[1]);\n  \
+                 if (!_p) ares_fault(\"load from a null pointer\");\n  \
                  {ret_ty} _r;\n  \
                  memcpy(&_r, _p + _i * (int64_t)sizeof(_r), sizeof(_r));\n"
             ));
@@ -990,7 +990,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
 
         // Each argument's C parameter type and the statements that build `a{i}`.
         // A `{}` parameter carries no C argument (a `void`-taking function like
-        // `getchar`); it stays in the Thrax arity but is dropped from the call.
+        // `getchar`); it stays in the Ares arity but is dropped from the call.
         let mut sig_types: Vec<String> = Vec::new();
         let mut setup = String::new();
         let mut call_args: Vec<String> = Vec::new();
@@ -1020,7 +1020,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
                 call_args.push(format!("_arr{i}"));
                 arr_frees.push(i);
             } else if let Some((cb_args, cb_ret)) = parse_cb(t) {
-                // A callback: build a libffi closure over the Thrax function value
+                // A callback: build a libffi closure over the Ares function value
                 // and pass its code pointer as the C function pointer.
                 let fnptr = cb_fnptr_type(&cb_args, &cb_ret);
                 sig_types.push(fnptr.clone());
@@ -1031,7 +1031,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
                 };
                 setup.push_str(&format!("  int _k{i}[] = {{{kinds}}};\n"));
                 setup.push_str(&format!(
-                    "  void* _cc{i}; void* _cb{i} = thx_cb_make(args[{i}], {}, _k{i}, {}, &_cc{i});\n",
+                    "  void* _cc{i}; void* _cb{i} = arx_cb_make(args[{i}], {}, _k{i}, {}, &_cc{i});\n",
                     cb_args.len(),
                     cb_kind(&cb_ret)
                 ));
@@ -1052,7 +1052,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
         }
         let frees: String = cb_frees
             .iter()
-            .map(|i| format!("  thx_cb_free(_cb{i});\n"))
+            .map(|i| format!("  arx_cb_free(_cb{i});\n"))
             .chain(arr_frees.iter().map(|i| format!("  free(_arr{i});\n")))
             .collect();
         let sig = if sig_types.is_empty() {
@@ -1061,15 +1061,15 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
             sig_types.join(", ")
         };
         out.push_str(&format!(
-            "extern {ret_ty} THx_sym_{n}({sig}) __asm__(THX_ASM_NAME({}));\n",
+            "extern {ret_ty} ARESx_sym_{n}({sig}) __asm__(ARX_ASM_NAME({}));\n",
             cstr(e.symbol.bytes())
         ));
-        out.push_str(&format!("static Value* THx_extern_{n}(Value** args) {{\n  (void)args;\n"));
+        out.push_str(&format!("static Value* ARESx_extern_{n}(Value** args) {{\n  (void)args;\n"));
         // The wrapper is N-ary: `args[i]` is the i-th positional C argument (the
         // grouping record was flattened at the call site during lowering). A
         // nullary C function still receives one unit `args[0]`, dropped below.
         out.push_str(&setup);
-        let call = format!("THx_sym_{n}({})", call_args.join(", "));
+        let call = format!("ARESx_sym_{n}({})", call_args.join(", "));
         match ret_layout {
             Some(layout) => {
                 out.push_str(&format!("  {ret_ty} _r = {call};\n"));
@@ -1079,7 +1079,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
                 out.push_str(&format!("  return {tmp};\n"));
             }
             None => match c_ret(e.ret_type.as_str()).1 {
-                None => out.push_str(&format!("  {call};\n{frees}  return THxRT_unit();\n")),
+                None => out.push_str(&format!("  {call};\n{frees}  return ARESxRT_unit();\n")),
                 Some(w) => {
                     out.push_str(&format!("  {ret_ty} _r = {call};\n{frees}  return {w};\n"))
                 }
@@ -1089,15 +1089,15 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
     }
     let n = externs.len();
     if n == 0 {
-        out.push_str("ExternFn THxRT_extern_table[1] = {0};\n");
+        out.push_str("ExternFn ARESxRT_extern_table[1] = {0};\n");
     } else {
-        out.push_str("ExternFn THxRT_extern_table[] = {\n");
+        out.push_str("ExternFn ARESxRT_extern_table[] = {\n");
         for i in 0..n {
-            out.push_str(&format!("  THx_extern_{i},\n"));
+            out.push_str(&format!("  ARESx_extern_{i},\n"));
         }
         out.push_str("};\n");
     }
-    out.push_str(&format!("const size_t THxRT_extern_count = {n};\n"));
+    out.push_str(&format!("const size_t ARESxRT_extern_count = {n};\n"));
     out
 }
 
@@ -1455,16 +1455,16 @@ impl<'p> Emitter<'p> {
                 BuiltinHost::Parallel => self.uses_threads.set(true),
                 BuiltinHost::Everywhere | BuiltinHost::CompileTime => {}
             }
-            return format!("THxRT_builtin({}, {})", builtin_ident(name), b.arity);
+            return format!("ARESxRT_builtin({}, {})", builtin_ident(name), b.arity);
         }
         if let Some(suffix) = name.strip_prefix("TARGET.") {
-            return format!("THxRT_target({})", cstr(suffix.as_bytes()));
+            return format!("ARESxRT_target({})", cstr(suffix.as_bytes()));
         }
         // An effect operation: `Effect.op` picks that effect, a bare op the sole
         // effect declaring it (else ambient / NULL, resolved by the handler).
         if let Some((eff, op)) = name.split_once('.') {
             if self.ops_by_effect.get(eff).is_some_and(|o| o.contains(&op)) {
-                return format!("THxK_op({}, {})", cstr(eff.as_bytes()), cstr(op.as_bytes()));
+                return format!("ARESxK_op({}, {})", cstr(eff.as_bytes()), cstr(op.as_bytes()));
             }
         }
         if let Some(effs) = self.ops_by_name.get(name) {
@@ -1473,7 +1473,7 @@ impl<'p> Emitter<'p> {
             } else {
                 "NULL".to_string()
             };
-            return format!("THxK_op({eff}, {})", cstr(name.as_bytes()));
+            return format!("ARESxK_op({eff}, {})", cstr(name.as_bytes()));
         }
         // The unqualified fallback: a reference the codegen left bare (the entry
         // point, or a name not resolved to a module), matched by last segment.
@@ -1481,7 +1481,7 @@ impl<'p> Emitter<'p> {
             return format!("force_code({code})");
         }
         // An unknown bare name: an ambient effect operation, resolved by a handler.
-        format!("THxK_op(NULL, {})", cstr(name.as_bytes()))
+        format!("ARESxK_op(NULL, {})", cstr(name.as_bytes()))
     }
 
     /// Each atom is a single, side-effect-light C expression.
@@ -1489,28 +1489,28 @@ impl<'p> Emitter<'p> {
         match a {
             Atom::Local(i) | Atom::Move(i) if self.scalars.contains_key(i) => {
                 let (v, boolean) = &self.scalars[i];
-                format!("{}({v})", if *boolean { "THxRT_bool" } else { "THxRT_int" })
+                format!("{}({v})", if *boolean { "ARESxRT_bool" } else { "ARESxRT_int" })
             }
-            Atom::Local(i) => format!("THxVALUE_local(fr->locals, fr->nlocals, {i})"),
-            Atom::Move(i) => format!("THxVALUE_take(fr, {i})"),
+            Atom::Local(i) => format!("ARESxVALUE_local(fr->locals, fr->nlocals, {i})"),
+            Atom::Move(i) => format!("ARESxVALUE_take(fr, {i})"),
             Atom::Env(i) | Atom::MoveEnv(i) if self.env_ints.contains_key(i) => {
-                format!("THxRT_int({})", self.env_ints[i])
+                format!("ARESxRT_int({})", self.env_ints[i])
             }
-            Atom::Env(i) => format!("THxVALUE_env(fr->env, fr->nenv, {i})"),
-            Atom::MoveEnv(i) => format!("THxVALUE_take_env(fr, {i})"),
+            Atom::Env(i) => format!("ARESxVALUE_env(fr->env, fr->nenv, {i})"),
+            Atom::MoveEnv(i) => format!("ARESxVALUE_take_env(fr, {i})"),
             Atom::Glob { name } => self.glob_atom(name.as_str()),
-            Atom::LitI(n) => format!("THxRT_int({n}LL)"),
-            Atom::LitR(r) => format!("THxRT_real({})", cdbl(*r)),
-            Atom::LitS(v) => format!("THxRT_str({}, {})", cstr(v), v.len()),
-            Atom::LitB(b) => format!("THxRT_bool({})", if *b { 1 } else { 0 }),
-            Atom::Unit => "THxRT_unit()".into(),
+            Atom::LitI(n) => format!("ARESxRT_int({n}LL)"),
+            Atom::LitR(r) => format!("ARESxRT_real({})", cdbl(*r)),
+            Atom::LitS(v) => format!("ARESxRT_str({}, {})", cstr(v), v.len()),
+            Atom::LitB(b) => format!("ARESxRT_bool({})", if *b { 1 } else { 0 }),
+            Atom::Unit => "ARESxRT_unit()".into(),
             Atom::Clos { code, captures } => {
                 if captures.is_empty() {
-                    format!("THxRT_closure({code}, NULL, 0)")
+                    format!("ARESxRT_closure({code}, NULL, 0)")
                 } else {
                     let caps: Vec<String> = captures.iter().map(|c| self.atom(c)).collect();
                     format!(
-                        "THxRT_closure({code}, (Value*[]){{ {} }}, {})",
+                        "ARESxRT_closure({code}, (Value*[]){{ {} }}, {})",
                         caps.join(", "),
                         captures.len()
                     )
@@ -1528,7 +1528,7 @@ impl<'p> Emitter<'p> {
                 // The extern value is N-ary: one positional C argument per
                 // `arg_types` entry, or one unit argument for a nullary C function.
                 let arity = arg_types.len().max(1);
-                format!("THxRT_extern({idx}, {arity})")
+                format!("ARESxRT_extern({idx}, {arity})")
             }
         }
     }
@@ -1552,18 +1552,18 @@ impl<'p> Emitter<'p> {
                 };
                 match base {
                     Some(b) => format!(
-                        "THxRT_struct_update({}, {}, {n}, {fnames}, {vals})",
+                        "ARESxRT_struct_update({}, {}, {n}, {fnames}, {vals})",
                         self.atom(b),
                         cstr(name.bytes())
                     ),
                     None => {
-                        format!("THxRT_struct({}, {n}, {fnames}, {vals})", cstr(name.bytes()))
+                        format!("ARESxRT_struct({}, {n}, {fnames}, {vals})", cstr(name.bytes()))
                     }
                 }
             }
             // A GNU statement expression gives each access site its own cache.
             IrExpr::Field { rec, name } => format!(
-                "({{ static unsigned _fic; THxVALUE_field_ic({}, {}, &_fic); }})",
+                "({{ static unsigned _fic; ARESxVALUE_field_ic({}, {}, &_fic); }})",
                 self.atom(rec),
                 cstr(name.bytes())
             ),
@@ -1576,16 +1576,16 @@ impl<'p> Emitter<'p> {
                 };
                 let (ty, tag, n) = (cstr(ty.bytes()), cstr(tag.bytes()), fields.len());
                 match reuse {
-                    Some(t) => format!("THxRT_variant_at(fr, {t}, {ty}, {tag}, {n}, {vals})"),
-                    None => format!("THxRT_variant({ty}, {tag}, {n}, {vals})"),
+                    Some(t) => format!("ARESxRT_variant_at(fr, {t}, {ty}, {tag}, {n}, {vals})"),
+                    None => format!("ARESxRT_variant({ty}, {tag}, {n}, {vals})"),
                 }
             }
             IrExpr::MkTuple(items) => {
                 if items.is_empty() {
-                    "THxRT_tuple(NULL, 0)".into()
+                    "ARESxRT_tuple(NULL, 0)".into()
                 } else {
                     let vs: Vec<String> = items.iter().map(|a| self.atom(a)).collect();
-                    format!("THxRT_tuple((Value*[]){{ {} }}, {})", vs.join(", "), items.len())
+                    format!("ARESxRT_tuple((Value*[]){{ {} }}, {})", vs.join(", "), items.len())
                 }
             }
             IrExpr::Let { .. }
@@ -1622,27 +1622,27 @@ impl<'p> Emitter<'p> {
     fn deliver(&self, val: &str, sink: Sink, out: &mut String) {
         match sink {
             Sink::Ret if self.direct.is_some_and(|d| d.int_ret) => {
-                self.return_int(&format!("THxI({val})"), out)
+                self.return_int(&format!("ARESxI({val})"), out)
             }
             Sink::Ret if self.direct.is_some() => {
                 let n = self.direct.map_or(0, |d| d.arity);
-                out.push_str(&format!("  return THxD_leave(fr, P, {n}, mark, {val});\n"))
+                out.push_str(&format!("  return ARESxD_leave(fr, P, {n}, mark, {val});\n"))
             }
-            Sink::Ret => out.push_str(&format!("  THxK_ret({val});\n")),
+            Sink::Ret => out.push_str(&format!("  ARESxK_ret({val});\n")),
             Sink::Slot { slot, cont } => {
-                out.push_str(&format!("  THxK_backpatch(fr, {slot}, {val});\n"));
+                out.push_str(&format!("  ARESxK_backpatch(fr, {slot}, {val});\n"));
                 if let Some(cont) = cont {
-                    out.push_str(&format!("  THxK_jump(blk_{cont});\n"));
+                    out.push_str(&format!("  ARESxK_jump(blk_{cont});\n"));
                 }
             }
-            Sink::Int { var } => out.push_str(&format!("  sv{var} = THxI({val});\n")),
+            Sink::Int { var } => out.push_str(&format!("  sv{var} = ARESxI({val});\n")),
         }
     }
 
     /// Return the integer `val` from a direct function with an unboxed result.
     fn return_int(&self, val: &str, out: &mut String) {
         let n = self.direct.map_or(0, |d| d.arity);
-        out.push_str(&format!("  return THxD_leave_i(fr, P, {n}, mark, {val});\n"));
+        out.push_str(&format!("  return ARESxD_leave_i(fr, P, {n}, mark, {val});\n"));
     }
 
     /// Compute a pure (suspension-free) expression's value into frame `slot`,
@@ -1652,7 +1652,7 @@ impl<'p> Emitter<'p> {
             // Slot to slot, not through the temp pool, so the value stays
             // uniquely held for a reuse later in the same block.
             IrExpr::Ret(Atom::Move(from)) => {
-                out.push_str(&format!("  THxK_move(fr, {slot}, {from});\n"));
+                out.push_str(&format!("  ARESxK_move(fr, {slot}, {from});\n"));
             }
             IrExpr::Ret(_)
             | IrExpr::MkStruct { .. }
@@ -1660,10 +1660,10 @@ impl<'p> Emitter<'p> {
             | IrExpr::MkVariant { .. }
             | IrExpr::MkTuple(_) => {
                 let val = self.value_expr(e);
-                out.push_str(&format!("  THxK_backpatch(fr, {slot}, {val});\n"));
+                out.push_str(&format!("  ARESxK_backpatch(fr, {slot}, {val});\n"));
             }
             IrExpr::Fault(msg) => {
-                out.push_str(&format!("  thrax_fault({});\n", cstr(msg.as_bytes())))
+                out.push_str(&format!("  ares_fault({});\n", cstr(msg.as_bytes())))
             }
             IrExpr::Case { .. } => self.emit_case(e, Sink::Slot { slot, cont: None }, out),
             IrExpr::Let {
@@ -1706,7 +1706,7 @@ impl<'p> Emitter<'p> {
                 self.deliver(&val, sink, out);
             }
             IrExpr::Fault(msg) => {
-                out.push_str(&format!("  thrax_fault({});\n", cstr(msg.as_bytes())))
+                out.push_str(&format!("  ares_fault({});\n", cstr(msg.as_bytes())))
             }
 
             IrExpr::App { fun, arg, .. } if self.direct.is_some() => match self.lone_call(fun, arg) {
@@ -1715,7 +1715,7 @@ impl<'p> Emitter<'p> {
                 None => {
                     let r = self.fresh("part");
                     out.push_str(&format!(
-                        "  Value* {r} = THxK_own(THxK_call({}, {}));\n",
+                        "  Value* {r} = ARESxK_own(ARESxK_call({}, {}));\n",
                         self.atom(fun),
                         self.atom(arg)
                     ));
@@ -1738,17 +1738,17 @@ impl<'p> Emitter<'p> {
                 //
                 // A lent argument must outlive the callee. A tail call ends this
                 // activation, so it lends only a global or, through
-                // `THxK_tailcall_pass`, a slot this activation was itself lent.
+                // `ARESxK_tailcall_pass`, a slot this activation was itself lent.
                 // See Note [Borrowed parameters].
                 match sink {
                     Sink::Ret => match arg_atom {
                         Atom::Local(s) if *lend => {
-                            out.push_str(&format!("  THxK_tailcall_pass(fr, {fn_}, {s});\n"))
+                            out.push_str(&format!("  ARESxK_tailcall_pass(fr, {fn_}, {s});\n"))
                         }
                         Atom::Glob { .. } if *lend && arg.starts_with("force_code(") => {
-                            out.push_str(&format!("  THxK_tailcall_lent({fn_}, {arg});\n"))
+                            out.push_str(&format!("  ARESxK_tailcall_lent({fn_}, {arg});\n"))
                         }
-                        _ => out.push_str(&format!("  THxK_tailcall({fn_}, {arg});\n")),
+                        _ => out.push_str(&format!("  ARESxK_tailcall({fn_}, {arg});\n")),
                     },
                     Sink::Int { .. } => unreachable!("an integer join holds only direct calls (`int_tail`)"),
                     Sink::Slot { slot, cont } => {
@@ -1759,7 +1759,7 @@ impl<'p> Emitter<'p> {
                                 Atom::Glob { .. } => arg.starts_with("force_code("),
                                 _ => false,
                             };
-                        let apply = if lends { "THxK_apply_lent" } else { "THxK_apply" };
+                        let apply = if lends { "ARESxK_apply_lent" } else { "ARESxK_apply" };
                         out.push_str(&format!(
                             "  {apply}(fr, {fn_}, {arg}, blk_{cont}, {slot});\n"
                         ));
@@ -1941,7 +1941,7 @@ impl<'p> Emitter<'p> {
     fn emit_prim(&mut self, call: Call, sink: Sink, out: &mut String) {
         if let Callee::Extern(idx) = call.callee {
             let args: Vec<String> = call.args.iter().map(|a| self.atom(a)).collect();
-            let val = format!("THxRT_extern_table[{idx}]((Value*[]){{ {} }})", args.join(", "));
+            let val = format!("ARESxRT_extern_table[{idx}]((Value*[]){{ {} }})", args.join(", "));
             return self.emit_prim_value(&call, val, sink, out);
         }
         self.glob_atom(call.name);
@@ -1961,7 +1961,7 @@ impl<'p> Emitter<'p> {
         let mut args: Vec<String> = call.args.iter().map(|a| self.atom(a)).collect();
         let val = if matches!(call.name, "@vec_push" | "@vec_set") {
             // A moved vector may be updated in place when nothing else holds it.
-            // `THxVALUE_take_env` moves only when its closure is unshared, so
+            // `ARESxVALUE_take_env` moves only when its closure is unshared, so
             // whether it did is read back from the emptied field, in a statement
             // of its own since operand evaluation order is unspecified.
             let owned = match call.args[0] {
@@ -1976,17 +1976,17 @@ impl<'p> Emitter<'p> {
                 _ => "0".to_string(),
             };
             format!(
-                "THxK_vec_update({}, (Value*[]){{ {} }}, {owned})",
+                "ARESxK_vec_update({}, (Value*[]){{ {} }}, {owned})",
                 builtin_ident(call.name),
                 args.join(", ")
             )
         } else if call.name == "@array_push" && matches!(call.args[0], Atom::Move(_)) {
             // Only a local's last use may be pushed onto in place: a moved
             // capture is still a borrow whenever the closure has other owners.
-            format!("THxK_array_push_owned({})", args.join(", "))
+            format!("ARESxK_array_push_owned({})", args.join(", "))
         } else {
             format!(
-                "THxK_prim({}, (Value*[]){{ {} }})",
+                "ARESxK_prim({}, (Value*[]){{ {} }})",
                 builtin_ident(call.name),
                 args.join(", ")
             )
@@ -2000,8 +2000,8 @@ impl<'p> Emitter<'p> {
         match call.rest {
             Some((slot, rest)) => {
                 self.scalars.remove(&slot);
-                out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
-                out.push_str(&format!("  THxK_backpatch(fr, {slot}, {val});\n"));
+                out.push_str(&format!("  ARESxK_drop(fr, {slot});\n"));
+                out.push_str(&format!("  ARESxK_backpatch(fr, {slot}, {val});\n"));
                 self.emit_drops(&call.drops, out);
                 self.emit_expr(rest, sink, out);
             }
@@ -2017,7 +2017,7 @@ impl<'p> Emitter<'p> {
     /// An integer intrinsic computed in C, its result kept in a scalar when
     /// `scalar_uses` allows, else boxed. See Note [Unboxed integers].
     fn emit_int_prim(&mut self, call: &Call, expr: String, boolean: bool, sink: Sink, out: &mut String) {
-        let (ctype, boxer) = if boolean { ("int", "THxRT_bool") } else { ("int64_t", "THxRT_int") };
+        let (ctype, boxer) = if boolean { ("int", "ARESxRT_bool") } else { ("int64_t", "ARESxRT_int") };
         match call.rest {
             Some((slot, rest)) if self.scalar_uses(rest, slot) => {
                 let v = self.fresh("iv");
@@ -2029,8 +2029,8 @@ impl<'p> Emitter<'p> {
             }
             Some((slot, rest)) => {
                 self.scalars.remove(&slot);
-                out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
-                out.push_str(&format!("  THxK_backpatch(fr, {slot}, {boxer}({expr}));\n"));
+                out.push_str(&format!("  ARESxK_drop(fr, {slot});\n"));
+                out.push_str(&format!("  ARESxK_backpatch(fr, {slot}, {boxer}({expr}));\n"));
                 self.emit_drops(&call.drops, out);
                 self.emit_expr(rest, sink, out);
             }
@@ -2074,22 +2074,22 @@ impl<'p> Emitter<'p> {
         // given above go to the pool, as a temporary's would.
         let boxed = |k: usize| {
             if sig.int_params[k] {
-                format!("THxRT_int({})", names[k])
+                format!("ARESxRT_int({})", names[k])
             } else {
-                format!("THxK_own({})", names[k])
+                format!("ARESxK_own({})", names[k])
             }
         };
         let direct = format!("d_{}({})", f.inner(), names.join(", "));
         let env: Vec<String> = f.env.iter().map(|&i| boxed(i)).collect();
         let clos = if env.is_empty() {
-            format!("THxRT_closure({}, NULL, 0)", f.inner())
+            format!("ARESxRT_closure({}, NULL, 0)", f.inner())
         } else {
-            format!("THxRT_closure({}, (Value*[]){{ {} }}, {})", f.inner(), env.join(", "), env.len())
+            format!("ARESxRT_closure({}, (Value*[]){{ {} }}, {})", f.inner(), env.join(", "), env.len())
         };
         let last = boxed(names.len() - 1);
         match self.direct {
             Some(d) if d.inner == f.inner() && call.rest.is_none() && matches!(sink, Sink::Ret) => {
-                out.push_str(&format!("  THxD_reset(fr, P, {}, mark);\n", d.arity));
+                out.push_str(&format!("  ARESxD_reset(fr, P, {}, mark);\n", d.arity));
                 for (k, n) in names.iter().enumerate() {
                     if sig.int_params[k] {
                         out.push_str(&format!("  I{k} = {n};\n"));
@@ -2105,11 +2105,11 @@ impl<'p> Emitter<'p> {
                 let r = self.fresh("call");
                 if sig.int_ret {
                     out.push_str(&format!(
-                        "  int64_t {r} = THxD_room() ? {direct} : THxI_own(THxK_call({clos}, {last}));\n"
+                        "  int64_t {r} = ARESxD_room() ? {direct} : ARESxI_own(ARESxK_call({clos}, {last}));\n"
                     ));
                 } else {
                     out.push_str(&format!(
-                        "  Value* {r} = THxK_own(THxD_room() ? {direct} : THxK_call({clos}, {last}));\n"
+                        "  Value* {r} = ARESxK_own(ARESxD_room() ? {direct} : ARESxK_call({clos}, {last}));\n"
                     ));
                 }
                 self.emit_drops(&call.drops, out);
@@ -2121,9 +2121,9 @@ impl<'p> Emitter<'p> {
                             self.emit_expr(rest, sink, out);
                             self.scalars.remove(&slot);
                         } else {
-                            let v = if sig.int_ret { format!("THxRT_int({r})") } else { r };
-                            out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
-                            out.push_str(&format!("  THxK_backpatch(fr, {slot}, {v});\n"));
+                            let v = if sig.int_ret { format!("ARESxRT_int({r})") } else { r };
+                            out.push_str(&format!("  ARESxK_drop(fr, {slot});\n"));
+                            out.push_str(&format!("  ARESxK_backpatch(fr, {slot}, {v});\n"));
                             self.emit_expr(rest, sink, out);
                         }
                     }
@@ -2132,7 +2132,7 @@ impl<'p> Emitter<'p> {
                         let Sink::Int { var } = sink else { unreachable!() };
                         out.push_str(&format!("  sv{var} = {r};\n"));
                     }
-                    None if sig.int_ret => self.deliver(&format!("THxRT_int({r})"), sink, out),
+                    None if sig.int_ret => self.deliver(&format!("ARESxRT_int({r})"), sink, out),
                     None => self.deliver(&r, sink, out),
                 }
                 out.push_str("  }\n");
@@ -2153,34 +2153,34 @@ impl<'p> Emitter<'p> {
                     }
                     (None, Sink::Int { .. }) => unreachable!("an integer join is only emitted in a direct function"),
                 };
-                out.push_str("  if (THxD_room()) {\n");
+                out.push_str("  if (ARESxD_room()) {\n");
                 let r = self.fresh("call");
                 if sig.int_ret {
-                    out.push_str(&format!("  Value* {r} = THxRT_int({direct});\n"));
+                    out.push_str(&format!("  Value* {r} = ARESxRT_int({direct});\n"));
                 } else {
-                    out.push_str(&format!("  Value* {r} = THxK_own({direct});\n"));
+                    out.push_str(&format!("  Value* {r} = ARESxK_own({direct});\n"));
                 }
                 self.emit_drops(&call.drops, out);
                 match (slot, cont) {
                     (Some(slot), Some(k)) => {
                         if call.rest.is_some() {
-                            out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
+                            out.push_str(&format!("  ARESxK_drop(fr, {slot});\n"));
                         }
-                        out.push_str(&format!("  THxK_backpatch(fr, {slot}, {r});\n"));
-                        out.push_str(&format!("  THxK_jump(blk_{k});\n"));
+                        out.push_str(&format!("  ARESxK_backpatch(fr, {slot}, {r});\n"));
+                        out.push_str(&format!("  ARESxK_jump(blk_{k});\n"));
                     }
-                    _ => out.push_str(&format!("  THxK_ret({r});\n")),
+                    _ => out.push_str(&format!("  ARESxK_ret({r});\n")),
                 }
                 out.push_str("  } else {\n");
                 self.emit_drops(&call.drops, out);
                 match (slot, cont) {
                     (Some(slot), Some(k)) => {
                         if call.rest.is_some() {
-                            out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
+                            out.push_str(&format!("  ARESxK_drop(fr, {slot});\n"));
                         }
-                        out.push_str(&format!("  THxK_apply(fr, {clos}, {last}, blk_{k}, {slot});\n"));
+                        out.push_str(&format!("  ARESxK_apply(fr, {clos}, {last}, blk_{k}, {slot});\n"));
                     }
-                    _ => out.push_str(&format!("  THxK_tailcall({clos}, {last});\n")),
+                    _ => out.push_str(&format!("  ARESxK_tailcall({clos}, {last});\n")),
                 }
                 out.push_str("  }\n  }\n");
             }
@@ -2227,7 +2227,7 @@ impl<'p> Emitter<'p> {
             out.push_str(&format!("  int64_t I{i} = a{i};\n"));
         }
         // The frame's env IS the parameter row, so a last use moves the row's
-        // own reference out (see `THxVALUE_take_env`): a vector threaded
+        // own reference out (see `ARESxVALUE_take_env`): a vector threaded
         // through a loop stays uniquely held and updates in place.
         assert!(
             f.env.iter().enumerate().all(|(j, &p)| j == p),
@@ -2235,17 +2235,17 @@ impl<'p> Emitter<'p> {
         );
         out.push_str(&format!("  Value* L[{}];\n", code.nlocals.max(1)));
         out.push_str("  Frame F;\n  Frame* fr = &F;\n");
-        out.push_str("  size_t mark = THxMEM_pool_mark();\n");
+        out.push_str("  size_t mark = ARESxMEM_pool_mark();\n");
         if self.looped {
             out.push_str("top:\n");
         }
         out.push_str(&format!(
-            "  THxD_frame(fr, L, {}, P, {});\n",
+            "  ARESxD_frame(fr, L, {}, P, {});\n",
             code.nlocals,
             f.env.len()
         ));
         if !sig.int_params[n - 1] {
-            out.push_str(&format!("  THxD_param0(fr, P, {});\n", n - 1));
+            out.push_str(&format!("  ARESxD_param0(fr, P, {});\n", n - 1));
         }
         out.push_str(&body);
         out.push_str("}\n\n");
@@ -2256,7 +2256,7 @@ impl<'p> Emitter<'p> {
     fn emit_drops(&self, slots: &[usize], out: &mut String) {
         for s in slots {
             if !self.scalars.contains_key(s) {
-                out.push_str(&format!("  THxK_drop(fr, {s});\n"));
+                out.push_str(&format!("  ARESxK_drop(fr, {s});\n"));
             }
         }
     }
@@ -2265,9 +2265,9 @@ impl<'p> Emitter<'p> {
     /// owns. See Note [Direct functions].
     fn give_atom(&self, a: &Atom) -> String {
         match a {
-            Atom::Move(s) if !self.scalars.contains_key(s) => format!("THxVALUE_give(fr, {s})"),
-            Atom::MoveEnv(i) if !self.env_ints.contains_key(i) => format!("THxVALUE_give_env(fr, {i})"),
-            _ => format!("THxD_lend({})", self.atom(a)),
+            Atom::Move(s) if !self.scalars.contains_key(s) => format!("ARESxVALUE_give(fr, {s})"),
+            Atom::MoveEnv(i) if !self.env_ints.contains_key(i) => format!("ARESxVALUE_give_env(fr, {i})"),
+            _ => format!("ARESxD_lend({})", self.atom(a)),
         }
     }
 
@@ -2278,7 +2278,7 @@ impl<'p> Emitter<'p> {
             Atom::Local(s) | Atom::Move(s) if self.scalars.get(s).is_some_and(|(_, b)| *b) => {
                 self.scalars[s].0.clone()
             }
-            _ => format!("THxVALUE_as_bool({})", self.atom(a)),
+            _ => format!("ARESxVALUE_as_bool({})", self.atom(a)),
         }
     }
 
@@ -2323,7 +2323,7 @@ impl<'p> Emitter<'p> {
             Atom::LitI(n) => clit(*n),
             Atom::Local(s) | Atom::Move(s) if self.scalars.contains_key(s) => self.scalars[s].0.clone(),
             Atom::Env(i) | Atom::MoveEnv(i) if self.env_ints.contains_key(i) => self.env_ints[i].clone(),
-            _ => format!("THxI({})", self.atom(a)),
+            _ => format!("ARESxI({})", self.atom(a)),
         }
     }
 
@@ -2432,20 +2432,20 @@ impl<'p> Emitter<'p> {
         match &scalar {
             Some(v) => out.push_str(&format!("  int64_t {s} = {v};\n")),
             // Scrutinising is what forces a lazy slot.
-            None => out.push_str(&format!("  Value* {s} = THxVALUE_force({});\n", self.atom(scrut))),
+            None => out.push_str(&format!("  Value* {s} = ARESxVALUE_force({});\n", self.atom(scrut))),
         }
         let mut first = true;
         for al in alts {
             let cond = match &al.kind {
                 AltKind::Int(n) if scalar.is_some() => format!("{s} == {}", clit(*n)),
                 AltKind::Bool(b) if scalar.is_some() => format!("{s} == {}", *b as i32),
-                AltKind::Int(n) => format!("THxVALUE_as_int({s}) == {}", clit(*n)),
-                AltKind::Real(r) => format!("THxVALUE_as_num({s}) == {}", cdbl(*r)),
+                AltKind::Int(n) => format!("ARESxVALUE_as_int({s}) == {}", clit(*n)),
+                AltKind::Real(r) => format!("ARESxVALUE_as_num({s}) == {}", cdbl(*r)),
                 AltKind::Bool(b) => {
-                    format!("THxVALUE_as_bool({s}) == {}", if *b { 1 } else { 0 })
+                    format!("ARESxVALUE_as_bool({s}) == {}", if *b { 1 } else { 0 })
                 }
                 AltKind::Con(c) => {
-                    format!("THxVALUE_ctor_is({s}, {})", cstr(c.bytes()))
+                    format!("ARESxVALUE_ctor_is({s}, {})", cstr(c.bytes()))
                 }
             };
             out.push_str(&format!(
@@ -2469,7 +2469,7 @@ impl<'p> Emitter<'p> {
                     };
                     let token = token.map_or("-1".to_string(), |t| t.to_string());
                     out.push_str(&format!(
-                        "  THxK_unpack(fr, {s}, {slot}, {token}, {}, {bind}, {});\n",
+                        "  ARESxK_unpack(fr, {s}, {slot}, {token}, {}, {bind}, {});\n",
                         al.binder_base,
                         al.binders.len()
                     ));
@@ -2478,7 +2478,7 @@ impl<'p> Emitter<'p> {
                     for (i, b) in al.binders.iter().enumerate() {
                         if b.is_some() {
                             out.push_str(&format!(
-                                "  THxK_setlocal(fr, {}, THxVALUE_variant_field({s}, {i}));\n",
+                                "  ARESxK_setlocal(fr, {}, ARESxVALUE_variant_field({s}, {i}));\n",
                                 al.binder_base + i
                             ));
                         }
@@ -2562,7 +2562,7 @@ impl<'p> Emitter<'p> {
             }
         };
         out.push_str(&format!(
-            "  THxK_handle(fr, {cont}, {slot}, {effs}, {ops}, {uses}, {cls}, {}, {els}, \
+            "  ARESxK_handle(fr, {cont}, {slot}, {effs}, {ops}, {uses}, {cls}, {}, {els}, \
              blk_{hbody});\n",
             clauses.len()
         ));
@@ -2586,7 +2586,7 @@ impl<'p> Emitter<'p> {
             }
         };
         out.push_str(&format!(
-            "  THxK_defer_run(fr, {cont}, {slot}, {cl}, blk_{hbody});\n"
+            "  ARESxK_defer_run(fr, {cont}, {slot}, {cl}, blk_{hbody});\n"
         ));
         let mut body_out = String::new();
         self.emit_detached(body, Sink::Ret, &mut body_out);
@@ -2601,7 +2601,7 @@ impl<'p> Emitter<'p> {
         // program never calls) becomes a trap stub: its body is never emitted, so
         // it references no foreign wrapper that was not collected.
         if !self.reachable.contains(&id) {
-            self.set_block(entry, "  thrax_fault(\"unreachable code\");\n");
+            self.set_block(entry, "  ares_fault(\"unreachable code\");\n");
             return;
         }
         let prog = self.prog;

@@ -1,4 +1,4 @@
-# Thrax Metaprogramming Design
+# Ares Metaprogramming Design
 
 **Status:** design draft. Nothing implemented yet. This records the model, the
 decisions taken during design, and the intended build order.
@@ -70,7 +70,7 @@ operations:
 @parse_row  : @Str      -> @Code         -- LANDED. parses effect-row entries, for `<@e (X)>`
 @parse      : @Vec Token -> @Code        -- LANDED. detokenizes + validates like @parse_str
 @unparse    : @Code     -> @Str          -- LANDED. the fragment's source
-@format     : @Str      -> @Str          -- LANDED. items in `thrax fmt` layout; a refusal traps
+@format     : @Str      -> @Str          -- LANDED. items in `ares fmt` layout; a refusal traps
 ```
 
 `@Code` is opaque; it currently carries the fragment's source text (enough for
@@ -96,7 +96,7 @@ too, see "Runtime use" below; the rest need the handler's compiler state):
 @fresh  : @Str      -> <@Meta> @Str    -- LANDED. a unique identifier (prefix + counter), for hygiene
 @link      : @Str   -> <@Meta> @Code   -- LANDED. add a library to the link line (empty code)
 @link_path : @Str   -> <@Meta> @Code   -- LANDED. add a search path to the link line (empty code)
-@import_path : @Str -> <@Meta> {}     -- LANDED. add a module directory; `BUILD.thx`'s `@build` only
+@import_path : @Str -> <@Meta> {}     -- LANDED. add a module directory; `BUILD.ares`'s `@build` only
 @check  : @Code     -> <@Meta> @Str    -- LANDED. type-check a fragment at the site; its type
 @here   : {}        -> <@Meta> Site    -- LANDED. the running `@e`'s file, line, column
 @fail   : Diag      -> <@Meta> a       -- LANDED. fail the build with message, notes, helps
@@ -105,7 +105,7 @@ too, see "Runtime use" below; the rest need the handler's compiler state):
 
 `@check` compiles the fragment as the body of a probe definition in a scratch
 module that imports the site's module and everything it imports, so it sees what
-code written at the `@e` would see. It returns the type as `thrax check` prints
+code written at the `@e` would see. It returns the type as `ares check` prints
 it; an ill-typed fragment fails the build (`META_ABORT`, the checker's error as a
 note). It answers "what would this be", where `@Code` stays untyped text.
 
@@ -135,22 +135,22 @@ handler.
 
 **Runtime use (#187).** `@lex`, `@token_kind`/`@token_text`, `@parse`,
 `@parse_str`, `@parse_items`, `@format` and `@eval` are pure, so ordinary code may
-call them (`examples/META_RUNTIME.thx`). `tools/README_GEN.thx` runs `@format`
+call them (`examples/META_RUNTIME.ares`). `tools/README_GEN.ares` runs `@format`
 under `$ @e` to lay out the README's snippets at compile time. `@eval` is pure
 because its fragment is checked as a pure def body (a closed effect row, unlike
 the shell's open one), so it computes a value from its source and nothing else.
 Each engine needs the compiler at run time to serve them:
 
-- The interpreter links the compiler, so `thrax run` and the shell install the
+- The interpreter links the compiler, so `ares run` and the shell install the
   `@eval` host for the whole run (`driver::install_eval_host`).
-- A native program calls the compiler as a C library. The `thrax` crate builds as
-  `libthrax.a` and `libthrax.so` too, with the C API in
-  `crates/thrax/include/thrax.h` (`thrax_lex`, `thrax_parse`, `thrax_eval`, values
-  as an owned `thrax_value` tree). `ccg` notes when a reachable block names one of
+- A native program calls the compiler as a C library. The `ares` crate builds as
+  `libares.a` and `libares.so` too, with the C API in
+  `crates/ares/include/ares.h` (`ares_lex`, `ares_parse`, `ares_eval`, values
+  as an owned `ares_value` tree). `ccg` notes when a reachable block names one of
   these builtins (the `BuiltinHost::Compiler` entries of
   `frontend::ir::data::BUILTINS`), emits the header and
-  `THRAX_WITH_COMPILER` ahead of `runtime.c` (whose bridge converts the tree into
-  runtime `Value`s), and `thrax build` links `libthrax.so` with an rpath. It
+  `ARES_WITH_COMPILER` ahead of `runtime.c` (whose bridge converts the tree into
+  runtime `Value`s), and `ares build` links `libares.so` with an rpath. It
   uses the shared library because that one carries its own dependencies (libffi).
   Only the host target has the library; a cross build that needs it is an error.
 
@@ -162,7 +162,7 @@ A compile-time `@e` fault, or an `@abort` (`error[META_ABORT]`), is reported at 
 (`file:line:col` + caret), not a synthetic global, since every `@e` site records
 its source span.
 There is no `@assert` builtin: assert is user code,
-`$ @e (if ok => {} else @abort "...")` (see `examples/CT_ASSERT.thx`).
+`$ @e (if ok => {} else @abort "...")` (see `examples/CT_ASSERT.ares`).
 
 Compiler messages, receive (query the accumulated compile state):
 
@@ -195,7 +195,7 @@ $ Decl : @union =
 and a name nobody declared is `Decl.Missing`, a value to match rather than a
 fault or a `Maybe` to unwrap. It is the matchable form of the `@type_*`
 operations below, which remain as shorthands (and fault on a missing name). See
-`examples/META_REFLECT.thx`.
+`examples/META_REFLECT.ares`.
 
 `@scope {}` lists every name a bare reference at the running site can resolve
 to (the module's own globals, then its imports), each with its type as source.
@@ -205,7 +205,7 @@ shell is a compile-time site: its items run with the same hosts a `$ @e` has, an
 `$ _= @scope {}`, `$ _= @type_of "f"` or `$ _= @check <| @parse_str "1 + 2"` work
 at the prompt. A `$ @e` item (or an `@e` inside a definition) expands as in a
 file, and the shell keeps the expanded items. The shell has no `:` commands:
-every session imports `library/THRAX_SHELL.thx`, whose `type "1 + 2"` and
+every session imports `library/ARES_SHELL.ares`, whose `type "1 + 2"` and
 `scope "vec"` print what that reflection finds, and whose `quit`/`reset`/`list`/
 `help` call `@shell_*` builtins of the built-in `<@Shell>` effect. The shell is
 their host (`interpreter::machine::set_shell_host`), like the compiler is
@@ -229,11 +229,11 @@ host (`machine::set_type_host`, fed from `Declarations::reflect` plus each round
 checked global types). They read the program being compiled, so they carry
 `<@Meta>`: a call in ordinary code is a type error, and a helper that reflects
 declares `<@Meta>` (as `DERIVE.derive_show` does). `@type_of "fib"` is
-`"@Int -> @Int"`, exactly as `thrax check` prints it, `@use` fields included. In a
+`"@Int -> @Int"`, exactly as `ares check` prints it, `@use` fields included. In a
 round that still has unexpanded sites a type may be partial, so a generator that
-depends on it should not run before the sites it reads. On top of them, `library/DERIVE.thx`
+depends on it should not run before the sites it reads. On top of them, `library/DERIVE.ares`
 derives a default `to_string` for any struct or union (`$ @e (DERIVE.derive_show
-"Rgb")`); see `examples/DERIVE_SHOW.thx`. This is the first real derive-style
+"Rgb")`); see `examples/DERIVE_SHOW.ares`. This is the first real derive-style
 macro, exercising reflection + forward-referenced injection (2b) + overload
 extension together.
 
@@ -271,7 +271,7 @@ Plus AST constructors `@code_app`, `@code_var`, `@code_let`, ... for building
 with ordinary capitalized tags (`Word`, `Op`, `Int`, `LParen`, ...), each
 carrying the lexeme: `t |> \ | Token.Word.{ w } => ... | _ => ...`. `Eof` is not
 a token. Both engines build and read it as a plain variant (the native runtime's
-`libthrax` bridge already crossed `THRAX_VARIANT`).
+`libares` bridge already crossed `ARES_VARIANT`).
 
 ---
 
@@ -312,13 +312,13 @@ state, no token-tree slurping, and one concept instead of two. Macro expansion
 becomes "`@e` returned a fragment."
 
 **Arguments are ordinary expressions; raw tokens are opt-in.** Because
-`@e (f a b)` is an application, `a` and `b` parse and check as normal Thrax
+`@e (f a b)` is an application, `a` and `b` parse and check as normal Ares
 before `f` runs. Raw-token input is requested explicitly by passing a string
 literal through `@lex` (section 7):
 
 ```
 @e (f x)                -- f sees the value / AST of x   (common case)
-@e (f (@lex "x.y z"))   -- f sees @Vec Token               (DSL / not-valid-Thrax case)
+@e (f (@lex "x.y z"))   -- f sees @Vec Token               (DSL / not-valid-Ares case)
 ```
 
 This is more composable than Rust's implicit token slurp: the raw-ness is
@@ -433,7 +433,7 @@ An IO result reifies into the AST by the section 3 rules: inside `@build`,
 literal.
 
 Status: **LANDED.** `@IO` is a real builtin effect: the effect-row parser accepts
-`@`-form labels, IO primitives (`library/C.thx` OS externs, `library/IO.thx`)
+`@`-form labels, IO primitives (`library/C.ares` OS externs, `library/IO.ares`)
 carry `<@IO>`, and the checker enforces it (a pure-typed function that performs
 IO is rejected: "effect `@IO` is performed but not handled"). Effects propagate
 through the effect-polymorphic combinators and reach the entry, whose `<@IO>` row
@@ -451,7 +451,7 @@ $ @build : {} -> <@Meta, @IO> @Code = \_ => ... IO.read_dir "." ...   # fine
 ```
 
 **There is no compile-time IO primitive, and deliberately so.** Compile-time IO
-is the *same* IO a program does at run time: `library/IO.thx` over the `C`
+is the *same* IO a program does at run time: `library/IO.ares` over the `C`
 namespace, performed by the compile-time interpreter through the ordinary FFI.
 Nothing in the compiler is marked "build-time only", so a function is usable at
 both times and the only thing deciding which is the effect row of the context
@@ -605,14 +605,14 @@ A `@build` of any other shape is rejected by name before it is ever run.
   library's `@build` therefore runs when a program imports it, which also means
   importing a module grants it IO at *your* build time: the same trust an
   imported `build.rs` or `setup.py` carries.
-- **Inspecting it.** `thrax expand <file> [MODULE]` prints each module's source
+- **Inspecting it.** `ares expand <file> [MODULE]` prints each module's source
   after the expansion loop finishes, so the generated text is readable: `$ @e`
   sites appear as the code they inserted, and a `@build`'s items appear
   appended to its module. Without it the only windows on a metaprogram are
   `check`'s inferred types and the emitted C.
-- `tests/MAIN.thx` is the real use: it reads `examples/` at compile time and
+- `tests/MAIN.ares` is the real use: it reads `examples/` at compile time and
   generates its own `$ with` imports and `@main` from what is there, so adding an
-  example is adding a file. `examples/META_BUILD.thx` is the small demonstration.
+  example is adding a file. `examples/META_BUILD.ares` is the small demonstration.
 
 **Still deferred:** the message loop. `@msg`/`@add_code` from arbitrary
 metaprogramming code, the `@modules`/`@functions`/`@flags` queries, and draining
@@ -650,10 +650,10 @@ library / search path (`machine::push_link`); `lower_all` drains them
 (`take_link_directives`) into a `BuildPlan` that `cmd_build` applies to the native
 link line (`-l` / `-L` + rpath), deduped against the `@extern` libraries. They
 return `{}` (the effect is the directive, not a value) — no `@Code`/value
-sniffing, no magic library. (This replaced an earlier `library/BUILD.thx` module
+sniffing, no magic library. (This replaced an earlier `library/BUILD.ares` module
 whose `Directive` values the driver recognized by name, which broke the "compiler
 magic is `@`-named" rule.) The interpreter's default set already covers libc/libm
-and lazily `dlopen`s the rest per `@extern`, so `thrax run` needs no preload for
+and lazily `dlopen`s the rest per `@extern`, so `ares run` needs no preload for
 the common case.
 
 **Landed (`@build`).** `$ @build : {} -> <@Meta, @IO> @Code` parses as a definition
@@ -661,7 +661,7 @@ the common case.
 the driver), is backed by a synthetic `@build#call` global (`Program.ct_build` in
 `desugar.rs`), and is forced first in each expansion round by `lower_all`, which
 appends its items to the module's source (`driver.rs`). It needed no new
-intrinsic: the IO is `library/IO.thx` over the `C` namespace, run by the
+intrinsic: the IO is `library/IO.ares` over the `C` namespace, run by the
 compile-time interpreter through the normal FFI. Section 10 has the details.
 
 **Still to come (the metaprogramming layer).** `@e` returning `@Code` splices
@@ -675,7 +675,7 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
 
 0. **DONE:** compile-time execution of `$ @e <expr>` (value discarded, trap
    fails the build; section 11), and `@link`/`@link_path` builtins steering the
-   native link set / search paths (`examples/CT_RUN.thx`). **NEXT:** the typed
+   native link set / search paths (`examples/CT_RUN.ares`). **NEXT:** the typed
    layer below.
 1. **DONE:** `@Token` as an opaque builtin type (since #151 the CORE union `Token`), and `@lex : @Str -> @Vec @Token`
    + `@token_kind`/`@token_text` accessors, as pure intrinsics runnable inside
@@ -745,7 +745,7 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    bodies, effect operations, effect-row arguments (`<State (@e X)>`), `@use`
    fields, and the annotations inside a body (`let x : T`, `\(x : T)`,
    `(e : T)`). Before #160 a member-type `@e` parsed but was never spliced, so it
-   stood as an unchecked variable. See `examples/META_TYPE.thx`.
+   stood as an unchecked variable. See `examples/META_TYPE.ares`.
 2d. **DONE: pattern-position `@e (X)` (#160, #197).** The operand is always
    parenthesized, so it ends at `)` before the arm's `=>`, `|` or `::`.
    `Pattern::MetaE` types as a match of any value that binds nothing; coverage is
@@ -753,7 +753,7 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    pattern). Lowering emits a synthetic global `@e_pat#n` per site
    (`Program.ct_patterns`) and the driver splices its source bare, since a
    pattern has no parentheses. The enclosing global counts as deferred until
-   then, so no `@e` runs the unspliced match. See `examples/META_PATTERN.thx`.
+   then, so no `@e` runs the unspliced match. See `examples/META_PATTERN.ares`.
 2e. **DONE: an `@e` never runs unresolved code (#416).** A lenient round records
    each site it defers (`Checker::deferred_sites`); lowering lists the globals
    holding one (`Program.deferred`), and the driver does not run an `@e` whose
@@ -779,10 +779,10 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    `$ @build : {} -> <@Meta, @IO> @Code` is a definition whose `@Code` result is
    appended to its module, run first in each expansion round, once per module, in
    any module (sections 6 and 10). No compile-time IO primitive came with it: the
-   IO is ordinary `library/IO.thx` over the `C` namespace, so paths are relative
+   IO is ordinary `library/IO.ares` over the `C` namespace, so paths are relative
    to the working directory. `IO.read_dir` (a sorted directory listing, over
-   `C.popen`) was the one library addition. `tests/MAIN.thx` generates its imports
-   and `@main` from `examples/`; `examples/META_BUILD.thx` demonstrates it.
+   `C.popen`) was the one library addition. `tests/MAIN.ares` generates its imports
+   and `@main` from `examples/`; `examples/META_BUILD.ares` demonstrates it.
 7. Hygiene upgrade (syntax contexts), then `@build`'s `@msg`/`@add_code`/query
    fixpoint (the function itself is in; the message loop is not).
 

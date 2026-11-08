@@ -24,7 +24,7 @@ jobs:
             cargo test
           '
 
-      # tests/MAIN.thx links every examples/*.thx (its `$ @build` reads the
+      # tests/MAIN.ares links every examples/*.ares (its `$ @build` reads the
       # directory, so the list cannot drift) and must give identical output on the
       # interpreter and the compiled C program.
       - name: Corpus on both engines
@@ -32,20 +32,20 @@ jobs:
           nix develop --command bash -c '
             set -e
             cargo build --release
-            THRAX_BIN=./target/release/thrax ./target/release/thrax run tools/THXDO.thx corpus
+            ARES_BIN=./target/release/ares ./target/release/ares run tools/THRAX.ares corpus
           '
 
-      # documentation/thrax.y is the written syntax standard; `%expect` fails the
+      # documentation/ares.y is the written syntax standard; `%expect` fails the
       # check when the conflict count moves.
       - name: Grammar spec
         run: |
           nix develop --command bash -c '
             set -e
-            bison -o /dev/null documentation/thrax.y
+            bison -o /dev/null documentation/ares.y
           '
 
   # The corpus compiled for wasm32-wasi with emscripten and run under node,
-  # against the interpreter. tests/EXCEPTIONS.thx lists what wasm cannot run.
+  # against the interpreter. tests/EXCEPTIONS.ares lists what wasm cannot run.
   wasm:
     runs-on: ubuntu-latest
 
@@ -59,7 +59,7 @@ jobs:
           nix develop --command bash -c '
             set -e
             cargo build --release
-            THRAX_BIN=./target/release/thrax ./target/release/thrax run tools/THXDO.thx corpus wasm
+            ARES_BIN=./target/release/ares ./target/release/ares run tools/THRAX.ares corpus wasm
           '
 
   # The browser playground: the compiler and its language server built to
@@ -90,7 +90,7 @@ jobs:
   # macOS is not well supported. Nobody on the project develops on a Mac, and
   # this job is the only place the port is exercised. Known gap (#327): the two
   # ThreadSanitizer tests in crates/ccg/tests/compile.rs fail here. The
-  # instrumented binaries exit unsuccessfully at THRAX_THREADS=2 with nothing on
+  # instrumented binaries exit unsuccessfully at ARES_THREADS=2 with nothing on
   # stderr, so TSan reports no race and the runtime prints no fault. The same
   # programs pass without TSan on this runner, and pass under TSan on Linux.
   # Giving workers the 512 KiB macOS stack on Linux did not reproduce it, and
@@ -113,11 +113,11 @@ jobs:
           nix develop ./tools/macos --command bash -c '
             set -e
             cargo build --release
-            THRAX_BIN=./target/release/thrax ./target/release/thrax run tools/THXDO.thx corpus
+            ARES_BIN=./target/release/ares ./target/release/ares run tools/THRAX.ares corpus
           '
 
   # Windows, natively, with the MSYS2 UCRT64 MinGW-w64 toolchain: the gcc that
-  # `thrax build` calls, Rust for that toolchain, and libffi.
+  # `ares build` calls, Rust for that toolchain, and libffi.
   windows:
     runs-on: windows-latest
     timeout-minutes: 45
@@ -151,7 +151,7 @@ jobs:
         run: |
           set -e
           cargo build --release
-          THRAX_BIN=./target/release/thrax.exe ./target/release/thrax.exe run tools/THXDO.thx corpus
+          ARES_BIN=./target/release/ares.exe ./target/release/ares.exe run tools/THRAX.ares corpus
 
   # The cross build from Linux (tools/windows/flake.nix) that the Windows
   # release ships, run under Wine.
@@ -164,7 +164,7 @@ jobs:
       - uses: cachix/install-nix-action@v31
 
       - name: Corpus under Wine
-        run: nix develop ./tools/windows --command thrax-wine-corpus
+        run: nix develop ./tools/windows --command ares-wine-corpus
 
   # A red master opens one `ci-failure` issue, the one to commit the fix
   # against. Later red runs comment on it rather than opening more, and the

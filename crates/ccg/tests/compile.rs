@@ -14,11 +14,11 @@ use frontend::{desugar_program, Checker};
 /// The implicitly imported CORE module (defines `to_string` and the `+ - * / %`
 /// operator overloads). The driver injects it into every program; the harness
 /// must too, or arithmetic is unbound.
-const CORE_SRC: &str = include_str!("../../../library/CORE.thx");
-/// A path as a Thrax string literal can hold it: forward slashes, which every
+const CORE_SRC: &str = include_str!("../../../library/CORE.ares");
+/// A path as a Ares string literal can hold it: forward slashes, which every
 /// platform's C library accepts, so a Windows path's `\` is not read as an
 /// escape.
-fn thx_path(p: &std::path::Path) -> String {
+fn arx_path(p: &std::path::Path) -> String {
     p.display().to_string().replace('\\', "/")
 }
 
@@ -33,10 +33,10 @@ fn rpath(dir: &Path) -> Vec<String> {
     }
 }
 
-/// The C compiler a test builds with: `THRAX_CC`, then `CC`, then the host
+/// The C compiler a test builds with: `ARES_CC`, then `CC`, then the host
 /// toolchain's default (`cc`, or `gcc` on Windows).
 fn c_compiler() -> String {
-    std::env::var("THRAX_CC")
+    std::env::var("ARES_CC")
         .or_else(|_| std::env::var("CC"))
         .unwrap_or_else(|_| utilities::toolchain(utilities::Target::host()).cc)
 }
@@ -290,8 +290,8 @@ fn scalar_serialization_matches_interpreter() {
             "a",
         ),
         ("$ a : @Bool = (from_string \"true\") == (1 == 1)", "a"),
-        // Floats serialize via the C runtime seam (`thx_real_to_str` /
-        // `thx_f32_to_str` + libc `atof`); the shortest-decimal rule must render
+        // Floats serialize via the C runtime seam (`arx_real_to_str` /
+        // `arx_f32_to_str` + libc `atof`); the shortest-decimal rule must render
         // identically on both engines.
         ("$ a : @Str = to_string (let x : @Float64 = 3.5 in x)", "a"),
         ("$ a : @Str = to_string (let x : @Float32 = from_string \"0.5\" in x)", "a"),
@@ -306,7 +306,7 @@ fn scalar_serialization_matches_interpreter() {
 
 #[test]
 fn float_widening_matches_interpreter() {
-    // Widening is explicit now (`f32_to_f64`, the `thx_f2d` runtime conversion); the
+    // Widening is explicit now (`f32_to_f64`, the `arx_f2d` runtime conversion); the
     // C backend must produce the same `@Float64` result as the interpreter.
     let src = "$ @mod M\n\
                $ x : @Float32 = from_string \"1.5\"\n\
@@ -513,7 +513,7 @@ fn record_update_forces_a_lazy_base() {
                $ test : @Int = let b = Node.{ .v = 5 | (mk 0).next } in b.v * 100 + b.next.v\n";
     assert_eq!(c_run(src, "test"), "test = 502");
     assert_matches(src, "test");
-    assert_example("RECORD_UPDATE.thx", "test");
+    assert_example("RECORD_UPDATE.ares", "test");
 }
 
 #[test]
@@ -534,13 +534,13 @@ fn recursive_let_through_a_nested_binding() {
     let main = format!("{def}$ @main : @Vec @Str -> <@IO> @Int = \\args => f 5\n");
     assert_eq!(c_run_entry(&main, &[]).0, 5);
     // A local recursive closure that escapes the frame that bound it.
-    assert_example("LET_IN.thx", "chk_escape");
+    assert_example("LET_IN.ares", "chk_escape");
 }
 
 #[test]
 fn ffi_struct_by_value_return() {
     // libc's `lldiv_t lldiv(long long, long long)` returns a struct BY VALUE. The C backend
-    // emits a `typedef struct` and rebuilds the Thrax struct from the C result,
+    // emits a `typedef struct` and rebuilds the Ares struct from the C result,
     // byte-identical to the interpreter.
     let src = "$ @mod M\n\
         $ LDivT : @struct @extern \"C\" = quot: @Int, rem: @Int,\n\
@@ -556,7 +556,7 @@ fn ffi_loads_from_c_memory() {
     // table) and `@ptr_bytes`; both engines must agree.
     let src = "$ @mod M\n\
         $ malloc : @Int -> @Ptr = @extern \"C\" \"malloc\" \"libc\"\n\
-        $ p2i : @Ptr -> @Int = @extern \"C\" \"thx_p2i\" \"\"\n\
+        $ p2i : @Ptr -> @Int = @extern \"C\" \"arx_p2i\" \"\"\n\
         $ Pt : @struct @extern \"C\" = x: @Int32, y: @Int32,\n\
         $ fill : { dst: @Ptr, src: @Str, n: @Int } -> @Ptr = @extern \"C\" \"memcpy\" \"libc\"\n\
         $ pt_at : { p: @Ptr, i: @Int } -> Pt = @extern \"load\"\n\
@@ -582,12 +582,12 @@ fn ffi_loads_from_c_memory() {
 #[test]
 fn ffi_struct_by_value_argument() {
     // A struct passed BY VALUE to a C function. Compile a helper `.so`, then check
-    // the C backend builds the C struct from the Thrax value and matches the
+    // the C backend builds the C struct from the Ares value and matches the
     // interpreter (which dlopens the same library).
     use std::io::Write;
     let dir = std::env::temp_dir();
-    let c_path = dir.join("thx_ccg_arg_helper.c");
-    let so_path = dir.join("libthx_ccg_arg_helper.so");
+    let c_path = dir.join("arx_ccg_arg_helper.c");
+    let so_path = dir.join("libarx_ccg_arg_helper.so");
     std::fs::File::create(&c_path)
         .unwrap()
         .write_all(b"typedef struct { long long x, y; } P;\nlong long sum_p(P p) { return p.x * 1000 + p.y; }\n")
@@ -606,7 +606,7 @@ fn ffi_struct_by_value_argument() {
          $ P : @struct @extern \"C\" = x: @Int, y: @Int,\n\
          $ sum_p : P -> @Int = @extern \"C\" \"sum_p\" \"{}\"\n\
          $ test : @Int = sum_p (P.{{ .x = 40, .y = 2 }})",
-        thx_path(&so_path)
+        arx_path(&so_path)
     );
 
     // Interpreter (dlopens the .so via the path in the @extern).
@@ -617,8 +617,8 @@ fn ffi_struct_by_value_argument() {
     // binary finds it at runtime), run, compare.
     let lowered = lower(&src);
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
-    let cc_path = dir.join("thx_ccg_arg_prog.c");
-    let bin_path = dir.join("thx_ccg_arg_prog.bin");
+    let cc_path = dir.join("arx_ccg_arg_prog.c");
+    let bin_path = dir.join("arx_ccg_arg_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
     assert!(Command::new(&cc)
         .args(["-w", "-O1", "-pthread", "-o"])
@@ -641,8 +641,8 @@ fn ffi_struct_array() {
     // the cons list, packs into a malloc'd buffer, and frees after. Matches interp.
     use std::io::Write;
     let dir = std::env::temp_dir();
-    let c_path = dir.join("thx_ccg_arr_helper.c");
-    let so_path = dir.join("libthx_ccg_arr_helper.so");
+    let c_path = dir.join("arx_ccg_arr_helper.c");
+    let so_path = dir.join("libarx_ccg_arr_helper.so");
     std::fs::File::create(&c_path)
         .unwrap()
         .write_all(
@@ -664,14 +664,14 @@ fn ffi_struct_array() {
          $ P : @struct @extern \"C\" = x: @Int, y: @Int,\n\
          $ sum_ps : {{ps: @Vec P, n: @Int}} -> @Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
          $ test : @Int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
-        lib = thx_path(&so_path)
+        lib = arx_path(&so_path)
     );
     assert_eq!(interp_show(&src, "test"), "102");
 
     let lowered = lower(&src);
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
-    let cc_path = dir.join("thx_ccg_arr_prog.c");
-    let bin_path = dir.join("thx_ccg_arr_prog.bin");
+    let cc_path = dir.join("arx_ccg_arr_prog.c");
+    let bin_path = dir.join("arx_ccg_arr_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
     assert!(Command::new(&cc)
         .args(["-w", "-O1", "-pthread", "-o"])
@@ -734,13 +734,13 @@ fn ffi_callback() {
         eprintln!("skipping ffi_callback: libffi not found (need pkg-config or $LIBFFI)");
         return;
     };
-    // A Thrax closure passed to C as a function pointer, via the generated
+    // A Ares closure passed to C as a function pointer, via the generated
     // libffi-closure runtime. The helper calls it twice; the closure captures a
     // free variable. Must match the interpreter.
     use std::io::Write;
     let dir = std::env::temp_dir();
-    let c_path = dir.join("thx_ccg_cb_helper.c");
-    let so_path = dir.join("libthx_ccg_cb_helper.so");
+    let c_path = dir.join("arx_ccg_cb_helper.c");
+    let so_path = dir.join("libarx_ccg_cb_helper.so");
     std::fs::File::create(&c_path)
         .unwrap()
         .write_all(b"int call_twice(int (*f)(int, int)) { return f(1, 2) * 100 + f(3, 4); }\n")
@@ -759,14 +759,14 @@ fn ffi_callback() {
          $ call_twice : (@Int -> @Int -> @Int) -> @Int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
          $ k : @Int = 10\n\
          $ test : @Int = call_twice (\\a b => a + b + k)",
-        lib = thx_path(&so_path)
+        lib = arx_path(&so_path)
     );
     assert_eq!(interp_show(&src, "test"), "1317");
 
     let lowered = lower(&src);
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
-    let cc_path = dir.join("thx_ccg_cb_prog.c");
-    let bin_path = dir.join("thx_ccg_cb_prog.bin");
+    let cc_path = dir.join("arx_ccg_cb_prog.c");
+    let bin_path = dir.join("arx_ccg_cb_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
     let mut cmd = Command::new(&cc);
     cmd.args(["-w", "-O1", "-pthread", "-o"])
@@ -793,8 +793,8 @@ fn ffi_c_union_by_value() {
     // one member packs just that member (presence-guarded), matching the interpreter.
     use std::io::Write;
     let dir = std::env::temp_dir();
-    let c_path = dir.join("thx_ccg_union_helper.c");
-    let so_path = dir.join("libthx_ccg_union_helper.so");
+    let c_path = dir.join("arx_ccg_union_helper.c");
+    let so_path = dir.join("libarx_ccg_union_helper.so");
     std::fs::File::create(&c_path)
         .unwrap()
         .write_all(
@@ -820,14 +820,14 @@ fn ffi_c_union_by_value() {
          $ built : @Int = u_as_long (U.{{ .i = 42 }})\n\
          $ back  : @Int = (u_from_long 99).i\n\
          $ test  : @Int = built * 1000 + back",
-        lib = thx_path(&so_path)
+        lib = arx_path(&so_path)
     );
     assert_eq!(interp_show(&src, "test"), "42099");
 
     let lowered = lower(&src);
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
-    let cc_path = dir.join("thx_ccg_union_prog.c");
-    let bin_path = dir.join("thx_ccg_union_prog.bin");
+    let cc_path = dir.join("arx_ccg_union_prog.c");
+    let bin_path = dir.join("arx_ccg_union_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
     assert!(Command::new(&cc)
         .args(["-w", "-O1", "-pthread", "-o"])
@@ -850,8 +850,8 @@ fn ffi_nested_struct_by_value() {
     // typedefs and marshals recursively; must match the interpreter.
     use std::io::Write;
     let dir = std::env::temp_dir();
-    let c_path = dir.join("thx_ccg_nested_helper.c");
-    let so_path = dir.join("libthx_ccg_nested_helper.so");
+    let c_path = dir.join("arx_ccg_nested_helper.c");
+    let so_path = dir.join("libarx_ccg_nested_helper.so");
     std::fs::File::create(&c_path)
         .unwrap()
         .write_all(
@@ -877,14 +877,14 @@ fn ffi_nested_struct_by_value() {
          $ seg_sum : Seg -> @Int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
          $ seg_make : @Int -> Seg = @extern \"C\" \"seg_make\" \"{lib}\"\n\
          $ test : @Int = seg_sum (seg_make 1)",
-        lib = thx_path(&so_path)
+        lib = arx_path(&so_path)
     );
     assert_eq!(interp_show(&src, "test"), "4321");
 
     let lowered = lower(&src);
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
-    let cc_path = dir.join("thx_ccg_nested_prog.c");
-    let bin_path = dir.join("thx_ccg_nested_prog.bin");
+    let cc_path = dir.join("arx_ccg_nested_prog.c");
+    let bin_path = dir.join("arx_ccg_nested_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
     assert!(Command::new(&cc)
         .args(["-w", "-O1", "-pthread", "-o"])
@@ -1004,16 +1004,16 @@ fn tuples() {
 fn effects_generator_and_state() {
     // sumGen resumes once per yield (42); runState threads state (21); the
     // exception clause never resumes (-1).
-    assert_example("EFFECTS.thx", "r_gen");
-    assert_example("EFFECTS.thx", "r_state");
-    assert_example("EFFECTS.thx", "r_exn_bad");
-    assert_example("EFFECTS.thx", "test");
+    assert_example("EFFECTS.ares", "r_gen");
+    assert_example("EFFECTS.ares", "r_state");
+    assert_example("EFFECTS.ares", "r_exn_bad");
+    assert_example("EFFECTS.ares", "test");
 }
 
 #[test]
 fn effects_same_op_name_overload() {
-    assert_example("EFFECT_OVERLOAD.thx", "readEnv");
-    assert_example("EFFECT_OVERLOAD.thx", "cfg");
+    assert_example("EFFECT_OVERLOAD.ares", "readEnv");
+    assert_example("EFFECT_OVERLOAD.ares", "cfg");
 }
 
 #[test]
@@ -1021,10 +1021,10 @@ fn effects_multi_shot_resumption() {
     // Every path summed and collected (the clause resumes twice), and a
     // backtracking search whose `k` is resumed once per candidate by a helper:
     // each resume runs on its own copy of the captured slice.
-    assert_example("AMB.thx", "one_flip");
-    assert_example("AMB.thx", "two_flips");
-    assert_example("AMB.thx", "triples");
-    assert_example("AMB.thx", "test");
+    assert_example("AMB.ares", "one_flip");
+    assert_example("AMB.ares", "two_flips");
+    assert_example("AMB.ares", "triples");
+    assert_example("AMB.ares", "test");
 }
 
 #[test]
@@ -1047,25 +1047,25 @@ fn effects_multi_shot_through_a_stored_continuation() {
 fn effects_coroutines_cross_context_resume() {
     // A continuation captured in `spawn`'s handler, stored in `Susp`, and resumed
     // later from `rr` (a different dynamic context).
-    assert_example("COROUTINES.thx", "scheduled");
+    assert_example("COROUTINES.ares", "scheduled");
 }
 
 #[test]
 fn effects_finale_finalization() {
     // Normal completion, abort (handler drops the continuation), LIFO nesting,
     // and a stored continuation whose cleanup runs when it finally completes.
-    assert_example("FINALE.thx", "r_normal");
-    assert_example("FINALE.thx", "r_abort");
-    assert_example("FINALE.thx", "r_nested");
-    assert_example("FINALE.thx", "r_stored");
-    assert_example("FINALE.thx", "r_first_class");
-    assert_example("FINALE.thx", "r_order");
+    assert_example("FINALE.ares", "r_normal");
+    assert_example("FINALE.ares", "r_abort");
+    assert_example("FINALE.ares", "r_nested");
+    assert_example("FINALE.ares", "r_stored");
+    assert_example("FINALE.ares", "r_first_class");
+    assert_example("FINALE.ares", "r_order");
 }
 
 #[test]
 fn effects_pipes_and_seq() {
-    assert_example("PIPES.thx", "r_seq");
-    assert_example("PIPES.thx", "test");
+    assert_example("PIPES.ares", "r_seq");
+    assert_example("PIPES.ares", "test");
 }
 
 // -- FFI marshalling (sized numerics + @Ptr) --------------------------------
@@ -1082,15 +1082,15 @@ fn sized_extern_marshalling() {
     // The wrapper's symbol declaration carries the exact C ABI types, in order.
     let decl = code
         .lines()
-        .find(|l| l.contains("__asm__(THX_ASM_NAME(\"f\"))"))
+        .find(|l| l.contains("__asm__(ARX_ASM_NAME(\"f\"))"))
         .expect("the `f` wrapper declaration");
     assert!(
-        decl.contains("double THx_sym_0(int8_t, int32_t, uint16_t, float, void*)"),
+        decl.contains("double ARESx_sym_0(int8_t, int32_t, uint16_t, float, void*)"),
         "wrong C ABI signature: {decl}"
     );
     // @Float32 narrows the double slot to a float; a sized int casts to its width.
-    assert!(code.contains("float a3 = (float)THxVALUE_as_num(args[3]);"));
-    assert!(code.contains("int8_t a0 = (int8_t)THxVALUE_as_int(args[0]);"));
+    assert!(code.contains("float a3 = (float)ARESxVALUE_as_num(args[3]);"));
+    assert!(code.contains("int8_t a0 = (int8_t)ARESxVALUE_as_int(args[0]);"));
 }
 
 #[test]
@@ -1196,7 +1196,7 @@ fn recursive_union_slot_is_lazy() {
 
 #[test]
 fn a_lazy_slot_is_forced_once() {
-    // Forcing patches the cell in place (THxVALUE_patch_box), so the second walk
+    // Forcing patches the cell in place (ARESxVALUE_patch_box), so the second walk
     // finds the spine already built.
     let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
@@ -1325,7 +1325,7 @@ fn tsan_clean(src: &str) {
     }
     let lowered = lower(src);
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
-    assert!(code.contains("#define THRAX_THREADS 1"));
+    assert!(code.contains("#define ARES_THREADS 1"));
     let mut c_path = std::env::temp_dir();
     c_path.push(format!("ccg_{}_{}_tsan.c", std::process::id(), src.len()));
     let bin_path: PathBuf = c_path.with_extension("bin");
@@ -1341,14 +1341,14 @@ fn tsan_clean(src: &str) {
     assert!(status.success(), "C compile with -fsanitize=thread failed");
     for threads in ["2", "4", "8"] {
         let out = Command::new(&bin_path)
-            .env("THRAX_THREADS", threads)
+            .env("ARES_THREADS", threads)
             .env("TSAN_OPTIONS", "halt_on_error=1")
             .output()
             .expect("run compiled program");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             out.status.success() && !stderr.contains("ThreadSanitizer"),
-            "THRAX_THREADS={threads}: {}: {stderr}",
+            "ARES_THREADS={threads}: {}: {stderr}",
             out.status
         );
         assert_eq!(
@@ -1388,7 +1388,7 @@ fn a_continuation_resumes_on_another_thread() {
 fn a_sequential_program_gets_the_single_threaded_runtime() {
     let lowered = lower("$ @mod M\n$ test : @Int = 1 + 2\n");
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
-    assert!(!code.contains("#define THRAX_THREADS"));
+    assert!(!code.contains("#define ARES_THREADS"));
 }
 
 #[test]

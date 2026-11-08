@@ -1,7 +1,7 @@
 //! Foreign functions: marshalling specs and C struct layouts.
 //!
 //! Once a module is solved, each `@extern` node's type is read back to decide
-//! how its one Thrax argument maps to positional C arguments and what C types
+//! how its one Ares argument maps to positional C arguments and what C types
 //! cross the boundary ([`Checker::build_extern_specs`]). A struct declared
 //! `@struct @extern "C"` gets a C memory layout ([`Checker::clayout_of`]), so a
 //! value of it can cross by value.
@@ -14,7 +14,7 @@ use super::*;
 
 impl<'a> Checker<'a> {
     /// Validate every `@extern`'s shape and record its marshalling spec. A C
-    /// function has no first-class closure to curry, so a Thrax `@extern` must be
+    /// function has no first-class closure to curry, so a Ares `@extern` must be
     /// a function of EXACTLY ONE argument: the arrow spine may have only one link.
     /// A `{a: A, b: B} -> R` record groups multiple C parameters; `A -> B -> R`
     /// is currying and is rejected here with a diagnostic.
@@ -233,7 +233,7 @@ pub(super) fn marshal_name(types: &Types, ty: Type) -> String {
         TypeNode::Tuple(items) if items.is_empty() => ty::UNIT.to_string(),
         // A function-typed `@extern` parameter is a C function pointer (callback):
         // encode its scalar signature as `@fn(a,b,...)->r` so the seam can wrap a
-        // Thrax closure into a C-callable pointer.
+        // Ares closure into a C-callable pointer.
         TypeNode::Arrow(..) => {
             let mut args = Vec::new();
             let mut cur = ty;

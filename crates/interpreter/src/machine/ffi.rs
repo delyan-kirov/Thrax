@@ -3,7 +3,7 @@
 //! An extern call is reduced to a platform-independent C value model (its
 //! arguments become [`CArg`]s, its result a [`RetPlan`]), and then handed to a
 //! [`ForeignCalls`] backend for the running host. Everything above the backend,
-//! the classification from a Thrax [`Value`] and the wrapping back into one, is
+//! the classification from a Ares [`Value`] and the wrapping back into one, is
 //! shared; a new platform only implements `call`.
 //!
 //! Two backends ship:
@@ -148,7 +148,7 @@ pub enum CArg {
         leaves: Vec<std::os::raw::c_int>,
         bytes: Vec<u8>,
     },
-    /// A Thrax closure passed to C as a function pointer. `closure` is one owned
+    /// A Ares closure passed to C as a function pointer. `closure` is one owned
     /// (leaked) `Rc` reference to the closure value, erased; the native backend
     /// builds a libffi closure over `arg_kinds`/`ret_kind`, uses its code pointer
     /// as the argument, and releases the reference after the call.
@@ -208,9 +208,9 @@ pub trait ForeignCalls {
     fn call(&self, symbol: StrId, lib: StrId, args: &[CArg], ret: RetPlan) -> Result<Outcome>;
 }
 
-// -- callbacks: a Thrax closure passed to C as a function pointer -------------
+// -- callbacks: a Ares closure passed to C as a function pointer -------------
 
-/// The context handed to the libffi closure (as its user-data): the erased Thrax
+/// The context handed to the libffi closure (as its user-data): the erased Ares
 /// closure reference and the callback's scalar signature.
 #[cfg(not(target_arch = "wasm32"))]
 struct CbCtx {
@@ -220,7 +220,7 @@ struct CbCtx {
 }
 
 /// The machine-provided applier: given the closure, the C argument words and
-/// their kinds, and the result kind, apply the Thrax closure and return the
+/// their kinds, and the result kind, apply the Ares closure and return the
 /// result's bits. Installed for the duration of an extern call by [`with_applier`].
 type ApplyDyn<'a> =
     dyn Fn(*const std::ffi::c_void, &[u64], &[std::os::raw::c_int], std::os::raw::c_int) -> Result<u64>
@@ -253,7 +253,7 @@ fn take_cb_err() -> Option<utilities::Diagnostic> {
     CB_ERR.with(|c| c.borrow_mut().take())
 }
 
-/// A C argument word (per libffi kind) as a Thrax value: floats read their bits,
+/// A C argument word (per libffi kind) as a Ares value: floats read their bits,
 /// everything else (sized ints, pointers) is an integer.
 pub(crate) fn word_to_value<'p>(w: u64, k: std::os::raw::c_int) -> Value<'p> {
     match k {
@@ -263,7 +263,7 @@ pub(crate) fn word_to_value<'p>(w: u64, k: std::os::raw::c_int) -> Value<'p> {
     }
 }
 
-/// A Thrax value as a C result word (per libffi kind).
+/// A Ares value as a C result word (per libffi kind).
 pub(crate) fn value_to_word(v: &Value, k: std::os::raw::c_int) -> u64 {
     match k {
         kind::DOUBLE => match v {
@@ -320,11 +320,11 @@ fn scalar_ffi_kind(name: &str) -> Option<std::os::raw::c_int> {
     })
 }
 
-/// Classify a Thrax argument value against its declared type, mirroring the C
+/// Classify a Ares argument value against its declared type, mirroring the C
 /// backend's `cabi` so both engines marshal identically.
 fn classify_arg(ty: &str, v: &PVal) -> Result<CArg> {
     // A function-typed parameter (`@fn(a,b)->r`) is a C function pointer: hold one
-    // reference to the Thrax closure so it survives the call; the native backend
+    // reference to the Ares closure so it survives the call; the native backend
     // builds the libffi closure and releases the reference afterwards.
     if let Some((arg_kinds, ret_kind)) = parse_fn_sig(ty) {
         let closure = Rc::into_raw(v.clone()) as *const std::ffi::c_void;
@@ -642,7 +642,7 @@ pub fn call_extern<'p>(
         .as_ref()
         .map(|s| (s.name.clone(), s.layout.clone()));
     let result = backend().call(symbol, lib, &cargs, plan);
-    // Release the reference each callback arg held on its Thrax closure.
+    // Release the reference each callback arg held on its Ares closure.
     for c in &cargs {
         if let CArg::Callback { closure, .. } = c {
             unsafe {
@@ -683,7 +683,7 @@ mod native {
 
     extern "C" {
         fn strlen(s: *const c_char) -> usize;
-        fn thx_ffi_prep(
+        fn arx_ffi_prep(
             nargs: c_int,
             kinds: *const c_int,
             leaf_off: *const c_int,
@@ -693,21 +693,21 @@ mod native {
             ret_leaves: *const c_int,
             ret_nleaves: c_int,
         ) -> *mut c_void;
-        fn thx_ffi_call_prep(
+        fn arx_ffi_call_prep(
             prep: *mut c_void,
             fun: *mut c_void,
             avalues: *mut *mut c_void,
             rvalue: *mut c_void,
         );
-        fn thx_ffi_prep_free(prep: *mut c_void);
-        fn thx_closure_new(
+        fn arx_ffi_prep_free(prep: *mut c_void);
+        fn arx_closure_new(
             nargs: c_int,
             kinds: *const c_int,
             ret_kind: c_int,
             user: *mut c_void,
             code_out: *mut *mut c_void,
         ) -> *mut c_void;
-        fn thx_closure_free(handle: *mut c_void);
+        fn arx_closure_free(handle: *mut c_void);
     }
 
     // Loaded library handles, keyed by resolved soname, kept open for the
@@ -727,12 +727,12 @@ mod native {
         static PREPS: RefCell<HashMap<Vec<c_int>, Prep>> = RefCell::new(HashMap::new());
     }
 
-    /// A libffi call interface from `thx_ffi_prep`, owned by [`PREPS`].
+    /// A libffi call interface from `arx_ffi_prep`, owned by [`PREPS`].
     struct Prep(*mut c_void);
 
     impl Drop for Prep {
         fn drop(&mut self) {
-            unsafe { thx_ffi_prep_free(self.0) };
+            unsafe { arx_ffi_prep_free(self.0) };
         }
     }
 
@@ -767,12 +767,12 @@ mod native {
         }
     }
 
-    /// Called by the shim when foreign C invokes a Thrax closure. Reads the C
+    /// Called by the shim when foreign C invokes a Ares closure. Reads the C
     /// arguments, applies the closure through the installed applier, and writes the
     /// result. An error is stashed (a callback cannot return a `Result` across C)
     /// and drained after the foreign call.
     #[no_mangle]
-    pub unsafe extern "C" fn thx_closure_invoke(
+    pub unsafe extern "C" fn arx_closure_invoke(
         user: *mut c_void,
         args: *mut *mut c_void,
         ret: *mut c_void,
@@ -834,7 +834,7 @@ mod native {
         }
         let nonnull = |v: &[c_int]| if v.is_empty() { std::ptr::null() } else { v.as_ptr() };
         let p = unsafe {
-            thx_ffi_prep(
+            arx_ffi_prep(
                 kinds.len() as c_int,
                 nonnull(kinds),
                 leaf_off.as_ptr(),
@@ -954,7 +954,7 @@ mod native {
                         }));
                         let mut code: *mut c_void = std::ptr::null_mut();
                         let handle = unsafe {
-                            thx_closure_new(
+                            arx_closure_new(
                                 arg_kinds.len() as c_int,
                                 arg_kinds.as_ptr(),
                                 *ret_kind,
@@ -996,7 +996,7 @@ mod native {
             let prep = prep(&kinds, &leaf_len, &leaf_off, &leaves, ret.ffi_kind, ret_leaves);
             if let Some(p) = prep {
                 unsafe {
-                    thx_ffi_call_prep(
+                    arx_ffi_call_prep(
                         p,
                         addr,
                         if avalues.is_empty() { std::ptr::null_mut() } else { avalues.as_mut_ptr() },
@@ -1007,7 +1007,7 @@ mod native {
             drop(keepalive);
             for (handle, ctx) in closures {
                 unsafe {
-                    thx_closure_free(handle);
+                    arx_closure_free(handle);
                     drop(Box::from_raw(ctx));
                 }
             }
@@ -1074,11 +1074,11 @@ mod wasm {
     // through the typed getters. The embedder owns the registry; the compiler
     // knows none of the names. See `web/src/host.ts`.
     extern "C" {
-        fn thx_host_call(sym: *const u8, sym_len: usize, args: *const u8, args_len: usize) -> i32;
-        fn thx_host_ret_int() -> i64;
-        fn thx_host_ret_real() -> f64;
-        fn thx_host_ret_len() -> usize;
-        fn thx_host_ret_copy(dst: *mut u8);
+        fn arx_host_call(sym: *const u8, sym_len: usize, args: *const u8, args_len: usize) -> i32;
+        fn arx_host_ret_int() -> i64;
+        fn arx_host_ret_real() -> f64;
+        fn arx_host_ret_len() -> usize;
+        fn arx_host_ret_copy(dst: *mut u8);
     }
 
     pub struct WasmHostFfi;
@@ -1119,13 +1119,13 @@ mod wasm {
                 }
             }
             unsafe {
-                match thx_host_call(symbol.as_ptr(), symbol.len(), buf.as_ptr(), buf.len()) {
+                match arx_host_call(symbol.as_ptr(), symbol.len(), buf.as_ptr(), buf.len()) {
                     0 => Ok(Outcome::Unit),
-                    1 => Ok(Outcome::Int(thx_host_ret_int())),
-                    2 => Ok(Outcome::Real(thx_host_ret_real())),
+                    1 => Ok(Outcome::Int(arx_host_ret_int())),
+                    2 => Ok(Outcome::Real(arx_host_ret_real())),
                     3 => {
-                        let mut out = vec![0u8; thx_host_ret_len()];
-                        thx_host_ret_copy(out.as_mut_ptr());
+                        let mut out = vec![0u8; arx_host_ret_len()];
+                        arx_host_ret_copy(out.as_mut_ptr());
                         Ok(Outcome::Bytes(out))
                     }
                     _ => Err(fault(format!(

@@ -1,4 +1,4 @@
-//! Project options: set by `@option` in a project's `BUILD.thx`, layered over
+//! Project options: set by `@option` in a project's `BUILD.ares`, layered over
 //! built-in defaults and under an editor's settings.
 //!
 //! Every option is one row of [`KEYS`]: its section, name, kind, default and
@@ -44,7 +44,7 @@ pub const KEYS: &[Key] = &[
     Key { section: "format", name: "indent", kind: Kind::Int { min: 1, max: 16 }, default: "4",
           doc: "Spaces per indentation level." },
     Key { section: "check", name: "max_errors", kind: Kind::Int { min: 1, max: 10_000 }, default: "20",
-          doc: "The most errors `thrax check` prints." },
+          doc: "The most errors `ares check` prints." },
     Key { section: "lsp", name: "check", kind: Kind::Choice(&["type", "save"]), default: "type",
           doc: "When the editor checks: as you type (`type`), or only when a file is saved (`save`). \
                 Compile-time code (`$ @e`) always runs on save only." },

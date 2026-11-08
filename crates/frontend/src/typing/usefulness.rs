@@ -402,7 +402,7 @@ fn rebuild(c: &Ctor, mut w: Vec<DPat>) -> Vec<DPat> {
     std::iter::once(DPat::Ctor(c.clone(), w)).chain(rest).collect()
 }
 
-/// Show a witness in Thrax pattern syntax.
+/// Show a witness in Ares pattern syntax.
 pub fn show(p: &DPat) -> String {
     match p {
         DPat::Wild | DPat::Opaque | DPat::Product(..) => "_".to_string(),

@@ -1,10 +1,10 @@
 //! Export test binaries' symbols (`-rdynamic`) so the cross-check tests, which
-//! run the interpreter in-process, can resolve the standard library's `thx_*`
-//! support functions (whole-archive-linked from `thraxstd.c` via the interpreter
+//! run the interpreter in-process, can resolve the standard library's `arx_*`
+//! support functions (whole-archive-linked from `aresstd.c` via the interpreter
 //! crate) through `dlsym(RTLD_DEFAULT)`. A build-script link arg is used rather
 //! than `RUSTFLAGS`/`.cargo/config.toml`, which a CI-set `RUSTFLAGS` would
 //! override. wasm has no dynamic loader and a PE executable no dynamic symbol
-//! table (`thraxstd.c` `dllexport`s there), so this applies only elsewhere.
+//! table (`aresstd.c` `dllexport`s there), so this applies only elsewhere.
 
 fn main() {
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();

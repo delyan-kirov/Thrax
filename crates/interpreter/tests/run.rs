@@ -6,18 +6,18 @@ use frontend::{desugar_program, Checker};
 /// The implicitly imported CORE module (defines `to_string`, and now the `+ - *
 /// / %` operator overloads). The driver injects it into every program; the test
 /// harness must do the same, or arithmetic is unbound.
-const CORE_SRC: &str = include_str!("../../../library/CORE.thx");
-/// A path as a Thrax string literal can hold it: forward slashes, which every
+const CORE_SRC: &str = include_str!("../../../library/CORE.ares");
+/// A path as a Ares string literal can hold it: forward slashes, which every
 /// platform's C library accepts, so a Windows path's `\` is not read as an
 /// escape.
-fn thx_path(p: &std::path::Path) -> String {
+fn arx_path(p: &std::path::Path) -> String {
     p.display().to_string().replace('\\', "/")
 }
 
-/// The C compiler a test builds with: `THRAX_CC`, then `CC`, then the host
+/// The C compiler a test builds with: `ARES_CC`, then `CC`, then the host
 /// toolchain's default (`cc`, or `gcc` on Windows).
 fn c_compiler() -> String {
-    std::env::var("THRAX_CC")
+    std::env::var("ARES_CC")
         .or_else(|_| std::env::var("CC"))
         .unwrap_or_else(|_| utilities::toolchain(utilities::Target::host()).cc)
 }
@@ -162,7 +162,7 @@ fn lex_tokenizes_a_string_into_tokens() {
 #[test]
 fn parse_str_produces_opaque_code() {
     // A valid expression parses into an opaque `@Code` carrying its source. A
-    // syntax error traps (verified via `thrax run`: a compile-time `@e` of a
+    // syntax error traps (verified via `ares run`: a compile-time `@e` of a
     // bad `@parse_str` fails the build), the same fault path as a `@e` trap.
     let src = "$ @mod T\n$ c : @Code = @parse_str \"1 + 2\"";
     assert_eq!(run(src, "T.c"), "@Code.{ .src = \"1 + 2\" }");
@@ -179,7 +179,7 @@ fn parse_consumes_tokens_into_code() {
 }
 
 #[test]
-fn format_lays_out_items_like_thrax_fmt() {
+fn format_lays_out_items_like_ares_fmt() {
     let src = "$ @mod T\n$ s : @Str = @format \"$ f   : @Int->@Int = \\\\x=x+1\"";
     assert_eq!(run(src, "T.s"), "\"$ f : @Int -> @Int = \\\\x = x + 1\\n\"");
 }
@@ -266,7 +266,7 @@ fn ffi_struct_by_value_argument() {
     // flat memory image, hand it to libffi as an aggregate argument. A helper `.so`
     // gives a function that takes a small struct by value.
     let so = compile_helper_so(
-        "thx_ffi_arg_helper",
+        "arx_ffi_arg_helper",
         "typedef struct { long long x, y; } P;\n\
          long long sum_p(P p) { return p.x * 1000 + p.y; }\n",
     );
@@ -275,7 +275,7 @@ fn ffi_struct_by_value_argument() {
          $ P : @struct @extern \"C\" = x: @Int, y: @Int,\n\
          $ sum_p : P -> @Int = @extern \"C\" \"sum_p\" \"{}\"\n\
          $ test : @Int = sum_p (P.{{ .x = 40, .y = 2 }})",
-        thx_path(&so)
+        arx_path(&so)
     );
     assert_eq!(run(&src, "test"), "40002");
 }
@@ -286,7 +286,7 @@ fn ffi_repeated_calls_reuse_cached_resolution() {
     // signature are cached after the first call. One symbol bound twice, under
     // two struct types, alternates between the bindings across many calls.
     let so = compile_helper_so(
-        "thx_ffi_cache_helper",
+        "arx_ffi_cache_helper",
         "typedef struct { long long x, y; } P;\n\
          long long sum_p(P p) { return p.x * 1000 + p.y; }\n",
     );
@@ -299,7 +299,7 @@ fn ffi_repeated_calls_reuse_cached_resolution() {
          $ go : @Int -> @Int -> @Int = \\n acc => if n == 0 => acc else \
              go (n - 1) (acc + sp (P.{{ .x = n, .y = 1 }}) + sq (Q.{{ .a = 1, .b = n }}))\n\
          $ test : @Int = go 50 0",
-        lib = thx_path(&so)
+        lib = arx_path(&so)
     );
     // The sum over n = 1..50 of (1000n + 1) + (1000 + n).
     assert_eq!(run(&src, "test"), "1326325");
@@ -310,7 +310,7 @@ fn ffi_struct_array() {
     // A `@Vec T` of C-repr structs passed to C as a contiguous `T*` buffer (with a
     // separate count), the raylib vertex/point/color-buffer shape.
     let so = compile_helper_so(
-        "thx_ffi_arr_helper",
+        "arx_ffi_arr_helper",
         "typedef struct { long long x, y; } P;\n\
          long long sum_ps(P* a, int n) { long long s = 0; for (int i = 0; i < n; i++) s += a[i].x * 10 + a[i].y; return s; }\n",
     );
@@ -319,7 +319,7 @@ fn ffi_struct_array() {
          $ P : @struct @extern \"C\" = x: @Int, y: @Int,\n\
          $ sum_ps : {{ps: @Vec P, n: @Int}} -> @Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
          $ test : @Int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
-        lib = thx_path(&so)
+        lib = arx_path(&so)
     );
     // (1*10+2) + (3*10+4) + (5*10+6) = 12 + 34 + 56 = 102.
     assert_eq!(run(&src, "test"), "102");
@@ -327,10 +327,10 @@ fn ffi_struct_array() {
 
 #[test]
 fn ffi_callback() {
-    // A Thrax closure passed to C as a function pointer. The helper calls it (twice,
+    // A Ares closure passed to C as a function pointer. The helper calls it (twice,
     // to exercise repeated invocation); the closure captures a free variable.
     let so = compile_helper_so(
-        "thx_ffi_cb_helper",
+        "arx_ffi_cb_helper",
         "int call_twice(int (*f)(int, int)) { return f(1, 2) * 100 + f(3, 4); }\n",
     );
     let src = format!(
@@ -338,7 +338,7 @@ fn ffi_callback() {
          $ call_twice : (@Int -> @Int -> @Int) -> @Int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
          $ k : @Int = 10\n\
          $ test : @Int = call_twice (\\a b => a + b + k)",
-        lib = thx_path(&so)
+        lib = arx_path(&so)
     );
     // f(1,2)=13, f(3,4)=17 -> 13*100 + 17 = 1317.
     assert_eq!(run(&src, "test"), "1317");
@@ -349,7 +349,7 @@ fn ffi_c_union_by_value() {
     // A C `union` passed and returned by value: build with one member (packed at
     // offset 0), read a member back from a returned union (reinterpreted bytes).
     let so = compile_helper_so(
-        "thx_ffi_union_helper",
+        "arx_ffi_union_helper",
         "typedef union { long long i; double d; } U;\n\
          long long u_as_long(U u) { return u.i; }\n\
          U u_from_long(long long v) { U u; u.i = v; return u; }\n",
@@ -362,7 +362,7 @@ fn ffi_c_union_by_value() {
          $ built : @Int = u_as_long (U.{{ .i = 42 }})\n\
          $ back  : @Int = (u_from_long 99).i\n\
          $ test  : @Int = built * 1000 + back",
-        lib = thx_path(&so)
+        lib = arx_path(&so)
     );
     // built = 42, back = 99.
     assert_eq!(run(&src, "test"), "42099");
@@ -374,7 +374,7 @@ fn ffi_nested_struct_by_value() {
     // `Camera2D`/`Rectangle` shape). `seg_make` returns a nested struct; `seg_sum`
     // takes one; the round-trip exercises nested pack and unpack.
     let so = compile_helper_so(
-        "thx_ffi_nested_helper",
+        "arx_ffi_nested_helper",
         "typedef struct { long long x, y; } P;\n\
          typedef struct { P a; P b; } Seg;\n\
          long long seg_sum(Seg s) { return s.a.x + s.a.y*10 + s.b.x*100 + s.b.y*1000; }\n\
@@ -387,7 +387,7 @@ fn ffi_nested_struct_by_value() {
          $ seg_sum : Seg -> @Int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
          $ seg_make : @Int -> Seg = @extern \"C\" \"seg_make\" \"{lib}\"\n\
          $ test : @Int = seg_sum (seg_make 1)",
-        lib = thx_path(&so)
+        lib = arx_path(&so)
     );
     // seg_make 1 = {{1,2},{3,4}}; seg_sum = 1 + 2*10 + 3*100 + 4*1000 = 4321.
     assert_eq!(run(&src, "test"), "4321");
@@ -398,7 +398,7 @@ fn ffi_struct_by_value_return() {
     // libc's `lldiv_t lldiv(long long, long long)` returns a small struct BY
     // VALUE (`long long`, not `long`: `@Int` is 64 bits, Windows' `long` 32). A C-repr
     // struct return exercises the whole struct-marshalling path (layout, libffi
-    // aggregate return, unpack back to a Thrax struct value).
+    // aggregate return, unpack back to a Ares struct value).
     let src = "$ @mod M\n\
         $ LDivT : @struct @extern \"C\" = quot: @Int, rem: @Int,\n\
         $ lldiv : {numer: @Int, denom: @Int} -> LDivT = @extern \"C\" \"lldiv\" \"libc\"\n\
@@ -1357,15 +1357,15 @@ fn extern_ffi_file_roundtrip() {
         $ fclose : @Int -> @Int = @extern \"C\" \"fclose\" \"libc\"\n\
         $ fgetc : @Int -> @Int = @extern \"C\" \"fgetc\" \"libc\"\n\
         $ remove : @Str -> @Int = @extern \"C\" \"remove\" \"libc\"\n\
-        $ p : @Str = \"/tmp/thrax_core_roundtrip.txt\"\n\
+        $ p : @Str = \"/tmp/ares_core_roundtrip.txt\"\n\
         $ r : @Int = \
           let f = fopen {p, \"wb\"} in \
           fputs {\"hi\", f} ; fclose f ; \
           let g = fopen {p, \"rb\"} in \
           let a = fgetc g in let b = fgetc g in \
           fclose g ; remove p ; a + b";
-    let path = thx_path(&std::env::temp_dir().join("thrax_core_roundtrip.txt"));
-    let src = src.replace("/tmp/thrax_core_roundtrip.txt", &path);
+    let path = arx_path(&std::env::temp_dir().join("ares_core_roundtrip.txt"));
+    let src = src.replace("/tmp/ares_core_roundtrip.txt", &path);
     assert_eq!(run(&src, "r"), "209");
 }
 
@@ -1511,7 +1511,7 @@ fn scalar_serialization_round_trips() {
     // A `@Str` serializes as itself.
     assert_eq!(ok("(from_string (to_string \"hi\")) == \"hi\""), "true");
     // Floats round-trip through their shortest decimal (via the C runtime seam:
-    // `thx_real_to_str`/`thx_f32_to_str` + libc `atof`), at both widths.
+    // `arx_real_to_str`/`arx_f32_to_str` + libc `atof`), at both widths.
     assert_eq!(
         ok("let x : @Float64 = 3.5 in (from_string (to_string x)) == x"),
         "true"

@@ -535,7 +535,7 @@ impl<'a> Desugarer<'a> {
             Expr::Var { .. } => {
                 let base = self.var_head(e);
                 // A multi-argument foreign function referenced first-class (not the
-                // head of an application) presents to Thrax as a record-taking
+                // head of an application) presents to Ares as a record-taking
                 // function, but its runtime value is N-ary. Eta-expand so the record
                 // is destructured into the positional C arguments when the wrapper is
                 // finally called.
@@ -772,7 +772,7 @@ impl<'a> Desugarer<'a> {
 
             // Note [Case is never lowered to application]
             //
-            // Thrax evaluates arguments before a call. A branching form written
+            // Ares evaluates arguments before a call. A branching form written
             // as an application (`@if c t e`, or `&&` as a function) would
             // evaluate both branches before choosing one, which breaks every
             // recursive definition and every effect in a branch. So `if` (and
@@ -890,7 +890,7 @@ impl<'a> Desugarer<'a> {
                     }),
                 })
             }
-            Expr::Builtin => self.fault("`@extern \"thrax\"` is only a definition's whole body"),
+            Expr::Builtin => self.fault("`@extern \"ares\"` is only a definition's whole body"),
             Expr::Extern { abi, symbol, lib } => {
                 let (abi, symbol, lib) = (*abi, *symbol, *lib);
                 match self.resolved.extern_sigs.get(&e) {
@@ -986,7 +986,7 @@ impl<'a> Desugarer<'a> {
         (self.unless_builtin(module, name), name)
     }
 
-    /// `module`, or `None` when `module.name` is an `@extern "thrax"` declaration:
+    /// `module`, or `None` when `module.name` is an `@extern "ares"` declaration:
     /// a bare name is how the runtime reaches a builtin.
     fn unless_builtin(&self, module: Option<StrId>, name: StrId) -> Option<StrId> {
         match module {
@@ -1293,7 +1293,7 @@ impl<'a> Desugarer<'a> {
     }
 
     /// Eta-expand a first-class multi-argument extern into `\r = ext r.f0 r.f1
-    /// ...`, so it keeps its record-taking Thrax type while feeding the wrapper
+    /// ...`, so it keeps its record-taking Ares type while feeding the wrapper
     /// positional arguments.
     fn eta_extern(&mut self, ext: Aol<Term>, params: &[utilities::ExternArg]) -> Aol<Term> {
         let r = self.fresh();
@@ -1764,8 +1764,8 @@ impl<'a> Desugarer<'a> {
 
 /// Whether a foreign function's parameter is a record/tuple whose fields were
 /// flattened into several positional C arguments. Such an extern is N-ary at
-/// runtime but record-taking to Thrax, so a first-class reference must eta-expand
-/// (a `Whole`/unit extern is already a 1-ary function matching its Thrax type).
+/// runtime but record-taking to Ares, so a first-class reference must eta-expand
+/// (a `Whole`/unit extern is already a 1-ary function matching its Ares type).
 fn extern_needs_eta(params: &[utilities::ExternArg]) -> bool {
     matches!(
         params.first(),

@@ -72,7 +72,7 @@ fn host_toolchain_uses_system_cc() {
     let tc = toolchain(Target::host());
     let windows = Target::host().os == Os::Windows;
     let default_cc = if windows { "gcc" } else { "cc" };
-    assert_eq!(tc.cc, std::env::var("THRAX_CC").unwrap_or_else(|_| default_cc.to_string()));
+    assert_eq!(tc.cc, std::env::var("ARES_CC").unwrap_or_else(|_| default_cc.to_string()));
     assert!(tc.runner.is_empty());
     assert_eq!(tc.exe_suffix, if windows { ".exe" } else { "" });
     assert_eq!(tc.rpath, !windows);
@@ -105,7 +105,7 @@ fn musl_toolchain_links_statically_through_the_specs_file() {
     let text = musl_specs(sysroot);
     assert!(text.contains("-isystem /opt/musl/include"));
     assert!(text.contains("/opt/musl/lib/crti.o"));
-    if std::env::var_os("THRAX_MUSL_CC").is_none() {
+    if std::env::var_os("ARES_MUSL_CC").is_none() {
         let tc = musl_toolchain(sysroot, specs);
         assert!(tc.cflags.iter().any(|f| f == "-static"));
         assert!(tc.cflags.iter().any(|f| f == "-specs=/tmp/out/musl.specs"));

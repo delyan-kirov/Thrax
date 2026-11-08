@@ -1,0 +1,75 @@
+$ @mod INFERENCE
+
+# \file inference.ares
+# \info Exact probabilistic inference. A model is ordinary straight-line code
+#       that rolls dice (`pick n`) and rejects worlds it rules out
+#       (`observe ok`). The handler resumes the continuation once per outcome of
+#       every roll, so it walks every possible world and weighs it, giving the
+#       exact conditional probability as a fraction.
+
+$ Prob : @effect = pick : @Int -> @Int, observe : @Bool -> {},
+
+# The weight of a set of worlds: `yes` of them made the model true, `all`
+# survived every `observe`, each worth `1 / den`.
+$ Mass : @struct = yes: @Int, all: @Int, den: @Int
+
+$ gcd : @Int -> @Int -> @Int = \a b => if b == 0 => a else gcd b (a % b)
+
+$ impl_IAdd_for_Mass : IAdd Mass = .{
+    .add = \a b =>
+        let den = a.den / gcd a.den b.den * b.den in
+        let sa = den / a.den in
+        let sb = den / b.den in
+        Mass.{ .yes = a.yes * sa + b.yes * sb, .all = a.all * sa + b.all * sb, .den = den }
+}
+
+$ nothing : Mass = Mass.{ .yes = 0, .all = 0, .den = 1 }
+
+# Resume `k` with every outcome `i ..< n` and add up the worlds that follow.
+$ each : (@Int -> Mass) -> @Int -> @Int -> Mass = \k i n =>
+    if i == n => nothing else k i + each k (i + 1) n
+
+$ infer : ({} -> <Prob> @Bool) -> Mass = \model =>
+    do model {}
+    ctl k
+    | Prob.pick n     => let m = each k 0 n in Mass.{ .yes = m.yes, .all = m.all, .den = m.den * n }
+    | Prob.observe ok => if ok => k {} else nothing
+    | b               => Mass.{ .yes = if b => 1 else 0, .all = 1, .den = 1 }
+
+# P(model is true | every observation held), reduced.
+$ chance : ({} -> <Prob> @Bool) -> @Str = \model =>
+    let m = infer model in let g = gcd m.yes m.all in "?(m.yes / g)/?(m.all / g)"
+
+# Two children, at least one a boy. Both boys? 1/3
+$ two_boys : {} -> <Prob> @Bool = \u =>
+    let a = pick 2 in let b = pick 2 in observe (a == 0 || b == 0); a == 0 && b == 0
+
+# The same, but that boy was born on a Tuesday: 13/27
+$ tuesday_boy : {} -> <Prob> @Bool = \u =>
+    let a = pick 2 in
+    let a_day = pick 7 in
+    let b = pick 2 in
+    let b_day = pick 7 in
+    observe (a == 0 && a_day == 2 || b == 0 && b_day == 2); a == 0 && b == 0
+
+# Monty Hall: does switching win? 2/3
+$ switching_wins : {} -> <Prob> @Bool = \u =>
+    let car = pick 3 in
+    let guess = pick 3 in
+    let left = (guess + 1) % 3 in
+    let right = (guess + 2) % 3 in
+    let opened =
+        if car == guess =>
+            (if pick 2 == 0 => left else right)
+        else if car == left =>
+            right
+        else
+            left
+    in
+    3 - guess - opened == car
+
+$ test : @Int =
+    (if chance two_boys == "1/3" => 0 else 1) + (if chance tuesday_boy == "13/27" => 0 else 2)
+        + (if chance switching_wins == "2/3" => 0 else 4)
+
+$ @e <| assert (test == 0) "INFERENCE: a check failed"

@@ -783,7 +783,7 @@ impl<'p> Machine<'p> {
         data::matmul_result(cells, m, n)
     }
 
-    /// Apply a Thrax closure to C callback arguments and return the result's bits.
+    /// Apply a Ares closure to C callback arguments and return the result's bits.
     /// `cl` is a borrowed (not owned) reference to the closure the callback carries;
     /// the argument words are read per `kinds` and the result written per `rk`.
     fn callback_apply(
@@ -1319,7 +1319,7 @@ impl<'p> Machine<'p> {
                 let v = if args.len() >= arity {
                     let positional: &[PVal<'p>] = if arg_types.is_empty() { &[] } else { &args };
                     // Install a callback applier for the duration of the call, so a
-                    // foreign function can invoke a Thrax closure passed as a pointer.
+                    // foreign function can invoke a Ares closure passed as a pointer.
                     let apply = |cl: *const std::ffi::c_void,
                                  words: &[u64],
                                  kinds: &[std::os::raw::c_int],
@@ -1816,7 +1816,7 @@ pub fn take_link_directives() -> Vec<(bool, String)> {
     LINKS.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
-/// What the `@build` of a project's `BUILD.thx` recorded: the directories its
+/// What the `@build` of a project's `BUILD.ares` recorded: the directories its
 /// `@import_path` calls added and the options its `@option` calls set.
 #[derive(Default)]
 pub struct BuildRecord {
@@ -1825,7 +1825,7 @@ pub struct BuildRecord {
 }
 
 thread_local! {
-    /// Open while a project's `BUILD.thx` runs. `None` at every other time, so
+    /// Open while a project's `BUILD.ares` runs. `None` at every other time, so
     /// `@import_path` or `@option` anywhere else faults.
     static BUILD_RECORD: std::cell::RefCell<Option<BuildRecord>> =
         const { std::cell::RefCell::new(None) };
@@ -1836,7 +1836,7 @@ pub fn open_build_record() {
     BUILD_RECORD.with(|c| *c.borrow_mut() = Some(BuildRecord::default()));
 }
 
-/// Add to the open record; false when no `BUILD.thx` is running.
+/// Add to the open record; false when no `BUILD.ares` is running.
 pub fn record_build(f: impl FnOnce(&mut BuildRecord)) -> bool {
     BUILD_RECORD.with(|c| c.borrow_mut().as_mut().map(f).is_some())
 }

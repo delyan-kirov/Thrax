@@ -3,7 +3,7 @@ use crate::*;
 /// The implicitly imported CORE module (defines `to_string` and the `+ - * / %`
 /// operator overloads). Injected so a test using arithmetic resolves it, as the
 /// driver does for every real program.
-const CORE_SRC: &str = include_str!("../../../../library/CORE.thx");
+const CORE_SRC: &str = include_str!("../../../../library/CORE.ares");
 
 /// Infer the type of a single global `x`, rendered as a string. CORE is parsed
 /// and imported first (so arithmetic and other CORE names resolve), as the driver
@@ -19,7 +19,7 @@ fn type_of(src: &str, name: &'static str) -> String {
     checker.set_inferred(name);
     let results = checker
         .check_program(&prog)
-        .unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "test.ares")));
     let ty = results
         .iter()
         .find(|(n, _)| *n == name)
@@ -54,7 +54,7 @@ fn rendered_errors(src: &str) -> String {
     checker.import_from(&core_checker);
     match checker.check_program(&prog) {
         Ok(_) => String::new(),
-        Err(e) => e.render(src, "test.thx"),
+        Err(e) => e.render(src, "test.ares"),
     }
 }
 
@@ -103,7 +103,7 @@ $ x : @Int = 1",
         let text = rendered_errors(src);
         assert!(!text.is_empty(), "expected an error for {src:?}");
         assert!(
-            text.contains("--> test.thx:2:") || text.contains("--> test.thx:3:"),
+            text.contains("--> test.ares:2:") || text.contains("--> test.ares:3:"),
             "the error should caret the declaration, not the module header:\n{text}"
         );
     }
@@ -718,7 +718,7 @@ fn open_effects_permits_io_at_the_shell_top_level() {
     checker.set_open_effects(true);
     let results = checker
         .check_program(&prog)
-        .unwrap_or_else(|e| panic!("open effects should accept IO: {}", e.render(src, "test.thx")));
+        .unwrap_or_else(|e| panic!("open effects should accept IO: {}", e.render(src, "test.ares")));
     let ty = results.iter().find(|(n, _)| *n == "shown").expect("shown").1;
     assert_eq!(checker.show(ty), "@Int");
 }
@@ -774,7 +774,7 @@ fn crepr_layout(src: &str, name: &str) -> utilities::CLayout {
     let mut checker = Checker::new(&parsed.ast, types.clone());
     checker
         .check_program(&parsed.program)
-        .unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "test.ares")));
     checker
         .crepr_layouts()
         .get(&utilities::StrId::intern(name))
@@ -1042,7 +1042,7 @@ fn a_literal_must_give_every_field() {
     let err = |src: &str| {
         let text = rendered_errors(src);
         assert!(!text.is_empty(), "expected an error for {src:?}");
-        assert!(text.contains("--> test.thx:"), "no caret:\n{text}");
+        assert!(text.contains("--> test.ares:"), "no caret:\n{text}");
         text
     };
     let p = "$ @mod M\n$ P : @struct = a: @Int, b: @Int,\n";
@@ -1112,7 +1112,7 @@ fn coverage(src: &str) -> (String, Vec<String>) {
     let warnings = checker
         .warnings()
         .iter()
-        .map(|w| w.render_warning(src, "test.thx").lines().nth(1).unwrap_or("").trim().to_string())
+        .map(|w| w.render_warning(src, "test.ares").lines().nth(1).unwrap_or("").trim().to_string())
         .collect();
     (err, warnings)
 }
@@ -1201,7 +1201,7 @@ fn unreachable_arms_warn() {
     let (err, w) = coverage(&format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A => 0 | m => 1 | _ => 2\n"));
     assert_eq!(err, "");
     assert_eq!(w.len(), 1, "{w:?}");
-    assert!(w[0].contains("test.thx:3:"), "{w:?}");
+    assert!(w[0].contains("test.ares:3:"), "{w:?}");
     let (_, w) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n => n |> \\ | 1 => 0 | 1 => 1 | _ => 2\n");
     assert_eq!(w.len(), 1, "{w:?}");
     let (_, w) = coverage("$ @mod T\n$ f : @Int -> @Int = \\n => n |> \\ | 1 ... 3 => 0 | 2 => 1 | _ => 2\n");
@@ -1225,7 +1225,7 @@ fn unreachable_warnings_point_at_the_pattern() {
     let src = format!("{L}$ f : L -> @Int = \\l => l |> \\ | L.A => 0 | m => 1 | _ => 2\n");
     let (_, w) = coverage(&src);
     let col = src.lines().nth(2).unwrap().find("| _").unwrap() + 3;
-    assert_eq!(w, vec![format!("--> test.thx:3:{col}")]);
+    assert_eq!(w, vec![format!("--> test.ares:3:{col}")]);
 }
 
 #[test]
@@ -1496,7 +1496,7 @@ fn reflection_orders_spliced_variants_included_first() {
                $ x : @Int = 0\n";
     let (ast, prog) = crate::parse_into(Ast::new(), src).expect("parse");
     let mut checker = Checker::new(&ast, std::rc::Rc::new(crate::Types::new()));
-    checker.check_program(&prog).unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
+    checker.check_program(&prog).unwrap_or_else(|e| panic!("{}", e.render(src, "test.ares")));
     let resolved = crate::collect_resolved(std::slice::from_ref(&checker));
     let reflect = resolved.declarations.reflect();
     let big = reflect.unions.iter().find(|(_, n, _, _)| n == "Big").expect("Big reflected");

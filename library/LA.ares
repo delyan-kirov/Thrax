@@ -1,0 +1,93 @@
+$ @mod LA
+
+# \file LA.ares
+# \info Linear algebra over sized tensors `[n]T`. The compiler provides only the
+#       `@`-sigil PRIMITIVES over the tensor buffer -- `@tensor_index` (modular read),
+#       `@tensor_length` (size), `@tensor_create` (build one the size of a template from an
+#       index function), `@tensor_concat` (size-changing join), and the
+#       `@tensor_dot`/`@tensor_matmul` kernels. Everything else here is
+#       ordinary Ares, so this module is readable, forkable, and extensible: a
+#       custom container joins the `.[..]` surface by adding its own
+#       `@IIndex` instance, and the element arithmetic arrives
+#       as a `@ctx` context parameter (CORE's `IAdd`/`IMul`/`IZero`) rather than as
+#       a built-in numeric class.
+
+# `t.[i]` desugars to the `@IIndex` interface. The
+# tensor candidate forwards to the `@tensor_index` primitive; a custom container adds
+# its own hook overload (the two coexist by the import merge), so any type can join
+# the `.[..]` surface.
+$ impl_IIndex_for_tensor : @IIndex ([n] a) @Int a = .{ .index = \t i => @tensor_index t i }
+
+# Thin names over the remaining primitives.
+$ length : [n] a -> @Int = \t => @tensor_length t
+$ create : [n] x -> (@Int -> a) -> [n] a = \t f => @tensor_create t f
+$ concat : [n] a -> [m] a -> [n + m] a = \x y => @tensor_concat x y
+
+# O(1) VIEWS (share the buffer, copy nothing). `slice` takes `[lo, hi)` of the
+# leading axis; `row i` is a row; `col j` is a column (a strided view, via the O(1)
+# transpose). The sliced size is a runtime value, so it is not tracked statically
+# (indexing stays modular/total).
+$ slice : [n] a -> @Int -> @Int -> [k] a = \t lo hi => @tensor_slice t lo hi
+$ row : [m] [n] a -> @Int -> [n] a = \t i => t.[i]
+$ col : [m] [n] a -> @Int -> [m] a = \t j => (transpose t).[j]
+
+# Transpose swaps the two axes. This is O(1): `@tensor_transpose` returns a VIEW
+# that shares the buffer and only swaps the shape/strides, copying nothing.
+$ transpose : [m] [n] a -> [n] [m] a = \t => @tensor_transpose t
+
+# Dot product: `add (... (add zero (mul x0 y0)) ...) (mul xn yn)`, with the
+# element arithmetic arriving as the context: the three operations it needs,
+# bundled. Any element type with them works, CORE's numbers and `Cpx` included.
+# The loop is the `@tensor_dot` kernel, which runs on unboxed numbers when the
+# operations are CORE's numeric ones and applies them as functions otherwise.
+$ dot : @use { p: IAdd a, m: IMul a, z: IZero a } -> [n] a -> [n] a -> a = \x y =>
+    @tensor_dot p.add m.mul z.zero x y
+
+# Matrix multiply: each result cell is the dot of a row of `a` with a column of
+# `b`, computed by the `@tensor_matmul` kernel. The shared inner dimension `k`
+# unifies at the type level, so a shape mismatch is a compile error.
+#
+# The axes carry VARIANCE. A matrix is `[@contra m, @co n]`: an upper (contra) row
+# index and a lower (co) column index. Matmul contracts `a`'s co `k` against `b`'s
+# contra `k`, exactly the Einstein-summation rule (an upper index pairs with a lower
+# one). So swapping a factor's variance is a type error, not just a shape mismatch.
+# A plain unmarked `[m][n]` matrix still works: a neutral axis is compatible with
+# either variance.
+$ matmul : @use { p: IAdd t, m: IMul t, z: IZero t } -> [@contra m, @co k] t -> [@contra k, @co n] t
+    -> [@contra m, @co n] t = \a b =>
+    @tensor_matmul p.add m.mul z.zero a b
+
+# ---- maps ----
+
+# `map f t` applies `f` along the leading axis: to each element of a vector, to
+# each row of a matrix.
+$ map : (a -> b) -> [n] a -> [n] b = \f t => create t (\i => f t.[i])
+
+# `map f t` with the leading axis split into `chunks` slices (O(1) views), each
+# mapped by a pure parallel task. The result equals `map f t`, element for
+# element; `f` is pure, so the order the tasks run in cannot show.
+$ par_map_chunks : @Int -> (a -> b) -> [n] a -> [n] b = \chunks f t =>
+    let n = length t in
+    let c = if chunks < 1 => 1 else chunks in
+    let size = if n < c => 1 else (n + c - 1) / c in
+    let parts = await_parts (spawn_parts f t size 0 (@vec_new {})) 0 (@vec_new {}) in
+    create t (\i => (@vec_get parts (i / size)).[i % size])
+
+$ par_map : (a -> b) -> [n] a -> [n] b = \f t => par_map_chunks 64 f t
+
+$ spawn_parts : (a -> b) -> [n] a -> @Int -> @Int -> @Vec (@Future ([k] b))
+    -> @Vec (@Future ([k] b)) = \f t size lo acc =>
+    let n = length t in
+    if lo >= n =>
+        acc
+    else
+        let hi = if lo + size > n => n else lo + size in
+        let part = slice t lo hi in
+        let fut = @par (\u => map f part) in
+        spawn_parts f t size hi (@vec_push acc fut)
+
+$ await_parts : @Vec (@Future ([k] b)) -> @Int -> @Vec ([k] b) -> @Vec ([k] b) = \futs i acc =>
+    if i >= @vec_len futs =>
+        acc
+    else
+        await_parts futs (i + 1) (@vec_push acc (@await (@vec_get futs i)))

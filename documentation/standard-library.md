@@ -1,21 +1,21 @@
 # The standard library
 
-The standard library is a set of ordinary Thrax modules under `library/`,
+The standard library is a set of ordinary Ares modules under `library/`,
 nothing fancy: thin, readable code over the auto-injected `C` libc namespace
 and the byte-vector primitives. It is deliberately separate from the prelude:
 the prelude is the language's blessed core --
-`Bool`, `List`, `assert` in the readable `core/PRELUDE.thx`, plus the
+`Bool`, `List`, `assert` in the readable `core/PRELUDE.ares`, plus the
 generated numeric aliases, while the standard library is a toolbox a
 program opts into with `$ with MOD`.
 
 ## How it reaches a program
 
 A distribution ships the standard library beside the binary, and the binary
-finds it relative to its own path: `<prefix>/bin/thrax` resolves
+finds it relative to its own path: `<prefix>/bin/ares` resolves
 `<prefix>/library`, which is what the Nix package installs. The tree is
 relocatable, so moving or copying it keeps working, and nothing reads an
 environment variable. The same files are also embedded in the binary
-(`crates/thrax/src/stdlib.rs`, one `include_str!` per module), so a binary with
+(`crates/ares/src/stdlib.rs`, one `include_str!` per module), so a binary with
 no distribution around it still runs: that is what a bare `cargo build` or
 `cargo install` produces.
 
@@ -33,22 +33,22 @@ So:
 - the standard library is identically available to the interpreter, `emit-c` and
   `build`, inside a checkout and outside one;
 - diagnostics name the file the source was read from, so a span stays a location
-  a reader can open. For an embedded module that is `library/NAME.thx`, the file
+  a reader can open. For an embedded module that is `library/NAME.ares`, the file
   it was taken from;
 - a program pays only for what it reaches. Loading is lazy: `CORE`, `C`, and the
   modules a program actually imports, transitively, and nothing else;
-- editing a `library/*.thx` in a checkout takes effect on the next run, because
+- editing a `library/*.ares` in a checkout takes effect on the next run, because
   disk beats the embedded copy. `include_str!` is tracked in cargo's dep-info, so
   the embedded copy refreshes on the next `cargo build` as well;
 - a new standard-library module has to be added to `stdlib::MODULES`. A test
-  compares that list against `library/*.thx` and fails if they drift.
+  compares that list against `library/*.ares` and fails if they drift.
 
-First match wins, so a `library/MOD.thx` a program ships beside itself replaces
+First match wins, so a `library/MOD.ares` a program ships beside itself replaces
 the standard-library module of that name. That is the supported way to patch a
 module without touching the distribution, with one thing to keep in mind:
 replacing a module the rest of the standard library depends on means taking on
 its contract. A partial `STR` breaks `MAP`, which imports it. A directory only
-counts as a standard library when it holds `CORE.thx`, so an unrelated
+counts as a standard library when it holds `CORE.ares`, so an unrelated
 `library/` above a program is never mistaken for one.
 
 ## The modules
@@ -110,7 +110,7 @@ of any type (the byte vectors `Str`/`Array` cover the @Int-byte case). `Vec`
 is an OPAQUE core type -- the type checker knows only its name and arity;
 the behavior lives in the built-in primitives `vec_new` / `vec_fill` /
 `vec_len` / `vec_get` / `vec_set` / `vec_push` (reserved names, like the
-`array_*` family), and `library/VEC.thx` is the derived surface: `get`
+`array_*` family), and `library/VEC.ares` is the derived surface: `get`
 returns Option and `set` leaves the vector unchanged out of range (the raw
 primitives FAULT), plus `from_list`/`to_list`, `map`/`fold`. At runtime a
 Vec is a variant tagged `"%vec"` whose payload fields are the elements, so
@@ -148,7 +148,7 @@ deliberate compromises, both documented at the declarations in app/DR.cpp:
   the same functions or tested against 0 (NULL), and `==` is defined on @Int
   but not Ptr.
 - **A C `int` return does not arrive sign-extended.** The FFI widens returns
-  by the DECLARED Thrax type; declaring libc's 32-bit `int` results as the
+  by the DECLARED Ares type; declaring libc's 32-bit `int` results as the
   64-bit `@Int` means a negative return (EOF, error codes) arrives as its
   zero-extended bit pattern, not a negative @Int. The stdlib therefore never
   tests `< 0`: success is `== 0` (exact under any extension), and
@@ -167,7 +167,7 @@ prelude's `assert` and quick scripts.
 The TYPE is CORE's, not this module's: `Cpx` (fields `re`/`im`), the `i` literal
 suffix, `+ - * /` on `Cpx`, and `to_string` all live in CORE, so `3.4 + 1.2i`
 needs no import. An operator takes ONE type for both operands, so a real joins a
-complex only through `CPX.of_real`. `CPX` adds everything else, in ordinary Thrax
+complex only through `CPX.of_real`. `CPX` adds everything else, in ordinary Ares
 over libm through `C`.
 
 Two notes on the arithmetic. CORE's `/` forms `|b|^2` directly, which is the
@@ -185,10 +185,10 @@ CORE's `IAdd Cpx` / `IMul Cpx` / `IZero Cpx` instances are what `LA.dot` and
 
 ## Testing
 
-`examples/STDLIB_{CORE,LIST,STR,MAP,RESULT,RANDOM,IO,SET,PATH,VEC,PAR,ASYNC}.thx`
+`examples/STDLIB_{CORE,LIST,STR,MAP,RESULT,RANDOM,IO,SET,PATH,VEC,PAR,ASYNC}.ares`
 exercise the
-library and run in BOTH engines via the combined runner (tests/MAIN.thx):
-`thxdo corpus` (both engines, output diffed). The IO
+library and run in BOTH engines via the combined runner (tests/MAIN.ares):
+`thrax corpus` (both engines, output diffed). The IO
 test round-trips a file under /tmp and cleans up after itself; the MAP test
 stresses the AVL balance with 200 ascending inserts (the classic worst case
 for an unbalanced BST); the RANDOM test pins the exact MINSTD sequence.

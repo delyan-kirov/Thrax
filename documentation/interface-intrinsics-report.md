@@ -9,7 +9,7 @@ A record of what was built for the `@compiler_interface_*` overloadable-hook eff
 (design in `literal-and-interface-intrinsics.md`), plus the design decisions taken
 along the way. Everything below is landed on the `type-intrinsics` branch, built and
 tested on **both engines** (the interpreter and the `ccg` native C backend), with the
-full `cargo test` suite, the combined `tests/MAIN.thx` corpus, and the `examples/`
+full `cargo test` suite, the combined `tests/MAIN.ares` corpus, and the `examples/`
 green.
 
 ## Goal
@@ -93,14 +93,14 @@ match compilation before the ANF / de-Bruijn passes.
 - **`Str` as a library `@unbox` newtype: built, then removed.** A transparent
   single-field newtype (`@struct @unbox`, wrapper erased at lowering, zero-cost) was
   implemented and briefly used for `Str`. It was removed at the maintainer's call:
-  `Str` is load-bearing in CORE-less bootstrap contexts (`C.thx`'s libc bindings, the
+  `Str` is load-bearing in CORE-less bootstrap contexts (`C.ares`'s libc bindings, the
   `@main` argv contract), so a library `Str` fights that for no payoff. The
   `@unbox` feature itself was removed too (its only motivator was `Str`). Recorded
   gotcha: automatic (non-opt-in) single-field unboxing is unsound because of the
   `Con ~ Record` bridge (a 1-field struct can be used structurally as an open record).
 - **`CStr` for C interop: deferred with a design note.** The FFI already appends a NUL
   when marshalling `Str` → `char*`, so `Str` → C is already safe; a distinct `CStr`
-  is type-level clarity, not a correctness fix, and it ripples into `IO.thx`. Worth
+  is type-level clarity, not a correctness fix, and it ripples into `IO.ares`. Worth
   revisiting: it needs a `Str` <-> `CStr` conversion primitive that does not exist.
 
 ## Deferred (tracked, not blocking)
@@ -115,7 +115,7 @@ match compilation before the ANF / de-Bruijn passes.
 
 Every stage was validated on **both** the interpreter and the `ccg` native backend,
 with dedicated regression tests plus the full existing suite, the combined
-`tests/MAIN.thx` corpus, and the `examples/` (including the FFI-heavy `STRINGS` /
+`tests/MAIN.ares` corpus, and the `examples/` (including the FFI-heavy `STRINGS` /
 raylib paths). New tests include: expression ascription; the indexing hook (incl. a
 non-element result); all four construction hooks (context + ascription + cross-module
 import + not-hijacking-defaults + ccg parity); equality-hook and sequence-view
@@ -132,8 +132,8 @@ resolution coexisting with the prelude `List`.
   de-builtining.
 - `crates/frontend/src/desugar.rs`, `passes/match_compilation.rs`, `core.rs` — hook
   wrapping/folding, `Pat::HookEq` / `Pat::SeqView` and their expansion.
-- `library/CORE.thx` — `SeqView`, the `List` union.
-- `library/LA.thx`, `library/MAP.thx`, `examples/TENSORS.thx` — indexing-hook
+- `library/CORE.ares` — `SeqView`, the `List` union.
+- `library/LA.ares`, `library/MAP.ares`, `examples/TENSORS.ares` — indexing-hook
   overloads.
 - `documentation/literal-and-interface-intrinsics.md` — the design + staged plan with
   per-stage status.

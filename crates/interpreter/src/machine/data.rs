@@ -378,7 +378,7 @@ pub(crate) fn tensor_from_struct<'p>(name: StrId, fields: &[(StrId, PVal<'p>)]) 
 // -- tensor kernels ----------------------------------------------------------
 //
 // `@tensor_dot add mul zero x y` and `@tensor_matmul add mul zero a b` compute
-// exactly what the element-wise Thrax definition would: a dot is
+// exactly what the element-wise Ares definition would: a dot is
 // `add (... (add zero (mul x0 y0)) ...) (mul xn yn)` over the length of `x`, with
 // `y` indexed modulo its own length. When `add`/`mul` are the bare intrinsics
 // (CORE's numeric instances eta-reduce to them) and the elements are the
@@ -533,8 +533,8 @@ fn ptr_bytes(_p: i64, _n: usize) -> Result<Vec<u8>> {
 /// Run a saturated built-in. `a` is already deref'd (the machine derefs an
 /// argument before pushing it onto a builtin's operand list).
 fn outside_build_script(name: &str) -> Diagnostic {
-    Diagnostic::error(Code::BuildScript, Span::at(0), 0, format!("`{name}` outside a project's `BUILD.thx`"))
-        .with_help("call it from the `@build` of the `BUILD.thx` at the project root")
+    Diagnostic::error(Code::BuildScript, Span::at(0), 0, format!("`{name}` outside a project's `BUILD.ares`"))
+        .with_help("call it from the `@build` of the `BUILD.ares` at the project root")
 }
 
 pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
@@ -886,7 +886,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         }
         Prim::Emit => {
             let msg = as_bytes(&a[0])?;
-            eprintln!("thrax: {}", String::from_utf8_lossy(&msg));
+            eprintln!("ares: {}", String::from_utf8_lossy(&msg));
             Ok(Value::Unit)
         }
         // A unique identifier string `prefix_m<n>` for hygienic compile-time
@@ -1386,7 +1386,7 @@ pub(crate) fn value_eq(x: &PVal, y: &PVal) -> bool {
 // port of `engines/FF.cpp`) directly from this compiled-in table: a symbol here
 // is a linked call with a known signature, no resolution or libffi overhead. A
 // symbol OUTSIDE the table falls through to [`crate::machine::ffi`], which
-// resolves it with `dlopen`/`dlsym` and calls it through libffi, so `thrax run`
+// resolves it with `dlopen`/`dlsym` and calls it through libffi, so `ares run`
 // reaches the same arbitrary library the C backend links. Everything is a
 // machine word: a `Ptr` (and a `FILE*`/allocation) travels as an `Int`.
 
@@ -1399,7 +1399,7 @@ extern "C" {
 
 /// Call a foreign C function: resolve it at runtime (dlopen/dlsym) and invoke it
 /// through libffi (see [`crate::machine::ffi`]). The `C` namespace in
-/// `library/C.thx` reaches real libc/libm and the linked-in `thraxstd` this way,
+/// `library/C.ares` reaches real libc/libm and the linked-in `aresstd` this way,
 /// exactly as the compiled backend links them, so both engines agree.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_extern<'p>(

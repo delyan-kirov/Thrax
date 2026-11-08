@@ -73,7 +73,7 @@ scoped-label algorithm as effect rows (`unify_row` / `rewrite_row`,
   `rec - x`, deferred). This is not a new rule to enforce: the runtime already
   does it. `Value::Struct.fields` is a `Vec<(name, value)>` and access is
   `.find(|(n,_)| n == name)`, which returns the first match; the C backend's
-  `THxVALUE_field` is the same. So "first wins" is free, and matches how
+  `ARESxVALUE_field` is the same. So "first wins" is free, and matches how
   `rewrite_row` pulls the first occurrence of a label to the head for effects.
 
 Consequence: **no runtime change.** Field access in both engines is already
@@ -155,7 +155,7 @@ wrapper:
 - Field access `infer_field` becomes a row lookup: head match returns the field
   type; on an open tail, grow the row with the requested label.
 
-Runtime (`Value::Struct`, `Term::Struct`, `Term::Field`, C `THxVALUE_field`) is
+Runtime (`Value::Struct`, `Term::Struct`, `Term::Field`, C `ARESxVALUE_field`) is
 **unchanged** -- all name-keyed already.
 
 ## Value syntax (locked)

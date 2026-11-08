@@ -388,8 +388,8 @@ pub enum BuiltinHost {
     /// Both engines. Natively it starts or joins a parallel task, so a program
     /// naming one gets the thread-ready runtime.
     Parallel,
-    /// Both engines. Natively it calls into the compiler library (`libthrax`,
-    /// see `crates/thrax/include/thrax.h`).
+    /// Both engines. Natively it calls into the compiler library (`libares`,
+    /// see `crates/ares/include/ares.h`).
     Compiler,
     /// Only at compile time, on the interpreter: the metaprogramming builtins.
     /// The native runtime has none of them.
@@ -456,7 +456,7 @@ macro_rules! builtins {
         }
 
         /// Every built-in operation: the one table both engines read. The native
-        /// runtime numbers its dispatch (`THxB_*`) from the order of the native
+        /// runtime numbers its dispatch (`ARESxB_*`) from the order of the native
         /// entries, so a new native builtin goes before the compile-time ones.
         pub const BUILTINS: &[Builtin] = &[$($make(Prim::$prim, $name, $arity),)*];
     };

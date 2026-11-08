@@ -1,5 +1,5 @@
 //! The C ABI data model shared by the frontend (which computes a layout from
-//! Thrax types) and both engines (which marshal values across the `@extern`
+//! Ares types) and both engines (which marshal values across the `@extern`
 //! boundary). A [`CLayout`] is a struct's flat, unboxed C memory image: the
 //! total size, the alignment, and each field's byte offset and leaf kind.
 //!
@@ -58,8 +58,8 @@ pub struct CField {
 }
 
 /// How one positional C argument of an `@extern` is sourced from the single
-/// Thrax value the extern is applied to. A C function has no first-class
-/// closures to curry, so a Thrax extern takes exactly ONE argument: unit (no C
+/// Ares value the extern is applied to. A C function has no first-class
+/// closures to curry, so a Ares extern takes exactly ONE argument: unit (no C
 /// arguments), an anonymous record (each field is a positional C argument), or a
 /// single value (used directly). A record field is pulled BY NAME so a reordered
 /// call site still marshals in the declared C order.

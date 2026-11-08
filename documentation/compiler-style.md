@@ -82,7 +82,7 @@ Every **reference** is written `See Note [Title]`, in any comment, on one line:
 // See Note [Rémy levels].
 ```
 
-The rules, which `crates/thrax/tests/notes.rs` enforces over every `.rs` file
+The rules, which `crates/ares/tests/notes.rs` enforces over every `.rs` file
 in the workspace:
 
 - Every `See Note [Title]` has exactly one matching definition, anywhere in the
@@ -136,7 +136,7 @@ A module with children is `name.rs` beside a `name/` directory, never
 `name/mod.rs`.
 
 Tests that run the whole compiler (the corpus, the negative suite, the
-formatter over the library) live under the driver's `crates/thrax/tests/`.
+formatter over the library) live under the driver's `crates/ares/tests/`.
 
 ## 7. Names
 
@@ -153,6 +153,6 @@ formatter over the library) live under the driver's `crates/thrax/tests/`.
 ## Changing behaviour
 
 A tidiness change does not change what the compiler produces. Before and after
-a pure restructuring, `thrax emit-c` output is byte-identical on a few examples,
-and `cargo test`, `thxdo corpus` and `thxdo grammar` pass. A change that does
+a pure restructuring, `ares emit-c` output is byte-identical on a few examples,
+and `cargo test`, `thrax corpus` and `thrax grammar` pass. A change that does
 alter behaviour is its own step, and says so.

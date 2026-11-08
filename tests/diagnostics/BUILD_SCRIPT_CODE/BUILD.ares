@@ -1,0 +1,5 @@
+$ @mod BUILD
+
+# A `BUILD.ares` configures the build and contributes no items.
+$ @build : {} -> <@Meta, @IO> @Code = \_ => @parse_items "$ x : @Int = 1"
+#~ error[BUILD_SCRIPT]: the `@build` of `BUILD.ares` returned code

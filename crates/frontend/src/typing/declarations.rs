@@ -418,7 +418,7 @@ impl<'a> Checker<'a> {
 
     // Note [Lazy constructor slots]
     //
-    // Thrax is call-by-value, but a recursive data type built strictly could
+    // Ares is call-by-value, but a recursive data type built strictly could
     // never describe an infinite or very long structure without building all of
     // it first. So a constructor slot is lazy exactly when its type can lead
     // back to the type that owns it: `Cons`'s tail, a tree's children. Every

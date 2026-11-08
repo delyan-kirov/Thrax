@@ -16,7 +16,7 @@ use super::*;
 /// struct), since two modules may each declare a type of the same name.
 pub type LazySlots = HashMap<(StrId, StrId, Option<StrId>), Vec<bool>>;
 
-/// An `@extern`'s marshalling spec: how the single applied Thrax value maps to
+/// An `@extern`'s marshalling spec: how the single applied Ares value maps to
 /// positional C arguments (`params`), the flattened C argument type names
 /// (`arg_types`, one per positional C argument), and the result type name. The
 /// three are consumed by lowering to build the extern value both engines call.
@@ -118,7 +118,7 @@ pub struct Resolved {
     /// positional arguments (so the record is never built), and a first-class
     /// reference to a multi-argument extern eta-expands against it.
     pub externs: HashMap<(StrId, StrId), ExternSpec>,
-    /// Every `@extern "thrax"` declaration as its `(module, name)`, so a reference
+    /// Every `@extern "ares"` declaration as its `(module, name)`, so a reference
     /// lowers to the bare builtin instead of a global.
     pub builtins: HashSet<(StrId, StrId)>,
     /// The C memory layout of each C-repr struct (`@struct @extern "abi"`), keyed
@@ -172,7 +172,7 @@ pub fn collect_resolved<'c, 'a: 'c>(checkers: impl IntoIterator<Item = &'c Check
         for (key, flags) in checker.lazy_slots() {
             resolved.lazy_slots.insert(*key, flags.clone());
         }
-        if std::env::var_os("THX_LAZY_DEBUG").is_some() {
+        if std::env::var_os("ARX_LAZY_DEBUG").is_some() {
             for (k, v) in checker.lazy_slots() { eprintln!("LAZY {k:?} -> {v:?}"); }
         }
         resolved.call_modules.extend(checker.call_modules());
@@ -294,7 +294,7 @@ impl<'a> Checker<'a> {
         &self.own_externs
     }
 
-    /// This module's `@extern "thrax"` builtin declarations.
+    /// This module's `@extern "ares"` builtin declarations.
     pub fn own_builtins(&self) -> &HashSet<StrId> {
         &self.own_builtins
     }

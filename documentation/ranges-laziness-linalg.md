@@ -6,7 +6,7 @@ of a recursive slot in any declared type (documentation/language-reference.md 6.
 effect-system-design.md 1a). Read every "codata" below as "a lazy recursive
 slot"; the design questions it raises are unchanged. The LA extension has landed through **increment 4**: sized tensors
 (increment 1), a strided data plane (2a), O(1) views (2b), multi-axis slicing with
-inclusive `...` ranges (3), and per-axis variance (4). The ops are library Thrax
+inclusive `...` ranges (3), and per-axis variance (4). The ops are library Ares
 over a small set of `@tensor_*` primitives. No LA item remains open; the deferred
 work below (expression-form ranges, COW, static shape, strict/lazy split) is separate
 future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
@@ -14,7 +14,7 @@ future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
 - `[n]T` is a rank-1 sized vector; `n` is a type-level natural, a **distinct KIND**
   from ordinary types (`Type::Nat` + a `nat_vars` set in the engine; a size unifies
   only with a size). Answers the doc's "static shape needs type-level computation
-  Thrax lacks today."
+  Ares lacks today."
 - The design choice (per the user): **modular everything.** Indexing `t.[i]` is
   TOTAL and MODULAR (`i mod n`), so no bounds proofs and no partiality; the size
   arithmetic will be modular (Z/2^64) too when it lands. This keeps the whole thing
@@ -43,7 +43,7 @@ future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
   (`@tensor_index`/`@tensor_length`/`@tensor_create`/`@tensor_concat`/`@tensor_slice`/
   `@tensor_transpose`, plus `@tensor_index_axis`/`@tensor_slice_axis` for the
   multi-axis form); `transpose`/`matmul`/`dot`/`concat`/`slice`/`row`/`col` all live
-  in `library/LA.thx` as ordinary Thrax. Element arithmetic arrives as `@use` fields
+  in `library/LA.ares` as ordinary Ares. Element arithmetic arrives as `@use` fields
   naming the interfaces it needs
   (`@use {p: IAdd a, m: IMul a, z: IZero a}`), not a Num class, so `matmul`/`dot` are
   element-generic over @Int and Real by supplying the dictionary.
@@ -80,7 +80,7 @@ future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
   contracts a `@co` axis against a `@contra` axis (the Einstein-summation rule) and
   a flipped-variance factor is a type error, not just a shape mismatch. The
   `@tensor_*` primitives are variance-polymorphic; the other library ops stay
-  neutral and still work on any variance. `examples/TENSORS.thx` (the variance
+  neutral and still work on any variance. `examples/TENSORS.ares` (the variance
   block).
 - **Still open (separate from LA):** COW value semantics (views currently alias, no
   copy-on-write on rc>1 writes), static result-shape typing (rank is checked but not
@@ -140,13 +140,13 @@ built together. Decide the shape now; implement later.
 - Data is inductive (constructors, pattern matching, finite, strict). Codata is
   coinductive (observations/destructors, projection, potentially infinite,
   lazy-by-construction).
-- Opportunity, not just a new type: Thrax today is "CBV except lazy data
+- Opportunity, not just a new type: Ares today is "CBV except lazy data
   constructors" (see documentation/effect-system-design.md and the sum-types work), i.e.
   lazy DATA, which is the source of murky cost. The principled cleanup is a
   `data`/`codata` split: make `data` strict (predictable cost, refcount-in-place
   friendly) and confine ALL laziness behind explicit `codata`, visible in the
   type.
-- Lightweight here: Thrax is not a proof assistant, so codata can be lazy
+- Lightweight here: Ares is not a proof assistant, so codata can be lazy
   observation records on the existing thunk machinery. No productivity or
   coinduction totality checker required.
 - Overlaps with existing generators (`Yield` effect / coroutines). Generators are
@@ -190,7 +190,7 @@ Scalar`, `index _ {Range/.. ..} -> view`).
   Range pattern of the index). Baseline: dynamic rank (`index` returns `Tensor`,
   or `Scalar` when the overload sees an all-`@Int` tuple), variance still checked
   as a per-axis tag. Static shape (fold the index over the axis list) is an
-  additive upgrade needing type-level computation Thrax lacks today.
+  additive upgrade needing type-level computation Ares lacks today.
 - "Slices for free": indexing with a `Range` returns a VIEW, not a copy. It is
   the same `index` primitive, one overload keyed on the index type.
 - Mechanism: split storage from shape.

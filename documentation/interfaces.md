@@ -4,7 +4,7 @@ Status: **implemented** (issue #213; `@use` replaced the earlier `@ctx` form in
 #410). This replaces both the old by-name `@ctx` design and function overloading,
 which is gone.
 
-Thrax has two polymorphism mechanisms: generics, and interfaces resolved by type.
+Ares has two polymorphism mechanisms: generics, and interfaces resolved by type.
 There used to be a third, function overloading, and it made a name's type
 dishonest: `:type to_string` printed `to_string : a`, and `$ _ = to_string` failed
 with a `RUNTIME_FAULT` instead of a type error. One name now has one definition and

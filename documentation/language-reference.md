@@ -1,4 +1,4 @@
-# Thrax Language Reference
+# Ares Language Reference
 
 Every language feature, one entry each, with a simple example and a more
 involved one. The examples use the language's real, current surface syntax
@@ -6,7 +6,7 @@ involved one. The examples use the language's real, current surface syntax
 Where a feature is only partly built, the entry says so.
 
 Every code block below is self-contained and type-checks on its own (verified
-with `thrax check`); a block that needs a library imports it (`$ with LA`, etc.).
+with `ares check`); a block that needs a library imports it (`$ with LA`, etc.).
 
 Conventions used throughout: a global is `$ name : Type = expr`; a lambda is
 `\x => e` (curried: `\a b => e`); a branch is `if c => t else e`; a match is
@@ -41,7 +41,7 @@ each of type `a -> a -> @Bool`.
 ## 1.1 Comments
 A `#` starts a comment to end of line. There is no block comment.
 
-```thrax
+```ares
 $ x : @Int = 1   # trailing comment
 # whole-line comment
 ```
@@ -49,7 +49,7 @@ $ x : @Int = 1   # trailing comment
 ## 1.2 Integer literals
 Decimal, hexadecimal (`0x`), and binary (`0b`).
 
-```thrax
+```ares
 $ a   : @Int = 255
 $ b   : @Int = 0xFF
 $ c   : @Int = 0b1010
@@ -59,7 +59,7 @@ $ mix : @Int = 0x10 + 0b10 + 8   # bases mix freely in arithmetic
 ## 1.3 Real literals
 Decimal point or scientific notation.
 
-```thrax
+```ares
 $ pi   : Real = 3.14159
 $ tiny : Real = 12e-3        # 0.012
 $ half : Real = 1.0 / 2.0     # an integer literal never becomes a real
@@ -71,7 +71,7 @@ literal is not a base type: it desugars to the `@IImagLit` interface, whose `COR
 instance builds the `Cpx` struct (see 15). The `i` counts as a suffix only when no
 identifier character follows, so `3if` is still `3` then `if`.
 
-```thrax
+```ares
 $ unit : Cpx = 1.0i
 $ whole: Cpx = 3i              # the magnitude is a Real either way
 $ tiny : Cpx = 2.5e-2i         # scientific notation suffixes too
@@ -88,7 +88,7 @@ A string is a block of bytes; source text must be well-formed UTF-8. Escapes:
 `\n \t \r \0 \\ \" \' \a \b \f \v`, `\xHH` (one raw byte), `\u{...}` (a Unicode
 scalar, UTF-8 encoded).
 
-```thrax
+```ares
 $ hi   : Str = "hello\n"
 $ raw  : Str = "\x41\x42"            # "AB" via hex bytes
 $ emoji: Str = "\u{1F600} café"      # code point + raw UTF-8
@@ -100,12 +100,12 @@ $ emoji: Str = "\u{1F600} café"      # code point + raw UTF-8
 and `\}` are literal braces.
 
 Simple:
-```thrax
+```ares
 $ greet : Str -> Str = \who => "hello {who}!"
 ```
 
 Involved (a user type interpolates by defining an `Ito_string` instance):
-```thrax
+```ares
 $ Point : @struct = x: @Int, y: @Int
 $ impl_IToString_for_Point : Ito_string Point = .{ .show = \p => "({p.x}, {p.y})" }
 $ msg : Str = "at {Point.{ .x = 3, .y = 4 }}, n={40 + 2}"   # "at (3, 4), n=42"
@@ -120,7 +120,7 @@ Every file begins with `$ @mod NAME`. A module name is uppercase with digits, `_
 and the inert lowercase `x` allowed (so `MAIN`, `LIST_UTIL`, `MODxA`). A module
 may span several files (repeat the header).
 
-```thrax
+```ares
 $ @mod MAIN
 ```
 
@@ -131,13 +131,13 @@ a global's type is its contract with every importer. Leaving it out is a
 `$ a` are the same.
 
 Simple:
-```thrax
+```ares
 $ answer : @Int = 42
 $ id : t -> t = \x => x
 ```
 
 Involved (definitions may appear in any order and reference each other):
-```thrax
+```ares
 $ even : @Int -> @Bool = \n => if n == 0 => @true else odd (n - 1)
 $ odd  : @Int -> @Bool = \n => if n == 0 => @false else even (n - 1)
 ```
@@ -147,7 +147,7 @@ $ odd  : @Int -> @Bool = \n => if n == 0 => @false else even (n - 1)
 A qualified `MOD.symbol` needs the import too. An import brings in the whole
 module, not one symbol.
 
-```thrax
+```ares
 $ with MATH                    # MATH.sqrt, or bare sqrt
 $ with STR
 ```
@@ -161,7 +161,7 @@ import side by side without ambiguity. Its values, types and constructors are
 all reached through the alias (`V.len`, `O.Option @Int`, `O.Option.Some.{ 1 }`).
 Writing the module's own name as the alias makes a plain qualified-only import.
 
-```thrax
+```ares
 $ with V = VEC                 # V.len, never bare len or VEC.len
 $ with LIST = LIST             # LIST.len, never bare len
 ```
@@ -172,7 +172,7 @@ another imported module, of this module, or of the built-in `C` namespace.
 One `$ with` may list several imports, separated by commas, with an optional
 trailing comma. Each entry is a module or an `ALIAS = MOD`.
 
-```thrax
+```ares
 $ with
     VEC,
     M = MAP,
@@ -184,7 +184,7 @@ Symbols are public by default. `$ @private` hides every symbol below it, to the
 end of the file, from importers. There is no `@public` counterpart, so a
 module's public interface sits above the marker.
 
-```thrax
+```ares
 $ api : @Int -> @Int = \x => helper x + 1
 $ @private
 $ helper : @Int -> @Int = \x => x * x    # module-private
@@ -197,12 +197,12 @@ code, performing `@IO`. Together with `@build` (section 11.3), the compile-time
 entry, those are the only `@`-names a program may define, besides the blessed
 `@I*` interface types, which only `CORE` declares.
 
-```thrax
+```ares
 $ @main : @Vec @Str -> <@IO> @Int = \args => 0      # args[0] is the program path
 ```
 
-A module without `@main` is a library: `thrax check` type-checks it and runs its
-compile-time assertions, and `thrax run`/`build` reject it. Nothing else is
+A module without `@main` is a library: `ares check` type-checks it and runs its
+compile-time assertions, and `ares run`/`build` reject it. Nothing else is
 special, so a test harness is ordinary code: a check under `$ @e` (section 11)
 or a global some tool evaluates by name.
 
@@ -215,7 +215,7 @@ The word-size numbers are `@`-spelled like every other primitive: `@Int`
 (signed word), `@Nat` (unsigned word). `Real` and `Str` keep friendly names.
 They are distinct nullary constructors.
 
-```thrax
+```ares
 $ n : @Int = -5
 $ u : @Nat = 5
 $ r : Real = 2.5
@@ -233,7 +233,7 @@ etc. (`@Int` and `@Int32` do not unify). Each width has its own arithmetic
 instances; a literal takes the width expected of it. An operator takes ONE type for
 both operands, so crossing a width is explicit (`@cast`, `f32_to_f64`).
 
-```thrax
+```ares
 $ w : @Int32 = 1000
 $ z : @Int32 = w * 2          # @Int32 + @Int32 : @Int32
 ```
@@ -242,7 +242,7 @@ $ z : @Int32 = w * 2          # @Int32 + @Int32 : @Int32
 `@Ptr` (raw pointer), `@Bool` (values `@true`/`@false`), `@Array` (byte block),
 `@Vec` (the growable vector, and the default sequence).
 
-```thrax
+```ares
 $ flag : @Bool  = @true
 $ bytes: @Array = @Array.{ 8 }      # 8 zeroed bytes
 $ xs   : @Vec @Int = [1, 2, 3]
@@ -252,7 +252,7 @@ $ xs   : @Vec @Int = [1, 2, 3]
 The empty record type is unit; its sole value is also `{}`. Disambiguated by
 position (type vs term).
 
-```thrax
+```ares
 $ nothing : {} = {}
 $ ignore : @Int -> {} = \x => {}
 ```
@@ -262,7 +262,7 @@ $ ignore : @Int -> {} = \x => {}
 call may perform: `A -> <E> B`. A bare arrow is pure (empty row). `<| e>` is an
 open row (a row variable), which is what makes a function effect-polymorphic.
 
-```thrax
+```ares
 $ State : @effect = get : {} -> @Int, put : @Int -> {},
 $ pure : @Int -> @Int = \x => x                       # pure (empty row)
 $ act  : {} -> <State> @Int = \u => get {}           # may perform State
@@ -274,7 +274,7 @@ A lowercase name free in a signature is a type variable, universally quantified
 over the whole signature. The same lowercase name repeated is the same variable;
 there is no separate backtick spelling.
 
-```thrax
+```ares
 $ fst : {a, b} -> a = \t => t.0
 $ const : t -> u -> t = \x y => x
 ```
@@ -284,13 +284,13 @@ $ const : t -> u -> t = \x y => x
 one-tuple. Elements read positionally with `.0`, `.1`.
 
 Simple:
-```thrax
+```ares
 $ p : {@Int, Str} = {42, "answer"}
 $ n : @Int = p.0
 ```
 
 Involved (generic, nested, first-class):
-```thrax
+```ares
 $ swap : {a, b} -> {b, a} = \t => {t.1, t.0}
 $ nested : {@Int, {@Int, @Int}} = {1, {2, 3}}
 $ deep : @Int = nested.1.0 + nested.1.1        # 5
@@ -302,12 +302,12 @@ A record type may leave its tail open with a row variable:
 least those fields. Records are structural (unify by field name).
 
 Simple:
-```thrax
+```ares
 $ area : { x: @Int, y: @Int | r } -> @Int = \p => p.x * p.y
 ```
 
 Involved (update preserves the open tail; `with` stacks a field):
-```thrax
+```ares
 $ shift : { x: @Int | r } -> { x: @Int | r } = \p => { .x = p.x + 10 | p }
 $ tag   : { x: @Int | r } -> { x: @Int, t: @Int | r } = \p => { .t = 99, with p }
 ```
@@ -317,7 +317,7 @@ $ tag   : { x: @Int | r } -> { x: @Int, t: @Int | r } = \p => { .t = 99, with p 
 `[m, n]T` is sugar for nested `[m][n]T`. Sizes may be arithmetic
 (`[n+m]a`), decided by a canonical form. See section 9.
 
-```thrax
+```ares
 $ v : [3]@Int = [10, 20, 30]
 $ g : [2][2]@Int = [ [1,2], [3,4] ]
 ```
@@ -328,12 +328,12 @@ partially instantiate another generic type. An alias is transparent (unifies
 with its expansion).
 
 Simple:
-```thrax
+```ares
 $ Count : @alias = @Int
 ```
 
 Involved (partial instantiation):
-```thrax
+```ares
 $ Pair : @struct a b = fst: a, snd: b,
 $ IntPair : @alias b = Pair @Int b               # fix the first arg, keep the second open
 $ ip : IntPair Str = .{ .fst = 3, .snd = "z" }  # same as Pair @Int Str
@@ -353,7 +353,7 @@ parens, `(x: T)`, even when it is the only parameter, so the type ends at `)`.
 (A lowercase name in a type is a type variable, so a bare annotation would
 swallow the next parameter as its argument.)
 
-```thrax
+```ares
 $ Person : @struct = name: Str, age: @Int,
 $ inc : @Int -> @Int = \x => x + 1
 $ add : @Int -> @Int -> @Int = \a b => a + b                  # curried
@@ -369,7 +369,7 @@ pattern (lambdas and every kind of arm), `->` is the function type.
 ## 4.2 Application
 Juxtaposition, left-associative, binds tighter than any operator.
 
-```thrax
+```ares
 $ inc : @Int -> @Int = \x => x + 1
 $ add : @Int -> @Int -> @Int = \a b => a + b
 $ r : @Int = add (inc 2) 3   # (add (inc 2)) 3
@@ -379,7 +379,7 @@ $ r : @Int = add (inc 2) 3   # (add (inc 2)) 3
 `+ - * / %`, unary `-` (negation) and `!` (boolean not). Standard precedence,
 `( )` groups.
 
-```thrax
+```ares
 $ a : @Int  = 1 + 2 * 3 - 4      # 3
 $ b : @Int  = (1 + 2) * (3 - 4)  # -3
 $ c : @Int  = -42
@@ -393,7 +393,7 @@ all bind tighter than a comparison. `>>>` is arithmetic on the signed types and
 logical on the nats. A count of 64 or more, or a negative one, shifts every bit
 out. A narrow type wraps what leaves its range.
 
-```thrax
+```ares
 $ e : @Int  = 12 &&& 10 ||| 1    # 9
 $ f : @Int  = (0 - 16) >>> 2     # -4
 $ g : @Nat8 = ~~~200             # 55
@@ -402,7 +402,7 @@ $ g : @Nat8 = ~~~200             # 55
 ## 4.4 Comparisons
 `==` `!=` `<` `>` `<=` `>=`, all `a -> a -> @Bool`.
 
-```thrax
+```ares
 $ lt : @Bool = 3 < 8
 $ le : @Bool = 8 <= 8
 $ ne : @Bool = 3 != 4
@@ -413,7 +413,7 @@ Like arithmetic, these are `CORE` functions over interfaces: `==` and `!=` over
 comparison intrinsics (`@ieq`, `@ilt`, `@ult`, `@feq`, `@flt`, `@seq`, `@slt`).
 A type of your own joins them with an instance:
 
-```thrax
+```ares
 $ Money : @struct = cents: @Int
 
 $ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a b => a.cents < b.cents }
@@ -432,7 +432,7 @@ in type position, so the two never collide.
 are `CORE` functions over interfaces (`ICat`, `ICons`), so a sequence of your own
 joins them with instances of its own.
 
-```thrax
+```ares
 $ s  : Str = "Hello" ++ " " ++ "world"
 $ xs : @Vec @Int = 1 :: 2 :: 3 :: []
 ```
@@ -443,7 +443,7 @@ $ xs : @Vec @Int = 1 :: 2 :: 3 :: []
 ## 4.6 Short-circuit `&&` / `||`
 Desugar to a lazy `if`, so the right operand runs only when needed.
 
-```thrax
+```ares
 $ safe : @Int -> @Bool = \n => n > 0 && 100 / n > 5
 ```
 
@@ -453,12 +453,12 @@ chain with `else if`. It is lazy (only the taken branch runs) and is not a
 pattern match.
 
 Simple:
-```thrax
+```ares
 $ abs : @Int -> @Int = \n => if n > 0 => n else -n
 ```
 
 Involved (else-if chain):
-```thrax
+```ares
 $ sign : @Int -> @Int = \n =>
 	if n == 0 => 0
 	else if n > 0 => 1
@@ -471,12 +471,12 @@ the rest (`let a = 1 in let b = a + 1 in b`). A binding is recursive exactly whe
 (no `let rec`). A binder may carry a type annotation.
 
 Simple:
-```thrax
+```ares
 $ x : @Int = let a = 6 in a * 7
 ```
 
 Involved (chain, destructuring, recursion, annotation):
-```thrax
+```ares
 $ r : @Int =
 	let {a, b} = {3, 4} in
 	let s = a + b in
@@ -506,7 +506,7 @@ different rows is a property of the infix form, which has no signature to share,
 the way short-circuiting is a property of infix `&&` (§4.10). A single row that is
 the union of two variables is not expressible today (issue #200).
 
-```thrax
+```ares
 $ inc : @Int -> @Int = \x => x + 1
 $ double : @Int -> @Int = \x => x * 2
 $ step1 : {} -> @Int = \u => 0
@@ -527,7 +527,7 @@ An operator in parentheses is a plain function value, the same binding a
 it takes a context parameter, the type it is used at decides which instance is
 injected, so a bare `(+)` with nothing to pin its type is an error that says so.
 
-```thrax
+```ares
 $ two   : @Int = (+) 1 1                   # 1 + 1
 $ add1  : @Int -> @Int = (+) 1             # curried
 $ plus  : @Int -> @Int -> @Int = (+)       # the instance comes from the type
@@ -553,7 +553,7 @@ Every value of a sized type stays in its range: arithmetic on `@Int8` .. `@Int32
 and `@Nat8` .. `@Nat32` wraps the same way, and a literal that does not fit its
 type (`300` as a `@Nat8`) is a compile error (`INT_LITERAL_RANGE`).
 
-```thrax
+```ares
 $ big   : @Int64 = 300
 $ small : @Int32 = @cast big              # reinterpret across integer widths
 $ back  : @Int    = @cast small            # and back to the platform word
@@ -565,7 +565,7 @@ context needs, and it is always a compile error (`TYPED_HOLE`) that names that
 type and lists the names in scope that fit it, each offered as a fix. A hole is
 how to ask the compiler what goes in a spot.
 
-```thrax
+```ares
 $ f : @Int -> @Int = \n => n + ???
 # error[TYPED_HOLE]: hole `???` has type `@Int`
 # note: in scope with this type: `n`
@@ -585,14 +585,14 @@ the value). Several arguments are matched as a tuple, and arms belong to the
 innermost multi-arm lambda or handler, so a nested one is parenthesized.
 
 Simple:
-```thrax
+```ares
 $ classify : @Int -> @Str = \ | 0 => "zero" | 1 => "one" | _ => "many"
 $ yn : @Str -> @Int = \s => s |> \ | "yes" => 1 | "no" => 0 | _ => 99
 $ total : { @Int, @Int } -> @Int = \ | { 0, acc } => acc | { n, acc } => total { n - 1, acc + n }
 ```
 
 Involved (nested union patterns, exhaustive so no catch-all, see 5.9):
-```thrax
+```ares
 $ Wrap : @union = Empty: {}, W: { Opt }
 $ Opt  : @union = None: {}, Some: { @Int }
 $ unwrap : Wrap -> @Int = \
@@ -608,18 +608,18 @@ removed; writing it is an error whose fix-it moves the scrutinee in front.
 Match integers (any width), Real, and Str by equality (refutable). A numeric
 literal may be negative (`-1`, `-0.5`), also as a range bound (`-10 ... -1`).
 
-```thrax
+```ares
 $ describe : @Int -> Str = \n => n |> \ | 0 => "z" | 1 => "o" | -1 => "m1" | _ => "m"
 $ yn : Str -> @Int = \s => s |> \ | "yes" => 1 | "no" => 0 | _ => 99
 ```
 
 A string literal can be a piece of a `++` pattern (5.7): `"GET " ++ path`
-strips a prefix, `name ++ ".thx"` a suffix, and `"<" ++ body ++ ">"` both.
+strips a prefix, `name ++ ".ares"` a suffix, and `"<" ++ body ++ ">"` both.
 
 ## 5.3 Wildcard and variable patterns
 `_` matches anything binding nothing; a lowercase name binds the value.
 
-```thrax
+```ares
 $ tag : @Int -> @Int = \n => n |> \ | 0 => 100 | m => m + 1
 ```
 
@@ -627,7 +627,7 @@ $ tag : @Int -> @Int = \n => n |> \ | 0 => 100 | m => m + 1
 `Type.{ ... }` matches a struct. Positional (bare fields, in order, all listed)
 or named (dotted, any order, others ignored; a lone `.name` puns).
 
-```thrax
+```ares
 $ Point  : @struct = x: @Int, y: @Int,
 $ Person : @struct = name: Str, age: @Int,
 $ sum_xy : Point -> @Int = \p => p |> \ | Point.{ x, y } => x + y
@@ -638,7 +638,7 @@ $ who    : Person -> Str = \p => p |> \ | Person.{ .name } => name
 `Type.Tag` (unit) or `Type.Tag.{ payload }`. May be written bare (`.Tag`), with
 the union inferred from the arms. Payloads nest.
 
-```thrax
+```ares
 $ Maybe : @union t = Just: t, None: {}
 $ get : @Int -> Maybe @Int -> @Int = \d m => m |> \ | Maybe.Just.{ x } => x | _ => d
 $ isJust : Maybe t -> @Bool = \m => m |> \ | .Just.{ _ } => @true | _ => @false
@@ -649,12 +649,12 @@ $ isJust : Maybe t -> @Bool = \m => m |> \ | .Just.{ _ } => @true | _ => @false
 scrutinee's type). Open `lo ...` matches `lo <= x`. Refutable, binds nothing.
 
 Simple:
-```thrax
+```ares
 $ grade : @Int -> Str = \n => n |> \ | 90 ... 100 => "A" | 60 ... 89 => "C" | _ => "F"
 ```
 
 Involved (open range, Real):
-```thrax
+```ares
 $ sign : @Int -> Str = \n => n |> \ | 0 ... => "nonneg" | _ => "neg"
 $ band : Real -> @Int = \x => x |> \ | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 | _ => 0
 ```
@@ -674,14 +674,14 @@ length (`"a" ++ x ++ "b" ++ y`) are an error: the sequence could split between
 them in more than one way.
 
 Simple:
-```thrax
+```ares
 $ sum : @Vec @Int -> @Int = \xs => xs |> \ | [] => 0 | h :: t => h + sum t
 ```
 
 Involved (a prefix, a suffix, and both ends):
-```thrax
+```ares
 $ second : @Vec @Int -> @Int = \xs => xs |> \ | [_, x] ++ rest => x | _ => -1
-$ ext    : @Str -> @Str = \s => s |> \ | name ++ ".thx" => name | _ => s
+$ ext    : @Str -> @Str = \s => s |> \ | name ++ ".ares" => name | _ => s
 $ ends   : @Array -> @Int = \a => a |> \ | [x] ++ mid ++ [z] => x + z | _ => 0
 ```
 
@@ -691,7 +691,7 @@ wrong length is a type error, and the middle of a split gets an exact size
 (`[a] ++ r` on a `[3]T` binds `r : [2]T`). The size must be concrete there.
 A rank-2 tensor splits along its first axis, one row per element.
 
-```thrax
+```ares
 $ sum3 : [3] @Int -> @Int = \t => t |> \ | [x, y, z] => x + y + z
 ```
 
@@ -701,12 +701,12 @@ $ sum3 : [3] @Int -> @Int = \t => t |> \ | [x, y, z] => x + y + z
 arm, even one with the same constructor.
 
 Or-pattern:
-```thrax
+```ares
 $ small : @Int -> @Int = \n => n |> \ | 0 | 1 | 2 => 1 | _ => 0
 ```
 
 Guards falling through the same constructor:
-```thrax
+```ares
 $ Box : @union = Some: @Int, Nil: {},
 $ grade : Box -> @Int = \x =>
 	x |> \ | Box.Some.{ v } if v > 100 => 3
@@ -737,7 +737,7 @@ inference. A match that misses a value is a compile error
   sequence view, so `[]` and `_ :: _` together cover any sequence. A piece
   matched from the back (`r ++ [z]`) is not modeled, so it needs a `_` arm.
 
-```thrax
+```ares
 $ Light : @union = Red: {}, Yellow: {}, Green: {}
 $ go : Light -> @Int = \l =>
 	l |> \ | Light.Red => 0 | Light.Yellow => 1 | Light.Green => 2   # no catch-all needed
@@ -752,7 +752,7 @@ a literal or a variant of a union with several, is a compile error
 `e |> \ | pat => ... | _ => ...`. There is no `let ... else`: `let` is a
 definition, not sugar for applying a lambda.
 
-```thrax
+```ares
 $ Point  : @struct = x: @Int, y: @Int,
 $ Person : @struct = name: Str, age: @Int,
 $ Line   : @struct = from: Point, to: Point,
@@ -771,14 +771,14 @@ literal (`Type.{ .f = e }`, bare `.{ ... }`, or positional `Type.{ a, b }`);
 read with `.field`. Nominal (unifies by name).
 
 Simple:
-```thrax
+```ares
 $ Person : @struct = name: Str, age: @Int,
 $ p : Person = Person.{ .name = "Will", .age = 21 }
 $ who : Str = p.name
 ```
 
 Involved (generic, applied by juxtaposition, nested field types):
-```thrax
+```ares
 $ Box : @struct t = val: t,
 $ Wrap : @struct t = inner: Box t,
 $ w : Wrap @Int = .{ .inner = Box.{ .val = 7 } }
@@ -789,7 +789,7 @@ $ deep : @Int = w.inner.val
 `Type.{ .field = e | base }` copies unlisted fields from `base`. The `| base`
 comes last; a listed field may read from `base`.
 
-```thrax
+```ares
 $ Person : @struct = name: Str, age: @Int,
 $ base : Person = Person.{ .name = "A", .age = 30 }
 $ older : Person = Person.{ .age = base.age + 1 | base }
@@ -802,14 +802,14 @@ unit variant. Recursive and generic. Non-strict data constructors (lazy
 payloads).
 
 Simple:
-```thrax
+```ares
 $ Maybe : @union t = Just: t, None: {}
 $ some : Maybe @Int = Maybe.Just.{ 5 }
 $ none : Maybe @Int = .None
 ```
 
 Involved (recursive, multi-field payload, positional or named):
-```thrax
+```ares
 $ Tree : @union a = Leaf: a, Node: { Tree a, Tree a }
 $ t : Tree @Int = Tree.Node.{ Tree.Leaf.{ 1 }, Tree.Leaf.{ 2 } }
 ```
@@ -819,7 +819,7 @@ A `@struct`/`@union` may start with `with Other` to copy that type's fields or
 variants ahead of its own. A copy-paste convenience with no subtyping
 relationship. Transitive; a duplicate member is an error.
 
-```thrax
+```ares
 $ Point  : @struct = x: @Int, y: @Int
 $ Point3 : @struct = with Point, z: @Int          # x, y, then z
 $ Base   : @union  = Red: {}, Green: {}
@@ -838,14 +838,14 @@ It stops at an arrow: a slot typed `{} -> T` is already a suspension and stays a
 plain function.
 
 Simple (the prelude `Stream`, a recursive `@struct`):
-```thrax
+```ares
 $ Stream : @struct t = head : t, tail : Stream t
 $ first : Stream @Int -> @Int = \s => s.head
 $ next  : Stream @Int -> Stream @Int = \s => s.tail
 ```
 
 Involved (map over an unbounded stream; `tail` is only built when read):
-```thrax
+```ares
 $ smap : (a -> b) -> Stream a -> Stream b = \f s =>
 	{ .head = f s.head, .tail = smap f s.tail }
 $ tenth : @Int = (smap (\x => x + x) (count_from 1)).tail.tail.head
@@ -853,7 +853,7 @@ $ tenth : @Int = (smap (\x => x + x) (count_from 1)).tail.tail.head
 
 A recursive `@union` works the same way, which is how a `List` is consumed one
 cons at a time:
-```thrax
+```ares
 $ from : @Int -> List @Int = \n => List.Cons.{ n, from (n + 1) }
 $ head : List @Int -> @Int = \l => l |> \ | List.Cons.{h, t} => h | _ => 0
 ```
@@ -871,7 +871,7 @@ argument is evaluated at the call, as any argument is. `List.Cons.{ n, from (n
 Every function of several parameters is curried; partial application yields a
 function.
 
-```thrax
+```ares
 $ add : @Int -> @Int -> @Int = \a b => a + b
 $ add5 : @Int -> @Int = add 5           # partial application
 ```
@@ -879,7 +879,7 @@ $ add5 : @Int -> @Int = add 5           # partial application
 ## 7.2 Higher-order functions
 Functions are first-class values.
 
-```thrax
+```ares
 $ apply_twice : (t -> t) -> t -> t = \f x => f (f x)
 $ compose : (b -> c) -> (a -> b) -> a -> c = \f g x => f (g x)
 ```
@@ -902,7 +902,7 @@ at the first explicit parameter. It elaborates to a leading argument, so the
 backends need no support.
 
 Simple:
-```thrax
+```ares
 $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 $ IOrder : @struct t = compare: t -> t -> Ordering,
 $ impl_IOrder_for_int : IOrder @Int = .{
@@ -917,7 +917,7 @@ A signature may have any number of `@use` parameters, anywhere on its arrows, an
 each names one or more fields; a field's type must be a declared struct or union
 applied to its arguments, and field names are unique across the signature:
 
-```thrax
+```ares
 $ abs : @use {o: IOrd t, s: ISub t, z: IZero t} -> t -> t = \x =>
 	if o.lt x z.zero => s.sub z.zero x else x
 $ floor_at : @use {o: IOrd t} -> t -> @use {z: IZero t} -> t -> t = \x y =>
@@ -929,7 +929,7 @@ written. An explicit `@use {.f = e}` argument names the fields it supplies (the
 rest are still searched) and goes where its parameter stands, before the explicit
 argument that follows it:
 
-```thrax
+```ares
 $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 $ IOrder : @struct t = compare: t -> t -> Ordering,
 $ impl_IOrder_for_int : IOrder @Int = .{
@@ -956,7 +956,7 @@ over such interfaces: `+ - * / %` over `IAdd`/`ISub`/`IMul`/`IDiv`/`IMod`, `^` o
 `IPow`, `== != < > <= >=` over `IEq`/`IOrd`, `++` over `ICat`, `::` over `ICons`, and
 `to_string` over `IToString`. A type joins any of them by defining an instance:
 
-```thrax
+```ares
 $ Money : @struct = cents: @Int
 $ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b => Money.{ .cents = a.cents + b.cents } }
 $ total : Money = Money.{ .cents = 1 } + Money.{ .cents = 2 }
@@ -969,7 +969,7 @@ blessed `@I*` interfaces the compiler's own desugars resolve.
 Tail-recursive calls (self, mutual, or through a recursive local `let`) run in
 constant stack.
 
-```thrax
+```ares
 $ sum_to : @Int -> @Int -> @Int = \n acc =>
 	if n == 0 => acc else sum_to (n - 1) (acc + n)      # constant stack at any depth
 ```
@@ -983,7 +983,7 @@ $ sum_to : @Int -> @Int -> @Int = \n acc =>
 and names its resume type. An operation whose handler never resumes (an
 exception) names a type variable as its result.
 
-```thrax
+```ares
 $ State : @effect = get : {} -> @Int, put : @Int -> {},
 $ Exn   : @effect = throw : Str -> a,
 $ Yield : @effect = yield : @Int -> {},
@@ -997,7 +997,7 @@ parameter may be a row variable, for an operation that takes an effectful
 function, and a bare mention of the effect inside its own declaration stands for
 its parameters. Arguments left out of a row (`<State>`) are inferred.
 
-```thrax
+```ares
 $ State : @effect s = get : {} -> s, put : s -> {},
 $ Async : @effect m e = spawn : ({} -> <Async m e | e> {}) -> {}, send : m -> {},
 $ count : {} -> <State @Int> @Int = \u => let n = get {} in put (n + 1); n
@@ -1009,7 +1009,7 @@ opaque: it can pass such a value along (resume with the argument it was given,
 store it), but it cannot make one up or inspect it. A clause that needs a
 concrete type takes it from an effect parameter instead.
 
-```thrax
+```ares
 $ Exn : @effect = throw : @Str -> a,
 $ safe : @Int = do 1 + Exn.throw "no" ctl k | Exn.throw m => 0     # aborts: fine
 # `| Exn.throw m => k 0` is an error: `k` wants `a` of `Exn.throw`, not @Int
@@ -1019,7 +1019,7 @@ $ safe : @Int = do 1 + Exn.throw "no" ctl k | Exn.throw m => 0     # aborts: fin
 Just call it; there is no `perform` keyword. A use injects the effect into the
 ambient row.
 
-```thrax
+```ares
 $ State : @effect = get : {} -> @Int, put : @Int -> {},
 $ tick : {} -> <State> @Int = \u => let x = get {} in let _ = put (x + 1) in x
 ```
@@ -1034,14 +1034,14 @@ which no pattern can look like, so the two kinds of arm need no marker. A shared
 operation name is qualified in a clause head.
 
 Exception (ignores `k`, so it resumes zero times):
-```thrax
+```ares
 $ safeDiv : @Int -> @Int -> @Int = \a b =>
 	do if b == 0 => Exn.throw "div0" else a / b
 	ctl k | Exn.throw msg => -1
 ```
 
 Generator (resume once per yield, summing results):
-```thrax
+```ares
 $ sumGen : ({} -> <Yield> {}) -> @Int = \gen =>
 	do gen {}
 	ctl k | Yield.yield v => v + k {}
@@ -1054,7 +1054,7 @@ delivers `v`. `k` may be resumed **any number of times**, and may be stored
 before use, which is what coroutines need. Handlers are deep (a resumed
 computation is still governed by the same handler).
 
-```thrax
+```ares
 $ Task : @union = Fin: {}, Susp: { @Int, {} -> Task }
 $ spawn : ({} -> <Yield> {}) -> Task = \t =>
 	do t {}
@@ -1065,7 +1065,7 @@ $ spawn : ({} -> <Yield> {}) -> Task = \t =>
 Resuming more than once runs the rest of the computation once per resume, each on
 its own copy, which is what nondeterminism and backtracking are:
 
-```thrax
+```ares
 $ sum_all : ({} -> <Amb> @Int) -> @Int = \body =>
 	do body {}
 	ctl k | Amb.flip u => k @true + k @false        # both branches
@@ -1085,7 +1085,7 @@ Absent row means pure. A row variable makes it effect-polymorphic. A handler
 discharges the effects it handles. A performed-but-unhandled effect is a compile
 error. Subsumption: a pure function is callable in any effectful context.
 
-```thrax
+```ares
 $ map : (a -> <e> b) -> @Vec a -> <e> @Vec b = \f xs =>
 	xs |> \ | [] => [] | h :: t => f h :: map f t
 ```
@@ -1097,7 +1097,7 @@ stands for its labels, so with `App` below, `<App>` is `<Gpu, Log>` and
 is transparent, like a type alias: it checks exactly what its labels check, and
 a label that both an alias and the rest of the row name is kept once.
 
-```thrax
+```ares
 $ Log : @effect = log : @Int -> {},
 $ Gpu : @effect = draw : @Int -> {},
 $ Net : @effect = fetch : @Int -> @Int,
@@ -1111,7 +1111,7 @@ A row variable in the body makes the alias parameterized, and it is applied to
 row variables inside a row. Left unapplied, its tail is a fresh variable, as for
 an under-applied type alias.
 
-```thrax
+```ares
 $ WithLog : @alias e = <Log | e>
 $ traced : (@Int -> <WithLog e> @Int) -> @Int -> <WithLog e> @Int = \f x => log x; f x
 ```
@@ -1130,7 +1130,7 @@ innermost-first. It is an ordinary CORE function, not syntax, so the parser has
 no rule for it and it can be partially applied and passed around. The
 resource-safe FFI idiom.
 
-```thrax
+```ares
 $ open  : @Str -> @Int = \path => 0        # stand-ins for real handles
 $ close : @Int -> {} = \h => {}
 $ read  : @Int -> @Int = \h => h
@@ -1142,7 +1142,7 @@ $ useFile : @Str -> @Int = \path =>
 
 Several cleanups nest as separate `@finale`s, and run innermost-first (here
 `close g`, then `close f`):
-```thrax
+```ares
 $ useTwo : @Str -> @Str -> @Int = \a b =>
 	let f = open a in
 	let g = open b in
@@ -1151,12 +1151,12 @@ $ useTwo : @Str -> @Str -> @Int = \a b =>
 	read f + read g
 ```
 
-Both arguments are thunks, because Thrax is call-by-value: `@finale (close f)`
+Both arguments are thunks, because Ares is call-by-value: `@finale (close f)`
 would close the file before the body ran. The cleanup returns `{}`, and its row
 is the body's, so a pure function passed directly where the body performs
 effects needs a lambda around it (`\_ => closeWindow {}`). A library wraps it
 in a bracket function so callers never see the handle's cleanup:
-```thrax
+```ares
 $ with_file : @Str -> (@Int -> @Int) -> @Int = \path body =>
 	let f = open path in
 	@finale (\_ => close f) <| \_ => body f
@@ -1172,7 +1172,7 @@ type error). Read with modular indexing `t.[i]` (the index reduces mod the size,
 so it is total, `t.[n]` wraps to `t.[0]`). Indexing an empty `[0]T` is the sole
 fault.
 
-```thrax
+```ares
 $ with LA
 $ v : [3]@Int = [10, 20, 30]
 $ a : @Int = v.[1]        # 20
@@ -1182,7 +1182,7 @@ $ b : @Int = v.[3]        # wraps to v.[0] = 10
 ## 9.2 Multi-dimensional and multi-axis indexing
 `[m, n]T` is nested `[m][n]T`. `t.[i, j]` reads one element (`t.[i].[j]`).
 
-```thrax
+```ares
 $ with LA
 $ g : [2][2]@Int = [ [1,2], [3,4] ]
 $ z : @Int = g.[1, 0]     # 3
@@ -1193,7 +1193,7 @@ A size may be `+`/`*` over literals and size variables, evaluated mod 2^64 and
 compared by a canonical form (`[n+m]` equals `[m+n]`; `[n+n]` is `[2*n]`). This
 drives size-changing operations, whose result size is computed at compile time.
 
-```thrax
+```ares
 $ with LA
 # LA provides `concat`, its result size computed at compile time:
 #   concat : [n]a -> [m]a -> [n+m]a
@@ -1206,7 +1206,7 @@ to an inclusive range, `..` keeps it whole. Every result is an O(1) strided view
 Each axis may carry a variance tag `@contra` (upper index / column) or `@co`
 (lower index / row); `matmul` contracts a `@co` axis against a `@contra` axis.
 
-```thrax
+```ares
 $ with LA
 $ row : [m][n]a -> @Int -> [n]a = \m i => m.[i]
 $ col : [m][n]a -> @Int -> [m]a = \m j => m.[.., j]
@@ -1220,7 +1220,7 @@ lives in `LA`. `t.[i]` desugars to the `@IIndex` interface and a lone
 by defining an instance. A multi-axis slice stays tensor-only: its result shape is
 computed from the slots.
 
-```thrax
+```ares
 $ transpose : [m][n]a -> [n][m]a = \t =>
 	@tensor_create (@tensor_index t 0)
 		(\j => @tensor_create t (\i => @tensor_index (@tensor_index t i) j))
@@ -1235,7 +1235,7 @@ wins, which is how `CORE`'s order (not the compiler) sets what a bare range buil
 A sized tensor is the exception: literal bounds fix `n`, and the compiler builds it
 directly.
 
-```thrax
+```ares
 $ tv : [4]@Int     = [1 ... 4]     # tensor, n = 4
 $ ns : @Vec @Int   = [1 ... 5]     # vector (the bare closed range)
 $ s  : Stream @Int = [1 ...]       # unbounded (the bare open range)
@@ -1245,7 +1245,7 @@ A `@Vec` range materializes every element, so a large bound costs that much work
 up front. The `List` instances are lazy in the tail, which is what makes a range
 you only walk part of cheap:
 
-```thrax
+```ares
 $ first5 : <@IO> {} =
 	for ([1 ... 100000000000000] : List @Int)
 		(\i => if i > 5 => break {} else IO.print "?(i), ")
@@ -1260,7 +1260,7 @@ A foreign binding is a global whose body is `@extern "C" "symbol" "lib"`. A
 signature is required and drives C-ABI marshalling. An extern takes exactly one
 argument (one arrow).
 
-```thrax
+```ares
 $ puts : Str -> @Int = @extern "C" "puts" "libc"
 $ used : @Int = puts "hi"
 ```
@@ -1270,7 +1270,7 @@ A C function is not curried, so several parameters group into a record; its
 fields, in declaration order, are the positional C arguments (marshalled by name,
 so a reordered call site is fine). A nullary C function takes `{}`.
 
-```thrax
+```ares
 $ pow : {base: Real, exp: Real} -> Real = @extern "C" "pow" "libm"
 $ a : Real = pow {2.0, 10.0}                 # positional
 $ b : Real = pow {.exp = 10.0, .base = 2.0}  # named, reordered
@@ -1283,25 +1283,25 @@ C-representable, not generic). Built and read with the ordinary struct literal
 and `.field`, and it crosses the boundary by value. A C union is
 `Name : @union @extern "C" = ...` (members share offset 0).
 
-```thrax
+```ares
 $ Color : @struct @extern "C" = r: @Nat8, g: @Nat8, b: @Nat8, a: @Nat8,
 $ clear : Color -> {} = @extern "C" "ClearBackground" "libraylib.so"
 $ go : {} = clear Color.{ .r = 0, .g = 0, .b = 0, .a = 255 }
 ```
 
 ## 10.4 Callbacks and array parameters
-A function-typed parameter is a C function pointer: pass a Thrax closure. A
+A function-typed parameter is a C function pointer: pass a Ares closure. A
 `@Vec T` parameter (T a C-repr struct) is passed as a packed `T*` with a separate
 count.
 
-```thrax
+```ares
 $ Vector2 : @struct @extern "C" = x: @Float32, y: @Float32,
 $ sort : {@Ptr, @Int, (@Int -> @Int -> @Int)} -> {} = @extern "C" "qsort_r" "libc"
 $ draw : {@Vec Vector2, @Int} -> {} = @extern "C" "DrawLineStrip" "lib"
 ```
 
 ## 10.5 The `C` namespace and engine intrinsics
-`library/C.thx` binds libc/libm as the auto-injected `C` namespace (used
+`library/C.ares` binds libc/libm as the auto-injected `C` namespace (used
 qualified, `C.sqrt`, no import). It also holds a few conversions the language
 cannot express with `@cast` (which is integer widths only): `C.i2f`/`C.f2i`
 (@Int and @Float32), `C.i2d`/`C.d2i` (@Int and Real), `C.i2p`/`C.p2i` (@Int to
@@ -1309,7 +1309,7 @@ cannot express with `@cast` (which is integer widths only): `C.i2f`/`C.f2i`
 pointer). These are provided by the engines' runtimes (an
 empty `lib`); see `documentation/native-backend.md`.
 
-```thrax
+```ares
 $ x : @Float32 = C.i2f 41
 $ nul : @Ptr = C.null
 ```
@@ -1319,7 +1319,7 @@ Declare a fixed-arity binding per argument shape you use; there is no `...`
 marker.
 
 ## 10.6 Reading C memory
-C memory reaches Thrax two ways, both copies:
+C memory reaches Ares two ways, both copies:
 
 - **Bytes**: `@ptr_bytes p n` (CORE) is a fresh `@Str` of the `n` bytes at `p`,
   NUL bytes and all. (A `@Str` *result* of a C function is a `char*` and ends at
@@ -1332,7 +1332,7 @@ C memory reaches Thrax two ways, both copies:
   `@struct @extern "C"` type. A C `bool` loads as `@Nat8`. `VEC.from_c at p n`
   collects the first `n` elements as a vector.
 
-```thrax
+```ares
 $ Point : @struct @extern "C" = x: @Int32, y: @Int32,
 $ point_at : { p: @Ptr, i: @Int } -> Point = @extern "load"
 $ arg_at : { p: @Ptr, i: @Int } -> @Str = @extern "load"      # a `char**`
@@ -1344,21 +1344,21 @@ Like a C dereference, a load trusts the program: the memory must hold `n`
 valid elements (a load from NULL faults; anything else out of bounds is
 undefined).
 
-## 10.7 Builtins: `@extern "thrax"`
+## 10.7 Builtins: `@extern "ares"`
 The primitives the compiler and runtime implement (`@iadd`, `@vec_push`,
-`@chan_send`, `@lex`, ...) are declared in `library/CORE.thx`, each with its
+`@chan_send`, `@lex`, ...) are declared in `library/CORE.ares`, each with its
 signature and a comment:
 
-```thrax
-$ @iadd : t -> t -> t = @extern "thrax"
-$ @vec_push : @Vec a -> a -> @Vec a = @extern "thrax"
+```ares
+$ @iadd : t -> t -> t = @extern "ares"
+$ @vec_push : @Vec a -> a -> @Vec a = @extern "ares"
 ```
 
 The definition's name is the builtin, so there is no symbol or library string,
 and a reference compiles to a direct call with no wrapper. Unlike a C extern, a
 builtin is curried. Only CORE may declare one, and no module may redefine one.
 The operators the parser rewrites (`;`, `|>`, `<|`) are declared the same way, for
-their types: `$ (|>) : a -> (a -> <e> b) -> <e> b = @extern "thrax"`. A few primitives stay inside the
+their types: `$ (|>) : a -> (a -> <e> b) -> <e> b = @extern "ares"`. A few primitives stay inside the
 compiler because their types have no surface syntax: `@e` and `@cast` are
 checked specially, and the `@tensor_*` primitives are polymorphic over axis
 variance.
@@ -1374,7 +1374,7 @@ top-level items from a string. The inserted source is then checked like
 hand-written code. `@e` works in expression, type, pattern, and item position,
 and composes with the pipes like any one-argument function.
 
-```thrax
+```ares
 $ lit : @Int -> @Code = \n => @parse_str <| to_string n
 
 $ fib10 : @Int = @e <| lit <| fib 10                    # inserts `55`
@@ -1388,7 +1388,7 @@ union payload, an alias body, an effect operation, an effect-row argument, a
 `@use` field, or an annotation inside a body (`let x : T`, `\(x : T)`,
 `(e : T)`). Effect-row entries themselves can be spliced too, as `<@e (X)>`.
 
-```thrax
+```ares
 $ Point : @struct = x: @e (pick {}), y: @e (pick {})
 ```
 
@@ -1433,10 +1433,10 @@ points at the `@e` and quotes the fragment.
 
 ## 11.2 Compile-time assertions and build directives
 There is no `@assert` builtin. `CORE.assert : @Bool -> @Str -> <@Meta> @Code` is
-one line of ordinary Thrax over `@abort` that returns empty code, so a module
+one line of ordinary Ares over `@abort` that returns empty code, so a module
 states its own invariants and checking it is testing it.
 
-```thrax
+```ares
 $ @e <| assert (fib 10 == 55) "fib 10 should be 55"
 $ @e <| assert (fact 5 == 120) "fact 5 should be 120"
 ```
@@ -1449,7 +1449,7 @@ division by zero, a failed match) stays a `RUNTIME_FAULT`.
 link line and the dlopen set, or a directory to the search path. Both return
 empty code.
 
-```thrax
+```ares
 $ @e <| @link "m"             # link/preload libm
 $ @e <| @link_path "/opt/lib"
 ```
@@ -1460,7 +1460,7 @@ starts from. The compiler runs it during compilation and adds the items of the
 `@Code` it returns to the module that declared it. Like the entry, it has exactly
 one accepted signature.
 
-```thrax
+```ares
 $ @build : {} -> <@Meta, @IO> @Code = \_ =>
 	@parse_items "$ answer : @Int = 42"
 
@@ -1469,7 +1469,7 @@ $ @main : @Vec @Str -> <@IO> @Int = \args => answer      # 42
 
 The `<@IO>` in that row is its whole privilege: `@build` is the one context where
 a generator may read the world. The IO itself is not special, and there is no
-compile-time IO primitive: it is `library/IO.thx` over the `C` namespace, the
+compile-time IO primitive: it is `library/IO.ares` over the `C` namespace, the
 same code a program runs, performed by the compile-time interpreter. So a
 compile-time path is relative to the **working directory**, exactly like a path a
 running program opens. `IO.read_dir` (a directory's entry names, sorted) is the
@@ -1482,23 +1482,23 @@ expanded, so a generated `$ @e` still runs and a generated `$ with M` loads M.
 Note what "every module" implies: importing a module lets its `@build` perform IO
 during *your* build, the same trust an imported `build.rs` carries.
 
-`tests/MAIN.thx` is the worked example: it reads `examples/` at compile time and
+`tests/MAIN.ares` is the worked example: it reads `examples/` at compile time and
 generates its own imports and `@main`, so adding an example to the corpus is
-adding a file. See `examples/META_BUILD.thx` and
+adding a file. See `examples/META_BUILD.ares` and
 documentation/metaprogramming.md.
 
-To see what a metaprogram produced, `thrax expand <file> [MODULE]` prints the
+To see what a metaprogram produced, `ares expand <file> [MODULE]` prints the
 source as the checker finally saw it: every `@e` spliced and every
 `@build`'s items appended. That is the view to debug a generator from, since
 nothing else shows the generated text.
 
-## 11.4 `BUILD.thx`, the project file
+## 11.4 `BUILD.ares`, the project file
 A program's own modules are found beside it (section 2). A project that keeps
-them elsewhere says so in a `BUILD.thx`: the module `BUILD`, whose `@build` calls
+them elsewhere says so in a `BUILD.ares`: the module `BUILD`, whose `@build` calls
 `@import_path` once per directory to add to the module search, and `@option`
 once per project option it sets.
 
-```thrax
+```ares
 $ @mod BUILD
 
 $ @build : {} -> <@Meta, @IO> @Code = \_ =>
@@ -1514,9 +1514,9 @@ An option not set keeps its default:
 
 | Option | Default | Accepts | Meaning |
 |---|---|---|---|
-| `format.width` | `100` | 40 to 400 | the line width `thrax fmt` fits code into |
+| `format.width` | `100` | 40 to 400 | the line width `ares fmt` fits code into |
 | `format.indent` | `4` | 1 to 16 | spaces per indentation level |
-| `check.max_errors` | `20` | 1 to 10000 | the most errors `thrax check` prints |
+| `check.max_errors` | `20` | 1 to 10000 | the most errors `ares check` prints |
 | `lsp.check` | `type` | `type`, `save` | check as you type, or only when a file is saved |
 | `lsp.focus` | `roots` | `all`, `roots`, `one` | how loudly errors are shown (see `documentation/lsp.md`) |
 | `lsp.debounce_ms` | `150` | 0 to 5000 | how long typing must pause before the file is checked |
@@ -1526,13 +1526,13 @@ An option not set keeps its default:
 | `lints.unreachable_arm` | `warn` | `allow`, `warn`, `deny` | a match arm no value can reach |
 
 An editor's settings override the `lsp` options for that editor. When
-`BUILD.thx` fails, `thrax fmt` and the language server report it and carry on
+`BUILD.ares` fails, `ares fmt` and the language server report it and carry on
 with the defaults; a compile stops.
 
-The compiler looks for `BUILD.thx` in the root file's directory and then in each
+The compiler looks for `BUILD.ares` in the root file's directory and then in each
 directory above it, and runs the nearest one before it loads the program. Its
 directories are searched for every root at or below it, after `--import-dir`
-and before the program's neighbourhood. A path is relative to `BUILD.thx`.
+and before the program's neighbourhood. A path is relative to `BUILD.ares`.
 
 Rules, each a `BUILD_SCRIPT` error:
 
@@ -1540,9 +1540,9 @@ Rules, each a `BUILD_SCRIPT` error:
 - `@import_path` works only there, in any other module it faults;
 - nothing imports `BUILD`.
 
-`BUILD.thx` runs before its own directories are searched, so its imports see only
+`BUILD.ares` runs before its own directories are searched, so its imports see only
 the standard library, its neighbours and `--import-dir`. `applications/alec` is
-the worked example: `MAIN.thx`, `TEST.thx` and `BENCH.thx` sit at the top and
+the worked example: `MAIN.ares`, `TEST.ares` and `BENCH.ares` sit at the top and
 every module they import is in `source/`.
 
 ---
@@ -1554,7 +1554,7 @@ The built-in boolean; values are `@true` and `@false` (matched with the
 `@`-spelling, since bare `true`/`false` would bind a variable). Comparisons yield
 `@Bool`; `!` negates it.
 
-```thrax
+```ares
 $ b : @Bool = 3 < 4
 $ chk : @Int = b |> \ | @true => 0 | _ => 1
 ```
@@ -1567,13 +1567,13 @@ literal, pattern, and slice surfaces through its `CORE` instances of the blessed
 interfaces, like any other sequence.
 
 Simple:
-```thrax
+```ares
 $ buf : @Array = @Array.{ 64 }
 $ n : @Int = @array_len "hello"          # 5
 ```
 
 Involved (build a string byte by byte, as CORE's integer stringifier does):
-```thrax
+```ares
 $ digit : @Int -> Str = \d => @array_push "" (48 + d)   # push a byte onto a Str
 ```
 
@@ -1581,7 +1581,7 @@ $ digit : @Int -> Str = \d => @array_push "" (48 + d)   # push a byte onto a Str
 A growable typed vector, wrapped by the `VEC` library over `@vec_new`,
 `@vec_push`, `@vec_get`, `@vec_set`, `@vec_len`, `@vec_fill`.
 
-```thrax
+```ares
 $ with VEC
 $ v : @Vec @Int = push (push (new {}) 1) 2   # VEC over @vec_* primitives
 ```
@@ -1591,7 +1591,7 @@ $ v : @Vec @Int = push (push (new {}) 1) 2   # VEC over @vec_* primitives
 and the `Stream`/`range`/`count_from` prelude. String interpolation desugars
 through `to_string`; extend it (7.3) for your own types.
 
-```thrax
+```ares
 $ s : Str = to_string 42 ++ " " ++ to_string @true      # "42 true"
 ```
 
@@ -1599,7 +1599,7 @@ $ s : Str = to_string 42 ++ " " ++ to_string @true      # "42 true"
 The `TARGET` module (qualified, no import) reflects the compilation target: word
 size, @Int bounds, and os/arch names, fixed at compile time.
 
-```thrax
+```ares
 $ wide : @Bool = TARGET.int_bits == 64
 $ name : Str = TARGET.arch ++ "-" ++ TARGET.os     # equals TARGET.name
 ```
@@ -1623,7 +1623,7 @@ A quick index of the `@`-forms and where each is documented above.
 | `@private` | visibility | 2.4 |
 | `@e` `@abort` | compile-time code insertion | 11 |
 | `@link` `@link_path` | build directives | 11.2 |
-| `@import_path` | module search, in `BUILD.thx` | 11.4 |
+| `@import_path` | module search, in `BUILD.ares` | 11.4 |
 | `@cast` | integer-width reinterpret | 4.11 |
 | `@true` `@false` `@Bool` | boolean | 12.1 |
 | `@Int8..64` `@Nat8..64` `@Float32/64` | sized numerics | 3.2 |
@@ -1638,8 +1638,8 @@ A quick index of the `@`-forms and where each is documented above.
 
 # 14. Compiler CLI
 
-`thrax [--target=ARCH-OS] <command> [file.thx] [args...]`. With no file the root
-is `MAIN.thx` in the current directory (or the sole `.thx` file there).
+`ares [--target=ARCH-OS] <command> [file.ares] [args...]`. With no file the root
+is `MAIN.ares` in the current directory (or the sole `.ares` file there).
 
 | Command | Effect |
 | --- | --- |
@@ -1652,19 +1652,19 @@ is `MAIN.thx` in the current directory (or the sole `.thx` file there).
 | `lex` | print the token stream |
 | `fmt` | format files in place; `fmt --check` only lists unformatted ones |
 | `fix` | apply every fix the compiler is sure of, rechecking until none is left |
-| `explain` | explain a diagnostic code (`thrax explain TYPE_MISMATCH`) |
+| `explain` | explain a diagnostic code (`ares explain TYPE_MISMATCH`) |
 | `lsp` | run the language server on stdin/stdout (see `documentation/lsp.md`) |
 
 Flags: `--target=ARCH-OS` cross-compiles (e.g. `x86_64-linux`, `wasm32-wasi`);
 `-h` / `--help` prints usage.
 
 ```sh
-thrax run                       # run ./MAIN.thx
-thrax run app.thx a b           # run app.thx with args `a b`
-thrax check examples/FIB.thx    # a library module: type-check and run its checks
-thrax expand app.thx APP        # the source as the checker saw it, one module
-thrax build app.thx
-thrax --target=wasm32-wasi build app.thx
+ares run                       # run ./MAIN.ares
+ares run app.ares a b           # run app.ares with args `a b`
+ares check examples/FIB.ares    # a library module: type-check and run its checks
+ares expand app.ares APP        # the source as the checker saw it, one module
+ares build app.ares
+ares --target=wasm32-wasi build app.ares
 ```
 
 ---

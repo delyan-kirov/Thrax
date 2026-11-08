@@ -1,0 +1,11 @@
+$ @mod REACH_LIB
+
+# \file REACH_LIB.ares
+# \info The bottom of a three-module chain (see `REACH`): declares the type the
+#       middle module's struct holds.
+
+$ Item : @struct = v : @Int,
+
+$ test : @Int = 0
+
+$ @e <| assert (test == 0) "REACH_LIB: a check failed"

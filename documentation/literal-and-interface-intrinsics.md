@@ -142,8 +142,8 @@ Each stage is independently buildable and testable.
 Delivers `m.["key"]` and general `(e : T)` ascription.
 
 Touchpoints: `parser.rs` (`parse_group`, `parse_postfix`), `parser/data.rs`
-(new node), `typing.rs` (ascribe check, prefix-rule error), `library/LA.thx`,
-`library/MAP.thx`.
+(new node), `typing.rs` (ascribe check, prefix-rule error), `library/LA.ares`,
+`library/MAP.ares`.
 
 ## Stage 1 - literal-hook mechanism, current defaults preserved  [LANDED (hook mechanism); @default defaulting deferred as its own milestone]
 
@@ -173,7 +173,7 @@ tests; it is the risk area the plan calls out.
 - Tests: a user type opting into each literal via context and via `(e : T)`.
 
 Touchpoints: `parser.rs`/`typing.rs` (literal lowering + defaulting),
-`desugar.rs`, `ccg/src/gen.rs` (folding), `library/CORE.thx`.
+`desugar.rs`, `ccg/src/gen.rs` (folding), `library/CORE.ares`.
 
 ## Stage 2 - pattern intrinsics  [LANDED]
 
@@ -198,7 +198,7 @@ nested `SeqView` matches before the later passes. Verified interpreter + ccg.
   after type checking; keep optimized builtin overloads as the fast path.
 - Tests: user-type string and sequence patterns.
 
-Touchpoints: `passes/match_compilation.rs`, `typing.rs`, `library/CORE.thx`.
+Touchpoints: `passes/match_compilation.rs`, `typing.rs`, `library/CORE.ares`.
 
 Deferred: general extractors / pattern synonyms via a `@compiler_interface_view`
 returning an arbitrary sum. Same machinery, later.
@@ -211,7 +211,7 @@ Prerequisite LANDED (2026-09-05): type-directed resolution of BARE variant tags.
 bidirectionally so the expectation flows into nested `.Tag`s. This lets two unions share
 a constructor name without collision.
 
-List half LANDED (2026-09-05): `List` is now an ordinary `@union` declared in CORE.thx
+List half LANDED (2026-09-05): `List` is now an ordinary `@union` declared in CORE.ares
 (`$ List : @union a = Nil: {}, Cons: {a, List a}`), NOT a compiler builtin. Removed the
 hardcoded `List`/`Cons`/`Nil` special-cases from the checker (`variant_sig`,
 `find_union_by_tag`, `union_head_with_tag`) and from lowering (`Declarations::variant`,
@@ -227,7 +227,7 @@ routes and backed out of both:
   built as the enabler, and `Str` was briefly declared `$ Str : @struct @unbox = _buffer :
   @Array`. It worked and was zero-cost, but the whole thing was REMOVED at the user's call:
   `Str`'s hard parts are genuinely primitive (UTF-8 validation, escape decoding) and it is
-  load-bearing in CORE-less bootstrap contexts (`library/C.thx`'s libc bindings, the
+  load-bearing in CORE-less bootstrap contexts (`library/C.ares`'s libc bindings, the
   `@main` argv contract), so making it a library type fights all of that for no
   real payoff. `@unbox` itself was also removed (its only motivating use was `Str`; a
   general unboxed-newtype feature can be revisited if a perf need shows up). NOTE for a
@@ -244,22 +244,22 @@ takes the built-in `Str`. `@compiler_interface_string_literal` is now `Str -> a`
 the custom type just maps it to its value (default `Str` folds to zero cost). So other
 types can adopt string literals while `Str` itself is not de-builtined. `CStr` for C
 interop was considered and deferred (the FFI already NUL-terminates a `Str` on marshal, so
-`Str -> char*` is already safe). It is worth revisiting: a Thrax `Str` is not
+`Str -> char*` is already safe). It is worth revisiting: a Ares `Str` is not
 guaranteed NUL-terminated, and the append-a-NUL-on-marshal trick hides that from the
 type system, as does the return direction (C hands back a `char*` treated as a `Str`).
 A `CStr` would need a conversion primitive that does not exist and a rewrite of
-`library/IO.thx`, which is why it was deferred.
+`library/IO.ares`, which is why it was deferred.
 
 ### Original plan text
 
 - Delete the `@list` builtin; define `List` as a core `@union`; `@compiler_interface_sequence_literal`
-  default builds it; rewrite `library/LIST.thx`.
+  default builds it; rewrite `library/LIST.ares`.
 - Fold `@Str` into `@Array`; string literals lower to a byte payload; migrate the
-  `@array_*` byte-poking in `CORE.thx`/`STR.thx`.
+  `@array_*` byte-poking in `CORE.ares`/`STR.ares`.
 - Keep `@Array`, `@Vec`, `[n]T` as the three aggregate primitives.
 
-Touchpoints: `typing.rs` (drop `@list`/`@Str` builtins), `library/CORE.thx`,
-`library/LIST.thx`, `library/STR.thx`, both backends.
+Touchpoints: `typing.rs` (drop `@list`/`@Str` builtins), `library/CORE.ares`,
+`library/LIST.ares`, `library/STR.ares`, both backends.
 
 ## Stage 4 - type-name cleanup  [LANDED, done before Stage 1]
 
@@ -269,7 +269,7 @@ Touchpoints: `typing.rs` (drop `@list`/`@Str` builtins), `library/CORE.thx`,
 - Drop the friendly `Bool` spelling; `@Bool` only.
 - Migrate corpus, examples, and docs.
 
-Touchpoints: `typing/types.rs` (`display_con`, base-type set), `library/CORE.thx`,
+Touchpoints: `typing/types.rs` (`display_con`, base-type set), `library/CORE.ares`,
 `examples/`, `tests/`, `documentation/`.
 
 ## Open questions to confirm before Stage 1
@@ -308,7 +308,7 @@ The remaining hardcoded `[]` jobs became overloads, so every bracket form except
 CORE's cons `List` is the worked example of the result: it is an ordinary `@union`
 with no compiler support, and three overloads (`_sequence_literal`, `(::)`,
 `_sequence_view`) give it literals, cons, and every sequence pattern. Exercised in
-`examples/LISTS.thx`, whose second half runs the same surface over a `List` that the
+`examples/LISTS.ares`, whose second half runs the same surface over a `List` that the
 first half runs over a `@Vec`.
 
 What stays compiler business, by the type system rather than by convenience: the
@@ -349,5 +349,5 @@ What changed:
   `[lo ... hi]` is a `@Vec` and a bare `[lo ...]` is a `Stream`.
 
 `LA`'s tensor indexing is `$ impl_IIndex_for_tensor : @IIndex ([n]a) @Int a`,
-`MAP`'s is `@IIndex (Map k v) k (Option v)`, and `examples/TENSORS.thx` shows a user type
+`MAP`'s is `@IIndex (Map k v) k (Option v)`, and `examples/TENSORS.ares` shows a user type
 joining with `@IIndex Grid @Int @Int`.

@@ -1,5 +1,5 @@
 {
-  description = "Dev environment for Thrax";
+  description = "Dev environment for Ares";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -10,57 +10,57 @@
       pkgs = import nixpkgs { inherit system; };
 
       # Builds the workspace binary before exec'ing it, so a fresh clone can
-      # `thrax run` before any binary exists. The caller's cwd is left alone so
+      # `ares run` before any binary exists. The caller's cwd is left alone so
       # relative source paths resolve against it.
-      thraxDev = pkgs.writeShellScriptBin "thrax" ''
-        root="''${THRAX_ROOT:-$PWD}"
-        cargo build --quiet --manifest-path "$root/Cargo.toml" -p thrax 1>&2 || exit
-        exec "$root/target/debug/thrax" "$@"
+      aresDev = pkgs.writeShellScriptBin "ares" ''
+        root="''${ARES_ROOT:-$PWD}"
+        cargo build --quiet --manifest-path "$root/Cargo.toml" -p ares 1>&2 || exit
+        exec "$root/target/debug/ares" "$@"
       '';
 
-      # Unlike thraxDev, this cd's to the root, since the tasks assume they run
+      # Unlike aresDev, this cd's to the root, since the tasks assume they run
       # there.
-      thxdoDev = pkgs.writeShellScriptBin "thxdo" ''
-        root="''${THRAX_ROOT:-$PWD}"
+      thraxDev = pkgs.writeShellScriptBin "thrax" ''
+        root="''${ARES_ROOT:-$PWD}"
         cd "$root"
-        export THRAX_BIN="$root/target/debug/thrax"
-        bin="$root/tools/thrax-out/THXDO"
-        src="$root/tools/THXDO.thx"
+        export ARES_BIN="$root/target/debug/ares"
+        bin="$root/tools/ares-out/THRAX"
+        src="$root/tools/THRAX.ares"
         # A compiler recompile alone does not force a rebuild, so the common path
-        # stays a bare exec. THXDO.thx imports the modules beside it.
+        # stays a bare exec. THRAX.ares imports the modules beside it.
         stale=
-        for f in "$root"/tools/*.thx; do [ "$f" -nt "$bin" ] && stale=1; done
-        if [ ! -x "$bin" ] || [ -n "$stale" ] || [ ! -x "$THRAX_BIN" ]; then
-          cargo build --quiet --manifest-path "$root/Cargo.toml" -p thrax 1>&2 || exit
-          "$THRAX_BIN" build "$src" 1>&2 || exit
+        for f in "$root"/tools/*.ares; do [ "$f" -nt "$bin" ] && stale=1; done
+        if [ ! -x "$bin" ] || [ -n "$stale" ] || [ ! -x "$ARES_BIN" ]; then
+          cargo build --quiet --manifest-path "$root/Cargo.toml" -p ares 1>&2 || exit
+          "$ARES_BIN" build "$src" 1>&2 || exit
         fi
         exec "$bin" "$@"
       '';
 
       # The line counter in applications/zalmoxis, built natively when one of its
-      # sources is newer than the binary. Like thraxDev it leaves the cwd alone,
+      # sources is newer than the binary. Like aresDev it leaves the cwd alone,
       # so it counts where it is run.
       zalmoxisDev = pkgs.writeShellScriptBin "zalmoxis" ''
-        root="''${THRAX_ROOT:-$PWD}"
-        thrax="$root/target/debug/thrax"
+        root="''${ARES_ROOT:-$PWD}"
+        ares="$root/target/debug/ares"
         dir="$root/applications/zalmoxis"
-        bin="$dir/thrax-out/MAIN"
-        if [ ! -f "$dir/MAIN.thx" ]; then
+        bin="$dir/ares-out/MAIN"
+        if [ ! -f "$dir/MAIN.ares" ]; then
           echo "zalmoxis: $dir is missing (git submodule update --init applications)" 1>&2
           exit 1
         fi
         stale=
-        for f in "$dir"/*.thx; do [ "$f" -nt "$bin" ] && stale=1; done
-        if [ ! -x "$bin" ] || [ -n "$stale" ] || [ ! -x "$thrax" ]; then
-          cargo build --quiet --manifest-path "$root/Cargo.toml" -p thrax 1>&2 || exit
-          "$thrax" build "$dir/MAIN.thx" 1>&2 || exit
+        for f in "$dir"/*.ares; do [ "$f" -nt "$bin" ] && stale=1; done
+        if [ ! -x "$bin" ] || [ -n "$stale" ] || [ ! -x "$ares" ]; then
+          cargo build --quiet --manifest-path "$root/Cargo.toml" -p ares 1>&2 || exit
+          "$ares" build "$dir/MAIN.ares" 1>&2 || exit
         fi
         exec "$bin" "$@"
       '';
 
       # `--offline` holds because the workspace has no external crates.
-      thrax = pkgs.stdenv.mkDerivation {
-        pname = "thrax";
+      ares = pkgs.stdenv.mkDerivation {
+        pname = "ares";
         version = "0.1.0";
         src = self;
 
@@ -77,41 +77,41 @@
           export CARGO_HOME=$TMPDIR/.cargo
           export LIBFFI=${pkgs.libffi.out}
           export LIBFFI_DEV=${pkgs.libffi.dev}
-          cargo build --release --offline -p thrax
+          cargo build --release --offline -p ares
           runHook postBuild
         '';
 
         # The standard library ships beside the binary, which finds it relative
-        # to its own path: `$out/bin/thrax` resolves `$out/library`. The tree is
+        # to its own path: `$out/bin/ares` resolves `$out/library`. The tree is
         # relocatable and needs no environment variable. The compiler library
-        # goes to `$out/lib`, where `thrax build` finds it for a program that runs
+        # goes to `$out/lib`, where `ares build` finds it for a program that runs
         # the compiler (`@eval`, `@lex`, ...), with its C header in `$out/include`.
         installPhase = ''
           runHook preInstall
-          install -Dm755 target/release/thrax $out/bin/thrax
-          install -Dm755 target/release/libthrax.so $out/lib/libthrax.so
-          install -Dm644 target/release/libthrax.a $out/lib/libthrax.a
-          install -Dm644 crates/thrax/include/thrax.h $out/include/thrax.h
+          install -Dm755 target/release/ares $out/bin/ares
+          install -Dm755 target/release/libares.so $out/lib/libares.so
+          install -Dm644 target/release/libares.a $out/lib/libares.a
+          install -Dm644 crates/ares/include/ares.h $out/include/ares.h
           mkdir -p $out/library
-          install -Dm644 library/*.thx $out/library/
+          install -Dm644 library/*.ares $out/library/
           runHook postInstall
         '';
 
         meta = {
-          description = "The Thrax compiler and interpreter";
-          mainProgram = "thrax";
+          description = "The Ares compiler and interpreter";
+          mainProgram = "ares";
         };
       };
     in
     {
       packages.${system} = {
-        inherit thrax;
-        default = thrax;
+        inherit ares;
+        default = ares;
       };
 
       apps.${system}.default = {
         type = "app";
-        program = "${thrax}/bin/thrax";
+        program = "${ares}/bin/ares";
       };
 
       devShells.${system}.default = pkgs.mkShell {
@@ -119,8 +119,8 @@
         hardeningDisable = [ "fortify" ];
 
         buildInputs = [
+          aresDev
           thraxDev
-          thxdoDev
           zalmoxisDev
 
           # gcc compiles the C in the interpreter's build.rs and the native
@@ -137,7 +137,7 @@
 
           pkgs.libffi
 
-          # `thrax --target=wasm32-wasi`
+          # `ares --target=wasm32-wasi`
           pkgs.emscripten
           pkgs.nodejs
 
@@ -151,10 +151,10 @@
           export LIBFFI_DEV=${pkgs.libffi.dev}
 
           # The directory `nix develop` was entered from: the workspace root, as
-          # far as thraxDev, thxdoDev and `thxdo tosdk` are concerned.
-          export THRAX_ROOT=$PWD
+          # far as aresDev, thraxDev and `thrax tosdk` are concerned.
+          export ARES_ROOT=$PWD
 
-          # What `thxdo hooks` sets: the git hooks of documentation/workflow.md.
+          # What `thrax hooks` sets: the git hooks of documentation/workflow.md.
           if [ -d .git ]; then
             git config core.hooksPath tools/hooks
             git config core.commentChar ';'

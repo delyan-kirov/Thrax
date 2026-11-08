@@ -1,13 +1,13 @@
-# Thrax
+# Ares
 
-Thrax is a functional language with algebraic data types (structs *and* sum
+Ares is a functional language with algebraic data types (structs *and* sum
 types), pattern matching, and typed **algebraic effects with handlers**. It
 compiles to native C, cross-compiles to WebAssembly, and can also be interpreted.
 
 ## Links
 
-- **[Try it in your browser](https://delyan-kirov.github.io/thrax-applications/)**
-- **[Source on GitHub](https://github.com/delyan-kirov/Thrax)**: the compiler, standard library, and docs.
+- **[Try it in your browser](https://delyan-kirov.github.io/ares-applications/)**
+- **[Source on GitHub](https://github.com/delyan-kirov/Ares)**: the compiler, standard library, and docs.
 - **[Examples](examples/)**: a small program for each feature (also the test corpus).
 
 ## Building
@@ -15,15 +15,15 @@ compiles to native C, cross-compiles to WebAssembly, and can also be interpreted
 **With nix** (recommended):
 
 ```sh
-nix develop      # dev shell; `thrax` is already on PATH here
-cargo build      # or build it yourself: target/debug/thrax
+nix develop      # dev shell; `ares` is already on PATH here
+cargo build      # or build it yourself: target/debug/ares
 cargo test       # the frontend, interpreter, and backend suites
 ```
 
 **Without nix**: any host with a recent `cargo`/`rustc` and a C toolchain:
 
 ```sh
-cargo build --release   # target/release/thrax
+cargo build --release   # target/release/ares
 ```
 
 Linux is the development platform; macOS, Windows and wasm are tested in CI,
@@ -32,14 +32,14 @@ and each release ships an SDK for them. See
 
 ## Compiling and running
 
-`thrax` takes a subcommand and, optionally, a `.thx` file. With no file it
-uses `MAIN.thx` in the current directory.
+`ares` takes a subcommand and, optionally, a `.ares` file. With no file it
+uses `MAIN.ares` in the current directory.
 
 A program is a module with an entry point, and there is exactly one accepted
 shape: `@main` takes the argument vector (`args[0]` is the program) and
 returns the exit code. It is the only name the compiler knows.
 
-```thrax
+```ares
 $ @main : @Vec @Str -> <@IO> @Int = \args => C.puts "hello"; 0
 ```
 
@@ -48,28 +48,28 @@ assertions (`$ @e <| assert ..`), so a module states its own invariants and
 type-checking it is testing it.
 
 ```sh
-thrax run     MAIN.thx          # run under the interpreter
-thrax check   examples/FIB.thx  # type-check, print types, run `$ @e` checks
-thrax expand  MAIN.thx          # the source after metaprogram expansion
-thrax emit-c  MAIN.thx          # print the generated C (native backend)
-thrax build   MAIN.thx          # compile to a native executable
-thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm
+ares run     MAIN.ares          # run under the interpreter
+ares check   examples/FIB.ares  # type-check, print types, run `$ @e` checks
+ares expand  MAIN.ares          # the source after metaprogram expansion
+ares emit-c  MAIN.ares          # print the generated C (native backend)
+ares build   MAIN.ares          # compile to a native executable
+ares --target=wasm32-wasi build MAIN.ares   # cross-compile to wasm
 ```
 
 The compiler is also the tooling. Every error carries a stable code
-(`thrax explain CODE` says what it means), keeps going past the first
-mistake, and offers a fix when it knows one; `thrax fix` applies the sure
+(`ares explain CODE` says what it means), keeps going past the first
+mistake, and offers a fix when it knows one; `ares fix` applies the sure
 ones. `???` is a typed hole: the error names the type that goes there and
 the names in scope that fit.
 
 ```sh
-thrax fmt     MAIN.thx          # format in place (--check only reports)
-thrax fix     MAIN.thx          # apply every fix the compiler is sure of
-thrax explain TYPE_MISMATCH     # what a diagnostic code means
-thrax lsp                       # language server for an editor
+ares fmt     MAIN.ares          # format in place (--check only reports)
+ares fix     MAIN.ares          # apply every fix the compiler is sure of
+ares explain TYPE_MISMATCH     # what a diagnostic code means
+ares lsp                       # language server for an editor
 ```
 
-`thrax lsp` serves diagnostics, fixes, hover, go-to-definition, completion,
+`ares lsp` serves diagnostics, fixes, hover, go-to-definition, completion,
 symbols and formatting. It ranks errors so the one that matters most stands
 out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.
 
@@ -84,142 +84,80 @@ out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.
 - **Interfaces resolved by type**: an interface is a struct, an implementation is a value of it, and a function takes one as a named `@use` field the compiler infers. One mechanism; no overloading, so a name's printed type is its contract.
 - **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`@e` inserts generated code, plus a `@build` entry that generates part of a module from what is on disk).
 
-## A tour of the language
+## Example: exact probabilistic inference
 
-Every snippet below is validated when this README is generated.
+Example implementation of exact probabilistic inference by enumeration.
 
-### Structs
+```ares
+$ Prob : @effect = pick : @Int -> @Int, observe : @Bool -> {},
 
-Structs are named records; a free lowercase name in a field type is an
-implicit type parameter, so declarations are generic.
+# The weight of a set of worlds: `yes` of them made the model true, `all`
+# survived every `observe`, each worth `1 / den`.
+$ Mass : @struct = yes: @Int, all: @Int, den: @Int
 
-```thrax
-$ Person : @struct = name: @Str, age: @Int,
-$ person : Person = Person.{ .name = "Will", .age = 21 }
-$ who : @Str = person.name
-$ older : @Int = person.age + 1
+$ gcd : @Int -> @Int -> @Int = \a b => if b == 0 => a else gcd b (a % b)
 
-# Generic: one declaration, two instantiations.
-$ Box : @struct t = val: t,
-$ ibox : Box @Int = Box.{ .val = 7 }
-$ sbox : Box @Str = Box.{ .val = "hi" }
-```
+$ impl_IAdd_for_Mass : IAdd Mass = .{
+    .add = \a b =>
+        let den = a.den / gcd a.den b.den * b.den in
+        let sa = den / a.den in
+        let sb = den / b.den in
+        Mass.{ .yes = a.yes * sa + b.yes * sb, .all = a.all * sa + b.all * sb, .den = den }
+}
 
-A declaration may start with `with Other` to splice in another struct's
-fields (a copy-paste convenience, not subtyping).
+$ nothing : Mass = Mass.{ .yes = 0, .all = 0, .den = 1 }
 
-```thrax
-$ Point : @struct = x: @Int, y: @Int,
-$ Point3 : @struct = with Point, z: @Int, # x, y, then z
-```
+# Resume `k` with every outcome `i ..< n` and add up the worlds that follow.
+$ each : (@Int -> Mass) -> @Int -> @Int -> Mass = \k i n =>
+    if i == n => nothing else k i + each k (i + 1) n
 
-### Unions and pattern matching
+$ infer : ({} -> <Prob> @Bool) -> Mass = \model =>
+    do model {}
+    ctl k
+    | Prob.pick n     => let m = each k 0 n in Mass.{ .yes = m.yes, .all = m.all, .den = m.den * n }
+    | Prob.observe ok => if ok => k {} else nothing
+    | b               => Mass.{ .yes = if b => 1 else 0, .all = 1, .den = 1 }
 
-Sum types are a tagged choice of a variant and its payload; a `{}` payload is
-the unit variant. Unions take `with` too.
+# P(model is true | every observation held), reduced.
+$ chance : ({} -> <Prob> @Bool) -> @Str = \model =>
+    let m = infer model in let g = gcd m.yes m.all in "?(m.yes / g)/?(m.all / g)"
 
-```thrax
-$ Maybe : @union t = Just: { t }, None: {},
+# Two children, at least one a boy. Both boys? 1/3
+$ two_boys : {} -> <Prob> @Bool = \u =>
+    let a = pick 2 in let b = pick 2 in observe (a == 0 || b == 0); a == 0 && b == 0
 
-$ some_i : Maybe @Int = Maybe.Just.{ 5 }
-$ none_i : Maybe @Int = Maybe.None
+# The same, but that boy was born on a Tuesday: 13/27
+$ tuesday_boy : {} -> <Prob> @Bool = \u =>
+    let a = pick 2 in
+    let a_day = pick 7 in
+    let b = pick 2 in
+    let b_day = pick 7 in
+    observe (a == 0 && a_day == 2 || b == 0 && b_day == 2); a == 0 && b == 0
 
-$ List : @union t = Cons: { t, List t }, Nil: {},
-```
-
-```thrax
-$ Base : @union = Red: {}, Green: {},
-$ Color : @union = with Base, Blue: {} # Red, Green, then Blue
-```
-
-A multi-arm lambda `\ | pat => e ...` takes one argument and matches it
-top to bottom; a match is one applied to its scrutinee, `s |> \ | ...`. Each
-arm may carry an `if <guard>` that falls through to the next arm on failure.
-There is no default branch: a catch-all is just an arm, `| _ => d`.
-
-```thrax
-$ grade : Maybe @Int -> @Int = \m =>
-    m |> \
-        | .Just.{ v } if v > 100 => 3
-        | .Just.{ v } if v > 0   => 2
-        | .Just.{ _ }            => 1
-        | .None                  => 0
-```
-
-`++` splits a sequence (a string, vector, array, or a type of your own) into
-fixed pieces around one part of any length, from either end; `h :: t` is
-`[h] ++ t`. On a sized tensor the lengths are checked at compile time.
-
-```thrax
-$ ext : @Str -> @Str = \s => s |> \ | name ++ ".thx" => name | _ => s
-
-$ ends : @Vec @Int -> @Int = \xs =>
-    xs |> \
-        | [a] ++ mid ++ [z] => a + z
-        | [a]               => a
-        | _                 => 0
-```
-
-### Algebraic effects and handlers
-
-An effect is a set of operations; performing one is just a call. A function's
-type carries the effects it may perform as a **row** on its arrow (`A -> <E> B`);
-a plain arrow is pure, and an unhandled effect is a compile-time error. The
-continuation `k` is first-class and may be resumed any number of times, so
-generators, coroutines, state and backtracking search are all ordinary
-library code. Besides its operation clauses, a handler may have value arms:
-ordinary patterns over the body's final value, like `| _ => 0` below. Without
-one, that value is the handler's result.
-
-```thrax
-$ Yield : @effect = yield : @Int -> {},
-
-# The handler resumes once per yield, summing every value it produces.
-$ sumGen : ({} -> <Yield> {}) -> @Int = \gen =>
-    do gen {}
-    ctl k | Yield.yield v => v + k {} | _ => 0
-```
-
-### Interfaces
-
-An interface is an ordinary struct whose fields are its operations;
-implementing it is defining a value of that type. A function that needs one
-declares it as a named `@use` field, in scope in its body, which call sites do
-not write: the compiler finds it by type, taking the nearest binder in scope
-and otherwise the one instance in scope. `f @use {.d = e} x` passes one by
-hand.
-
-```thrax
-$ IArea : @struct t = area: t -> Real,
-
-$ Rect : @struct = w: Real, h: Real,
-$ impl_IArea_for_Rect : IArea Rect = .{ .area = \r => r.w * r.h }
-
-# `d` is a `@use` field: in scope by name in the body, and call sites do not
-# write it. The compiler finds it by type.
-$ total : @use { d: IArea t } -> @Vec t -> Real = \xs => VEC.foldl (\acc x => acc + d.area x) 0.0 xs
-
-$ sum : Real = total [Rect.{ 2.0, 3.0 }, Rect.{ 1.0, 4.0 }] # 10.0
-```
-
-Every operator works this way, so there is nothing special about `+`: it is a
-function over `IAdd`, and a type joins it by defining an instance.
-
-```thrax
-$ Money : @struct = cents: @Int,
-
-# `+` is an ordinary CORE function over `IAdd`, so a type joins it with a value.
-$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b => Money.{ .cents = a.cents + b.cents } }
-$ paid : Money = Money.{ .cents = 150 } + Money.{ .cents = 99 }
+# Monty Hall: does switching win? 2/3
+$ switching_wins : {} -> <Prob> @Bool = \u =>
+    let car = pick 3 in
+    let guess = pick 3 in
+    let left = (guess + 1) % 3 in
+    let right = (guess + 2) % 3 in
+    let opened =
+        if car == guess =>
+            (if pick 2 == 0 => left else right)
+        else if car == left =>
+            right
+        else
+            left
+    in
+    3 - guess - opened == car
 ```
 
 ## Native backend and FFI
 
-Thrax lowers the whole IR to self-contained C, algebraic effects included, via
+Ares lowers the whole IR to self-contained C, algebraic effects included, via
 a CEK-style machine emitted in C. Foreign C functions are bound with `@extern`;
 the library name is symbolic (no path or soname in source).
 
-```thrax
+```ares
 $ puts : @Str -> <@IO> @Int = @extern "C" "puts" "libc"
 $ @main : @Vec @Str -> <@IO> @Int = \args => puts "Hello world"; 0
 ```
@@ -231,9 +169,9 @@ $ @main : @Vec @Str -> <@IO> @Int = \args => puts "Hello world"; 0
 | `crates/frontend` | lexer, parser, type checker, lowering, IR |
 | `crates/interpreter` | the reified-K (CEK) machine and the `@extern` FFI |
 | `crates/ccg` | the C backend (emits standalone C plus its runtime) |
-| `crates/thrax` | the `thrax` driver (CLI) |
+| `crates/ares` | the `ares` driver (CLI) |
 | `library/` | the standard library (`C` libc namespace, `CORE`, and the rest) |
-| `examples/` | annotated `.thx` programs (also the test corpus) |
+| `examples/` | annotated `.ares` programs (also the test corpus) |
 | `tools/` | dev tooling, incl. this README generator |
 | `documentation/` | language spec and design notes |
 
@@ -243,7 +181,7 @@ MIT, see [LICENSE](LICENSE).
 
 ## Autogenerated
 
-> This file is GENERATED by `tools/README_GEN.thx`, the single source of
+> This file is GENERATED by `tools/README_GEN.ares`, the single source of
 > truth for its examples (each is validated at build time). Do not edit by
-> hand; edit the generator and regenerate with `thrax run tools/README_GEN.thx`.
+> hand; edit the generator and regenerate with `ares run tools/README_GEN.ares`.
 

@@ -10,7 +10,7 @@ fn lower(src: &str) -> CoreProgram {
     let mut checker = Checker::new(&ast, std::rc::Rc::new(Types::new()));
     checker
         .check_program(&program)
-        .unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "test.ares")));
     let resolved = collect_resolved(std::slice::from_ref(&checker));
     desugar_program(&ast, &program, &resolved)
 }

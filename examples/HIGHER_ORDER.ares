@@ -1,0 +1,23 @@
+$ @mod HIGHER_ORDER
+
+# \file higher_order.ares
+# \info Functions as values: parametric identity/const and repeated application.
+
+$ id : t -> t = \x => x
+
+$ const : t -> u -> t = \x y => x
+
+$ apply_twice : (t -> t) -> t -> t = \f x => f (f x)
+
+$ inc : @Int -> @Int = \x => x + 1
+$ dbl : @Int -> @Int = \x => x * 2
+
+$ id_five : @Int = id 5
+$ const_ab : @Int = const 42 99
+$ inc_twice : @Int = apply_twice inc 0
+$ dbl_twice : @Int = apply_twice dbl 3
+
+# Force-evaluate results for the combined test runner (pass = no fault).
+$ test : @Int = id_five; const_ab; inc_twice; dbl_twice; 0
+
+$ @e <| assert (test == 0) "HIGHER_ORDER: a check failed"

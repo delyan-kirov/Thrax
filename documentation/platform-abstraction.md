@@ -2,21 +2,21 @@
 
 **Status:** Phases 0, 1 and 2 DONE. 0+1 (2026-07-18): the latent FFI/CC bugs
 are fixed, `TG::Target` exists and is threaded through DR/TC/CC (`--target=`
-flag, host-only), `OP.hpp`'s `#if` and the `THxRT.c` re-derivation are
-deleted, the emitted C carries the `#define THX_INT` + `_Static_assert`
+flag, host-only), `OP.hpp`'s `#if` and the `ARESxRT.c` re-derivation are
+deleted, the emitted C carries the `#define ARX_INT` + `_Static_assert`
 domino. Phase 2 (2026-07-21, revised form -- see section 3.3): `@extern` is
 now `@extern "C" "symbol" "lib"` with SYMBOLIC library names; the
 interpreter resolves them to host sonames at dlopen time
 (`TG::Target::soname`), the native backend emits DIRECT linker-resolved
 calls via asm-label declarations plus link flags (`CC::link_flags`) --
 generated programs never dlopen. Phase 2.5 DONE (2026-07-21): `$ @run
-<expr>` compile-time execution + the `BUILD` module (library/BUILD.thx) --
+<expr>` compile-time execution + the `BUILD` module (library/BUILD.ares) --
 `@run BUILD.lib`/`BUILD.lib_path` directives feed the link set and library
-search paths from Thrax source, serving both engines. Phase 3 DONE
-(2026-07-21): `platforms/THxPLAT.h` (THX_OS_* / THX_PTR_BITS / THX_INT_T,
+search paths from Ares source, serving both engines. Phase 3 DONE
+(2026-07-21): `platforms/ARESxPLAT.h` (ARX_OS_* / ARX_PTR_BITS / ARX_INT_T,
 first in the runtime bake), the Value `T_INT` payload is the TARGET word
 (wraps at 32 bits on 32-bit targets), and `build check-platform` enforces
-the no-raw-platform-macros boundary by mechanism (also in pre-push). THxDL
+the no-raw-platform-macros boundary by mechanism (also in pre-push). ARESxDL
 was DROPPED as obsolete -- phase 2's direct-call design means generated
 programs never dlopen (see section 4). Phase 4 DONE (2026-07-22):
 `wasm32-wasi` is the first cross target -- `TG::Toolchain` as data (wasi-sdk
@@ -34,7 +34,7 @@ platform they are compiling *for* (target) versus running *on* (host), and
 where platform-specific knowledge is allowed to live. Companion to the
 `documentation/stdcore` vision (prelude/`C` namespace).
 
-**Goal:** if a platform has libc, Thrax programs run on it. Concretely:
+**Goal:** if a platform has libc, Ares programs run on it. Concretely:
 Linux/macOS/Windows x wasm x x86-64/arm64/32-bit, without the compiler binary's
 own build platform leaking into the programs it produces.
 
@@ -45,7 +45,7 @@ own build platform leaking into the programs it produces.
 Today "the platform" is decided in four independent places, all of them at the
 wrong time:
 
-1. **When the `thrax` binary is compiled** -- `OP.hpp` picks `TY_INT =
+1. **When the `ares` binary is compiled** -- `OP.hpp` picks `TY_INT =
    "@Int32"/"@Int64"` from `__SIZEOF_POINTER__` of the machine building the
    compiler. The *language's* `@Int` is an accident of where the compiler was
    built.
@@ -53,7 +53,7 @@ wrong time:
    `"msvcrt.dll"`) into every `C.*` extern in the IR. The IR -- and therefore
    the emitted C -- carries a Linux soname; wrong on macOS
    (`libSystem.B.dylib`), musl, wasm.
-3. **When the emitted C is compiled** -- `THxRT.c` re-derives `THX_INT` from
+3. **When the emitted C is compiled** -- `ARESxRT.c` re-derives `ARX_INT` from
    *its* compiler's pointer size. This must agree with what (1) chose, but
    nothing checks it: a cross-compile silently disagrees on the `mono` keys
    (`"+@Int64"` vs `"+@Int32"`) and dies at runtime dispatch.
@@ -72,8 +72,8 @@ Marked FIXMEs:
 | Site | Leak |
 |---|---|
 | `compiler/OP.hpp:49` | `TY_INT`/`TY_NAT` chosen by the compiler binary's own pointer width (`#if __SIZEOF_POINTER__`). |
-| `app/DR.cpp:170` | `THX_LIBC` soname (`libc.so.6`/`msvcrt.dll`) hardcoded, baked into IR extern strings at frontend time. FIXED by phase 2: libs are symbolic, `THX_LIBC` deleted. |
-| `platforms/THxRT.c:153` | Runtime independently re-derives `THX_INT` from *its* build; must agree with (1) but nothing enforces it. |
+| `app/DR.cpp:170` | `ARX_LIBC` soname (`libc.so.6`/`msvcrt.dll`) hardcoded, baked into IR extern strings at frontend time. FIXED by phase 2: libs are symbolic, `ARX_LIBC` deleted. |
+| `platforms/ARESxRT.c:153` | Runtime independently re-derives `ARX_INT` from *its* build; must agree with (1) but nothing enforces it. |
 
 Unmarked, found by audit:
 
@@ -85,7 +85,7 @@ Unmarked, found by audit:
 | `engines/FF.cpp` `desc_of` | Keys on **stale pre-Phase-0 names** (`"@Int"`, `"Str"`, ...). Canonical `@`-names all fall through to the word-sized `slong` default -- including `@Str`/`@Ptr`. Works today only because on x86-64 pointer and slong have identical ABI class. Breaks on 32-bit and wasm. Latent bug. |
 | `engines/ITxDATA.cpp:79` | Stale `"Str"`/`"Real"` return-type string compares (same vintage as above). |
 | `engines/ITxDATA.cpp:66` | `Real` argument marshalled by `memcpy(&w,&d,sizeof(w))` into an `ssize_t` word -- on a 32-bit host this copies 4 of the double's 8 bytes. The whole "everything is one machine word" FFI marshalling is a 64-bit-host assumption. |
-| `platforms/THxVALUE.h:59` | `T_INT` payload is `long long` unconditionally -- a 32-bit target's `@Int` (`@Int32`) would still compute at 64-bit width in the runtime; semantics undefined per target. |
+| `platforms/ARESxVALUE.h:59` | `T_INT` payload is `long long` unconditionally -- a 32-bit target's `@Int` (`@Int32`) would still compute at 64-bit width in the runtime; semantics undefined per target. |
 
 Contained / already correct (keep as models):
 
@@ -96,7 +96,7 @@ Contained / already correct (keep as models):
   *placement*; only its type table is stale.
 - `external/libffi` vendored + layered resolution -- already the Windows/no-nix
   lifeline.
-- `examples/io_example/MAIN.thx:23` FIXME is about effects, not platforms.
+- `examples/io_example/MAIN.ares:23` FIXME is about effects, not platforms.
 
 ## 2. Prior art, and what we take from each
 
@@ -108,13 +108,13 @@ Contained / already correct (keep as models):
 - **Koka**: compile to *portable* C, and confine every platform conditional to
   the runtime library (kklib). The generated C is the same everywhere; the
   runtime is the porting layer. We already have this shape -- `CC` bakes
-  `platforms/THx*` in as text -- we just have to keep the *generated* part
+  `platforms/ARESx*` in as text -- we just have to keep the *generated* part
   clean of `#ifdef`s that belong to the runtime.
 - **Jai**: the platform is an ordinary *compile-time value* in the language
   (`#if OS == .WINDOWS` over normal modules), and the build is a program, not
   a description. Our CTFE `@assert`, dead-global elimination, and `build.cpp`
   are exactly the ingredients: conditional platform code can be ordinary
-  Thrax modules pruned by DCE -- no preprocessor in the language.
+  Ares modules pruned by DCE -- no preprocessor in the language.
 - **Zig** (honorable mention): cross-compilation as the *default posture* --
   every design question below is answered by asking "does this still work
   when host != target?".
@@ -164,21 +164,21 @@ Koka's split, enforced:
 
 - **`platforms/` is the only directory allowed to contain OS/arch
   conditionals** (`_WIN32`, `__linux__`, `__wasm__`, ...). New file
-  `platforms/THxPLAT.h` centralizes detection into `THX_OS_*` / `THX_PTR_BITS`
-  macros; the other `THx*` files consume those, never raw predefined macros.
+  `platforms/ARESxPLAT.h` centralizes detection into `ARX_OS_*` / `ARX_PTR_BITS`
+  macros; the other `ARESx*` files consume those, never raw predefined macros.
   (`utilities/UTxBUILD.hpp` keeps its process shim -- it *is* a platform layer
   for the build tool -- but switches to the same detection header.)
 - **`build.cpp` enforces this as a mechanism**, like the dependency DAG: a
   check target greps for raw platform macros outside `platforms/` and fails
   the build. Boundaries by mechanism, not discipline.
 - **The domino check replaces trust.** `CC` knows the target, so it emits into
-  every program: `#define THX_INT "@Int32|@Int64"` (the runtime's `mono`-key
-  width -- deleting the `THxRT.c` re-derivation) **and**
+  every program: `#define ARX_INT "@Int32|@Int64"` (the runtime's `mono`-key
+  width -- deleting the `ARESxRT.c` re-derivation) **and**
   `_Static_assert(sizeof(void*) == N, "compiled for <target>")`. A generated
   `.c` fed to the wrong C compiler now fails at *compile* time with a named
   error instead of dispatching garbage at runtime.
-- **dlopen goes behind a runtime seam**: `platforms/THxDL.{h,c}` exposing
-  `THxDL_sym(lib, sym)`; POSIX `dlopen`, Win32 `LoadLibraryA/GetProcAddress`,
+- **dlopen goes behind a runtime seam**: `platforms/ARESxDL.{h,c}` exposing
+  `ARESxDL_sym(lib, sym)`; POSIX `dlopen`, Win32 `LoadLibraryA/GetProcAddress`,
   wasi = static-link-only stub that traps with a clear message. `CC` stops
   emitting raw `dlopen` calls and `#include <dlfcn.h>`; it calls the seam,
   which is already baked in with the rest of the runtime.
@@ -199,16 +199,16 @@ interpreter/native split:
   containing '.' or '/' passes verbatim, user's responsibility).
 - `CC` (native, target): every foreign symbol is a DIRECT call the system
   linker resolves, statically or dynamically per what it finds. The
-  declaration uses an asm label (`extern int64_t THx_sym_0(char*)
+  declaration uses an asm label (`extern int64_t ARESx_sym_0(char*)
   __asm__("puts");`) so the C identifier cannot collide with the libc
   headers the inlined runtime includes. Generated programs contain no
   dlopen and need no `-ldl`; `CC::link_flags` derives one flag per library
   ("libc" implicit, "libm" -> `-lm`, "raylib" -> `-lraylib`, paths
   verbatim), `--build` applies them, and the generated header comment
   prints the exact cc line. This is also what wasm needs (no dlopen).
-- `DR`'s generated `C.thx` writes `"libc"`/`"libm"`.
+- `DR`'s generated `C.ares` writes `"libc"`/`"libm"`.
 
-SEARCH PATHS and the link set are project data fed from Thrax itself (phase
+SEARCH PATHS and the link set are project data fed from Ares itself (phase
 2.5, DONE -- see section 4): `$ @run BUILD.lib "m"` /
 `$ @run BUILD.lib_path "./vendor"` -- the Jai "build is a program" door,
 opened a crack. The ABI slot is where `"js"` externs for wasm imports will
@@ -224,8 +224,8 @@ friends read the resolved alias). Consequences owned deliberately:
 
 - Interpreter values stay 64-bit internally (`long long` / `ssize_t` on the
   host) -- fine, because the interpreter only runs host programs (section 3.1).
-- The native runtime's `Value` `T_INT` payload becomes `THX_INT_T`
-  (`int64_t`/`int32_t` from `THxPLAT.h` per `THX_PTR_BITS`) so a 32-bit
+- The native runtime's `Value` `T_INT` payload becomes `ARX_INT_T`
+  (`int64_t`/`int32_t` from `ARESxPLAT.h` per `ARX_PTR_BITS`) so a 32-bit
   target's arithmetic actually wraps at 32 bits -- semantics match the type.
 - `CC::c_type` maps every `@intN`/`@natN` to `<stdint.h>` names
   (`int64_t`, not `long`) -- fixes the LLP64 bug outright.
@@ -241,7 +241,7 @@ No `#ifdef` enters the language. Instead:
   `TARGET.int_max`/`.int_min : @Int` (the `@Int` value range), `TARGET.os`/
   `.arch`/`.name : Str`. A qualified module (not bare `TARGET_*` constants)
   keeps the global namespace clean. **DONE** (phase 4).
-- Platform-conditional code is ordinary Thrax (`when TARGET.int_bits is 64
+- Platform-conditional code is ordinary Ares (`when TARGET.int_bits is 64
   then ... else ...`); the existing **dead-global elimination** prunes an
   unreferenced side, so a Linux build never even references `Windows.*`
   externs. (A CTFE `@if` that folds a branch on a constant condition -- so a
@@ -251,7 +251,7 @@ No `#ifdef` enters the language. Instead:
   - **core/prelude** -- platform-free (`List`, aliases, `assert`);
   - **sys** -- per-platform extern namespaces: today's auto-injected `C`
     (libc, generated per *target*), later `Win32`, `Wasi` siblings;
-  - **std** -- portable modules (`IO`, `File`) written *in Thrax* against the
+  - **std** -- portable modules (`IO`, `File`) written *in Ares* against the
     target constants, choosing their sys backend internally. Users import
     `std`; only `std` (and the daring) import `sys`.
 
@@ -279,16 +279,16 @@ House rule applies: one variable per phase, suites green at every step,
   their own.
 - **Phase 1 (DONE) -- `TG::Target`, host-only.** Add `compiler/TG.{hpp}`; construct in
   `app/main.cpp` (default host; parse `--target` but reject != host for now);
-  thread through `DR` (prelude + `C.thx` generation), `TC` (literal/base-type
+  thread through `DR` (prelude + `C.ares` generation), `TC` (literal/base-type
   spelling), `CC`. Delete the `OP.hpp` `#if` and `TY_INT`/`TY_NAT` constants.
-  `CC` emits `#define THX_INT` + the `_Static_assert` domino; delete the
-  `THxRT.c` sniff. IR byte-identical on the host.
+  `CC` emits `#define ARX_INT` + the `_Static_assert` domino; delete the
+  `ARESxRT.c` sniff. IR byte-identical on the host.
 - **Phase 2 (DONE, 2026-07-21, revised) -- Symbolic libs, direct native
   calls.** Landed stronger than originally sketched: `@extern` became
   `@extern "C" "symbol" "lib"` (ABI slot for future `"js"`), ALL native
   externs are direct linker-resolved calls via asm labels (not just libc),
   generated programs never dlopen, `CC::link_flags` + `--build` own the
-  link line, `TG::Target::soname` owns interpreter resolution. `THX_LIBC`
+  link line, `TG::Target::soname` owns interpreter resolution. `ARX_LIBC`
   is gone. `--ir` rebaselined (extern lib strings changed).
 
 The goal driving the rest of the sequence (decided 2026-07-21): **wasm as
@@ -301,7 +301,7 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
   Declaration-level `$ @run <expr>` (generalizing `@assert`'s CTFE: a
   hidden `%run$N` global, a DCE root, forced through the interpreter after
   linking in every mode; the value is discarded). The compiler API landed
-  as DATA rather than intrinsics: `library/BUILD.thx` is an ordinary stdlib
+  as DATA rather than intrinsics: `library/BUILD.ares` is an ordinary stdlib
   module whose `lib : Str -> Directive` / `lib_path : Str -> Directive`
   build `BUILD.Directive` values; DR inspects each forced `@run` result and
   applies directives (`force_ctime_runs`). `lib` joins the link line
@@ -309,21 +309,21 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
   RTLD_GLOBAL); `lib_path` becomes -L + rpath natively and a dlopen prefix
   in the interpreter (`FF::add_lib_path`/`add_preload`). No new effect or
   intrinsic machinery -- a `Directive` built at run time is just a value.
-  examples/CT_RUN.thx exercises it in the suite. (Expression-position
+  examples/CT_RUN.ares exercises it in the suite. (Expression-position
   `@run` splicing literal-serializable values comes later.)
 - **Phase 3 (DONE, 2026-07-21) -- Runtime porting layer.**
-  `platforms/THxPLAT.h`: centralized THX_OS_* / THX_PTR_BITS detection plus
-  `THX_INT_T` (the target word), baked FIRST into the runtime amalgam; the
-  `Value` `T_INT` payload is now `THX_INT_T` -- APIs still traffic in
+  `platforms/ARESxPLAT.h`: centralized ARX_OS_* / ARX_PTR_BITS detection plus
+  `ARX_INT_T` (the target word), baked FIRST into the runtime amalgam; the
+  `Value` `T_INT` payload is now `ARX_INT_T` -- APIs still traffic in
   `long long`, and the truncation on store IS the 32-bit wrap. The
   `build check-platform` gate greps for raw platform macros outside
   `platforms/` (wired into pre-push), with four justified exemptions:
   `compiler/TG.hpp` (the sanctioned host() detection), `utilities/
   UTxBUILD.hpp` and `utilities/UT.cpp` (build-tool/debug-trap shims --
-  KEPT on their own detection rather than migrated onto THxPLAT, because
+  KEPT on their own detection rather than migrated onto ARESxPLAT, because
   utilities may not depend on platforms in the module DAG), and
   `build.cpp` (the gate's own macro list). Two planned items were already
-  moot: `THxDL.{h,c}` is DROPPED (phase 2's direct calls mean generated
+  moot: `ARESxDL.{h,c}` is DROPPED (phase 2's direct calls mean generated
   programs never dlopen; the interpreter's dlopen is confined to FF.cpp,
   whose browser story is the phase-5 host table, and a Windows-native
   compiler build is out of scope), and the ITxDATA/FF `Real` marshalling
@@ -337,7 +337,7 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
   lets a cross target through for `--build`/`--emit-c`/`--ir` (interpreting
   stays host-only). 32-bit `@Int` end to end: `@Int32` mono keys registered in
   ITxDATA (both widths present, TC's target-folded key selects; wasm32 CTFE
-  wraps on this host exactly like the emitted program), `THX_INT_T` payload
+  wraps on this host exactly like the emitted program), `ARX_INT_T` payload
   wraps on store, and TC rejects integer literals that don't fit the target
   word (`Target::lit_max`, `INT_LITERAL_RANGE`). Target reflection is a
   generated qualified module `TARGET` (see 3.5). RANDOM/TAIL_CALLS/RC_LOOP
@@ -351,11 +351,11 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
   file-based driver, output flowing to `Module.print`/`printErr`). The
   browser host is wasm32 (`TG::host()` -> wasm32-linux, so programs run with
   32-bit `@Int`), and FF swaps libffi+dlopen for a **compiled-in host table**
-  of the `C`/libm namespace (`engines/FF.cpp`'s `#ifndef THRAX_3RD_PARTY_ON`
+  of the `C`/libm namespace (`engines/FF.cpp`'s `#ifndef ARES_3RD_PARTY_ON`
   branch: one adapter per symbol calling the real function with its TRUE
   signature -- required because wasm type-checks indirect calls, so casting
   `&free` to an int-returning pointer would trap). `web/site/index.html` is a
-  self-contained playground (Run / IR / C / AST, ccall into `thrax_eval`);
+  self-contained playground (Run / IR / C / AST, ccall into `ares_eval`);
   `web/smoke.mjs` runs it headlessly under node in CI, and `.github/
   workflows/pages.yml` deploys `web/site/` to GitHub Pages. `no-ffi` native
   builds gained the host table too (they used to abort on any FFI). STILL TO
@@ -394,7 +394,7 @@ build's `cfg!` flags. The policy methods are the whole platform surface:
   `link_flag()` maps it to the native link flag (`-lm`, `-lraylib`, a path
   verbatim, or nothing for libc); `has_dlopen()` is false only for wasm.
 - `toolchain(target)` is the C compiler call as data: the host uses `cc`; a
-  `wasm32-wasi` target uses `emcc` (overridable via `THRAX_WASM_CC`) and runs
+  `wasm32-wasi` target uses `emcc` (overridable via `ARES_WASM_CC`) and runs
   the result under `node`. An empty `cc` means none was found and `hint` says
   what to install.
 
@@ -403,15 +403,15 @@ build's `cfg!` flags. The policy methods are the whole platform surface:
 - `TARGET.*` reflection is one source of truth. The interpreter (host-only by
   definition) answers from `Target::host()`. The C backend bakes the compiled-
   for target into the emitted program: `ccg::emit(modules, entry, target)`
-  writes `#define THRAX_ARCH/THRAX_OS/THRAX_INT_BITS/THRAX_INT_MAX/THRAX_INT_MIN`
-  from the `Target`, and the runtime's `THxRT_target` reads them. A `wasm32-wasi`
+  writes `#define ARES_ARCH/ARES_OS/ARES_INT_BITS/ARES_INT_MAX/ARES_INT_MIN`
+  from the `Target`, and the runtime's `ARESxRT_target` reads them. A `wasm32-wasi`
   build therefore reports a 32-bit word even though the boxed `Value` still
   stores `int64_t` (the representation is width-portable; only the reflected
   policy changes).
 - `@extern` link flags come from `Target::link_flag` over the libraries the
   program actually uses (`ccg::emit_program` returns them).
 
-**Driver.** `thrax [--target=ARCH-OS] <cmd> <file>`; `--target` parses via
+**Driver.** `ares [--target=ARCH-OS] <cmd> <file>`; `--target` parses via
 `Target::parse`. `build` lowers, emits C for the target, then compiles and links
 with `toolchain(target)` (native `cc`, or `emcc` for wasm), writing `<stem>.c`
 and the executable next to the source. `emit-c` takes the same `--target`.
@@ -427,8 +427,8 @@ runtime does, following each `Clos`); unreachable codes become trap stubs and
 their externs are never collected. The interpreter is already entry-lazy, so
 this also aligns the two engines (the C backend used to force every global).
 
-**Cross build (the wasm smoke test).** `web/demo.thx` compiled with
-`thrax --target=wasm32-wasi build` runs under `node`. It prints its own `TARGET`
+**Cross build (the wasm smoke test).** `web/demo.ares` compiled with
+`ares --target=wasm32-wasi build` runs under `node`. It prints its own `TARGET`
 reflection, so the same source reports `wasm32-wasi (32-bit word)` in wasm and
 `x86_64-linux (64-bit word)` natively, a visible end-to-end check that the
 platform layer feeds the target through the whole pipeline.
@@ -436,7 +436,7 @@ platform layer feeds the target through the whole pipeline.
 **The compiler in the browser (`web/playground`).** The frontend + interpreter
 build to `wasm32-unknown-unknown` as a `cdylib` (`web/playground`, a crate that
 lives under `web/` because it is a web deliverable), exposing a
-raw C-ABI (`thx_alloc`/`thx_compile`/`thx_out_ptr`/`thx_out_len`) over linear
+raw C-ABI (`arx_alloc`/`arx_compile`/`arx_out_ptr`/`arx_out_len`) over linear
 memory, driven from TypeScript in `web/src/` (no wasm-bindgen, no emscripten, no
 npm packages; `tsc` emits the page's JavaScript). It runs the WHOLE pipeline in the page: parse, check, lower, and
 either interpret (`Run`), emit C (`Generated C`), or dump the IR/AST. The bundled
@@ -445,14 +445,14 @@ ships that target's `std` (allocator included) but not a bundled `rust-lld`, so
 the dev shell provides `wasm-ld` (`pkgs.lld`) and `.cargo/config.toml` points the
 target at it. On wasm a foreign call resolves against the JavaScript embedder
 instead of libc (see the FFI section below). The same module carries the language
-server (`thx_lsp`), which the page's editor drives one message at a time. Build
+server (`arx_lsp`), which the page's editor drives one message at a time. Build
 with `node web/build.ts`, serve with `node web/serve.ts`, and open
 `http://localhost:8000/`.
 
 **Foreign function interface (the Rust port).** An `@extern` call is reduced to a
 platform-independent C value model and handed to a [`ForeignCalls`] backend for
 the running host (`crates/interpreter/src/machine/ffi.rs`). Everything above the
-backend, classifying a Thrax value into a C argument and wrapping the result back,
+backend, classifying a Ares value into a C argument and wrapping the result back,
 is shared; a new platform implements only `call`.
 
 - The interpreter serves the common libc/libm surface (the `C` namespace) from a
@@ -460,33 +460,33 @@ is shared; a new platform implements only `call`.
   OUTSIDE that table falls through to the backend.
 - The native backend (`NativeFfi`) resolves the symbol with `dlopen`/`dlsym` (the
   library name resolved through [`Target::soname`], handles cached per process)
-  and performs the call through **libffi**, so `thrax run` reaches the same
+  and performs the call through **libffi**, so `ares run` reaches the same
   arbitrary library the C backend links against (`@extern "C" "SDL_Init" "SDL2"`).
   libffi handles the calling convention on every target, so there is no
   hand-written per-ABI trampoline and no arity/`Real32` restriction.
 - The interpreter's `build.rs` LINKS a prebuilt libffi (it does not build one):
-  `$THRAX_LIBFFI` (a prefix holding a static `libffi.a`) when set, else the
+  `$ARES_LIBFFI` (a prefix holding a static `libffi.a`) when set, else the
   environment's libffi via `$LIBFFI`/`$LIBFFI_DEV` (the dev shell and CI export
   these), else `pkg-config`, else a system libffi. It compiles a thin C shim,
-  `crates/interpreter/src/ffi_shim.c`, exposing one `thx_ffi_call` entry so the
+  `crates/interpreter/src/ffi_shim.c`, exposing one `arx_ffi_call` entry so the
   Rust side never mirrors libffi's arch-specific `ffi_cif`/`ffi_type` layout or
   `FFI_DEFAULT_ABI`; a C toolchain (cc/ar) is therefore a build input, as the C
   backend already needed. The vendored `external/libffi` subtree is pruned to
   source only (no generated `configure`). A debug build links the dev shell's
-  libffi; `thxdo build release` builds the subtree into
+  libffi; `thrax build release` builds the subtree into
   `external/artifacts/libffi` (only when a source file is newer than the
   archive, bootstrapping `configure` with autoreconf from `external/flake.nix`)
-  and sets `THRAX_LIBFFI` to it, so the release compiler carries no libffi
+  and sets `ARES_LIBFFI` to it, so the release compiler carries no libffi
   dependency.
-- **The C library of a built program.** On Linux `thrax build` links musl
+- **The C library of a built program.** On Linux `ares build` links musl
   statically by default (`--libc=musl|gnu`, [`Target::default_libc`]); macOS,
   Windows and wasm have one C library each and take no choice. The musl
-  sysroot is `$THRAX_MUSL` or the `lib/musl` a release compiler ships (built by
-  `thxdo build release` from `external/musl`, a gitignored checkout of a pinned
+  sysroot is `$ARES_MUSL` or the `lib/musl` a release compiler ships (built by
+  `thrax build release` from `external/musl`, a gitignored checkout of a pinned
   musl tag). The system gcc is pointed at it through a generated GCC specs file
   ([`musl_specs`]), the way `musl-gcc` works but without baked-in paths, so the
   install is relocatable. Without a sysroot (a debug compiler), or when the
-  program links a shared library (an `@extern` `.so`, or libthrax for a program
+  program links a shared library (an `@extern` `.so`, or libares for a program
   that runs the compiler), the default quietly becomes glibc; an explicit
   `--libc=musl` refuses those cases instead. The compiler binary itself stays on
   glibc: the interpreter reaches every `@extern` through `dlopen`, which a
@@ -498,4 +498,4 @@ is shared; a new platform implements only `call`.
 **Not yet ported / remaining gaps.** The `check-platform` boundary gate; native
 cross targets beyond `wasm32-wasi` (Windows, 32-bit natives); no automated
 corpus-parity check in the Rust test suite (verified by hand). (`$ @run` CTFE and
-`library/BUILD.thx` link-set feeding ARE ported.)
+`library/BUILD.ares` link-set feeding ARE ported.)

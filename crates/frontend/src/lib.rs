@@ -1,4 +1,4 @@
-//! The Thrax compiler front end, as a pipeline of phases:
+//! The Ares compiler front end, as a pipeline of phases:
 //!
 //! 1. [`lexer`] turns source into tokens.
 //! 2. [`parser`] builds the handle-based AST ([`parser::data`]).

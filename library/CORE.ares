@@ -1,0 +1,1108 @@
+$ @mod CORE
+
+# \file CORE.ares
+# \info CORE is implicitly imported in every module with no namespace
+
+# ---- the blessed interfaces ----
+# These ten interface types are the compiler's own: a desugar site (a literal, a
+# range, `.[i]`, `xs.[lo ... hi]`, a sequence pattern) resolves a value of the
+# applied type and calls its single field. Their names carry the `@` sigil and only
+# CORE declares them, but an implementation is an ordinary value, so a type joins
+# any of these surfaces from user space with no compiler support.
+$ @IIntLit : @struct t = of_int: @Int -> t,
+$ @IRealLit : @struct t = of_real: @Float64 -> t,
+$ @IImagLit : @struct t = of_imag: @Float64 -> t,
+$ @IStrLit : @struct t = of_str: @Str -> t,
+$ @ISeqLit : @struct e t = of_vec: @Vec e -> t,
+$ @IRange : @struct b t = range: b -> b -> t,
+$ @IRangeFrom : @struct b t = range_from: b -> t,
+$ @ISlice : @struct s t = slice: s -> @Int -> @Int -> t,
+$ @IIndex : @struct s i t = index: s -> i -> t,
+$ @ISeqView : @struct s e = view: s -> SeqView s e,
+$ @ISeqViewBack : @struct s e = view_back: s -> SeqView s e,
+
+# ---- builtins ----
+# The primitives the compiler and runtime implement. `@extern "ares"` declares one:
+# the definition's name IS the builtin, so a reference compiles to a direct call
+# with no wrapper. Only CORE may declare them. A few stay inside the compiler
+# because their types have no surface syntax: `@e` and `@cast` are checked
+# specially, and the `@tensor_*` primitives are polymorphic over axis variance.
+
+$ not : @Bool -> @Bool = @extern "ares"
+
+# Sequencing and the pipes. The parser rewrites each into the form it means
+# (`a; b` is a `let` that drops `a`, `x |> f` and `f <| x` are `f x`), so these
+# declarations give the operators their types and nothing calls them. `f`'s effect
+# passes through to the pipe.
+$ (;) : a -> b -> b = @extern "ares"
+$ (|>) : a -> (a -> <e> b) -> <e> b = @extern "ares"
+$ (<|) : (a -> <e> b) -> a -> <e> b = @extern "ares"
+
+# `@finale cleanup body` runs `body {}`, then `cleanup {}` when the body's scope
+# exits: on normal completion, on an abort by an outer handler that drops the
+# continuation, or when a stored continuation holding it completes. Nested ones
+# run innermost-first. The desugarer lowers every use to the runtime's
+# finalization frame, so nothing calls this declaration either.
+$ @finale : ({} -> <e> {}) -> ({} -> <e> a) -> <e> a = @extern "ares"
+
+# Arithmetic, the floor the operator instances bottom out on. One width-agnostic
+# operation over the value representation, so `t` is unconstrained: the instance
+# picks the right family for its type. `@i*` is signed (division truncates toward
+# zero), `@u*` unsigned, `@f*` computes at `@Float64`, and `@f32*` rounds each
+# operand and the result to single precision.
+$ @iadd : t -> t -> t = @extern "ares"
+$ @isub : t -> t -> t = @extern "ares"
+$ @imul : t -> t -> t = @extern "ares"
+$ @idiv : t -> t -> t = @extern "ares"
+$ @imod : t -> t -> t = @extern "ares"
+$ @udiv : t -> t -> t = @extern "ares"
+$ @umod : t -> t -> t = @extern "ares"
+$ @fadd : t -> t -> t = @extern "ares"
+$ @fsub : t -> t -> t = @extern "ares"
+$ @fmul : t -> t -> t = @extern "ares"
+$ @fdiv : t -> t -> t = @extern "ares"
+$ @fmod : t -> t -> t = @extern "ares"
+$ @fpow : t -> t -> t = @extern "ares"
+$ @f32add : t -> t -> t = @extern "ares"
+$ @f32sub : t -> t -> t = @extern "ares"
+$ @f32mul : t -> t -> t = @extern "ares"
+$ @f32div : t -> t -> t = @extern "ares"
+$ @f32mod : t -> t -> t = @extern "ares"
+$ @f32pow : t -> t -> t = @extern "ares"
+
+# Bitwise operations on the 64-bit value an integer is at runtime, under the
+# `IAnd`.. `IShr` instances. A shift count of 64 or more, or a negative one, shifts
+# every bit out: `@ishl` and `@ushr` give 0, `@ishr` (arithmetic) the sign. The
+# reinterprets read and write the IEEE 754 bit pattern: `@f32_bits` is the low 32
+# bits, zero-extended. A NaN's bits are whatever the platform produced.
+$ @iand : t -> t -> t = @extern "ares"
+$ @ior : t -> t -> t = @extern "ares"
+$ @ixor : t -> t -> t = @extern "ares"
+$ @inot : t -> t = @extern "ares"
+$ @ishl : t -> @Int -> t = @extern "ares"
+$ @ishr : t -> @Int -> t = @extern "ares"
+$ @ushr : t -> @Int -> t = @extern "ares"
+$ @f64_bits : @Float64 -> @Int = @extern "ares"
+$ @bits_f64 : @Int -> @Float64 = @extern "ares"
+$ @f32_bits : @Float32 -> @Int = @extern "ares"
+$ @bits_f32 : @Int -> @Float32 = @extern "ares"
+
+# Comparison, under the `IEq` / `IOrd` instances. `@ieq` serves signed and unsigned
+# alike (equality reads the same bits); the float pair compares at `@Float64`,
+# which is exact for a `@Float32` too; `@seq`/`@slt` compare byte strings.
+$ @ieq : t -> t -> @Bool = @extern "ares"
+$ @ilt : t -> t -> @Bool = @extern "ares"
+$ @ult : t -> t -> @Bool = @extern "ares"
+$ @feq : t -> t -> @Bool = @extern "ares"
+$ @flt : t -> t -> @Bool = @extern "ares"
+$ @seq : t -> t -> @Bool = @extern "ares"
+$ @slt : t -> t -> @Bool = @extern "ares"
+
+# Byte buffers. `@Str` and `@Array` share one runtime representation, so these
+# take either (the runtime reads the kind off the value). Elements are bytes, as
+# `@Int` in 0..255; an update returns a new buffer.
+$ @acat : t -> t -> t = @extern "ares"
+$ @array_len : t -> @Int = @extern "ares"
+$ @array_get : t -> @Int -> @Int = @extern "ares"
+$ @array_push : t -> @Int -> t = @extern "ares"
+$ @array_set : t -> @Int -> @Int -> t = @extern "ares"
+$ @array_slice : t -> @Int -> @Int -> t = @extern "ares"
+
+# `@array_scan s from mask` is the index of the first byte at or after `from`
+# whose entry in the 256-byte `mask` is not 0, or `@array_len s` if none is: a
+# bounded strcspn, or strspn with the mask inverted. The byte loop runs in the
+# engine, so a scanner steps from one interesting byte to the next.
+$ @array_scan : t -> @Int -> t -> @Int = @extern "ares"
+
+# `@array_match s at needle`: whether `needle` occurs in `s` at byte `at` (false
+# when it would run past the end). One comparison, no slice.
+$ @array_match : t -> @Int -> t -> @Bool = @extern "ares"
+
+# `@ptr_bytes p n`: the `n` bytes of C memory at `p`, copied into a fresh string
+# (NUL bytes and all, unlike a `char*` result, which ends at its first NUL). The
+# memory must be readable for `n` bytes; `C.malloc` memory filled by `C.read` is
+# the usual source.
+$ @ptr_bytes : @Ptr -> @Int -> @Str = @extern "ares"
+
+# Vectors. `@vec_slice v lo hi` is the half-open `[lo, hi)`. An update of a vector
+# nothing else references happens in place.
+$ @vec_new : {} -> @Vec a = @extern "ares"
+$ @vec_fill : @Int -> a -> @Vec a = @extern "ares"
+$ @vec_len : @Vec a -> @Int = @extern "ares"
+$ @vec_get : @Vec a -> @Int -> a = @extern "ares"
+$ @vec_set : @Vec a -> @Int -> a -> @Vec a = @extern "ares"
+$ @vec_push : @Vec a -> a -> @Vec a = @extern "ares"
+$ @vec_slice : @Vec a -> @Int -> @Int -> @Vec a = @extern "ares"
+
+# Parallel tasks. `@par f` starts `f {}` as a task and `@await` joins it. An effect
+# may cross to the worker only if no handler on the spawning thread serves it, so
+# `@par` takes a PURE task, which may then run anywhere, in any order, or on the
+# spot. `@spawn` also admits `@IO`, which has no handler: the C library serves it
+# on whichever thread calls.
+$ @par : ({} -> b) -> @Future b = @extern "ares"
+$ @spawn : ({} -> <@IO> b) -> <@IO> @Future b = @extern "ares"
+$ @await : @Future b -> b = @extern "ares"
+
+# Communication between tasks, all `<@IO>`: which task gets a message, or commits
+# first, depends on scheduling. `@Chan a` is an unbounded channel (a send never
+# waits, a receive waits for a value).
+$ @chan_new : {} -> <@IO> @Chan a = @extern "ares"
+$ @chan_send : @Chan a -> a -> <@IO> {} = @extern "ares"
+$ @chan_recv : @Chan a -> <@IO> a = @extern "ares"
+
+# Software transactional memory. `@TVar a` is a transactional variable. The
+# `@stm_*` operations keep the calling thread's transaction log (reads with the
+# versions they saw, buffered writes): `@stm_commit` publishes the writes only if
+# no read changed, `@stm_wait` blocks until one does, and `@stm_save` /
+# `@stm_rollback` mark and discard the writes made since (for `or_else`).
+# `@tvar_read` reads outside any transaction.
+$ @tvar_new : a -> <@IO> @TVar a = @extern "ares"
+$ @tvar_read : @TVar a -> <@IO> a = @extern "ares"
+$ @stm_read : @TVar a -> <@IO> a = @extern "ares"
+$ @stm_write : @TVar a -> a -> <@IO> {} = @extern "ares"
+$ @stm_begin : {} -> <@IO> {} = @extern "ares"
+$ @stm_commit : {} -> <@IO> @Bool = @extern "ares"
+$ @stm_wait : {} -> <@IO> {} = @extern "ares"
+$ @stm_save : {} -> <@IO> @Int = @extern "ares"
+$ @stm_rollback : @Int -> <@IO> {} = @extern "ares"
+
+# Metaprogramming: the compiler pipeline as a library (see
+# documentation/metaprogramming.md). Lexing, parsing and `@eval` are pure, so they
+# also run in a built program. A lex or syntax error traps (fails the build).
+# A token is a `Token` (below): match on its kind, and every kind carries its
+# lexeme. `@token_kind` is the kind's name, `@token_text` the lexeme. `@Code` is
+# opaque; `@unparse` gives back its source.
+$ @lex : @Str -> @Vec Token = @extern "ares"
+$ @token_kind : Token -> @Str = @extern "ares"
+$ @token_text : Token -> @Str = @extern "ares"
+$ @parse : @Vec Token -> @Code = @extern "ares"
+$ @unparse : @Code -> @Str = @extern "ares"
+# An expression fragment.
+$ @parse_str : @Str -> @Code = @extern "ares"
+# Top-level items, for an `$ @e` that injects definitions.
+$ @parse_items : @Str -> @Code = @extern "ares"
+# A type, for a type-position `@e` (`{ x: @Int }` is a type but no expression).
+$ @parse_type : @Str -> @Code = @extern "ares"
+# The entries of an effect row, for `<@e (X)>`: `"Log, State @Int"`.
+$ @parse_row : @Str -> @Code = @extern "ares"
+# Top-level items in canonical layout, exactly as `ares fmt` writes them. Text
+# the formatter refuses (it does not lex, or would change meaning) traps.
+$ @format : @Str -> @Str = @extern "ares"
+# Compiles and runs a fragment, checked as a pure definition body. The result is
+# embedded as-is, so a mismatch with the use site is a fault when it runs, not a
+# type error.
+$ @eval : @Code -> a = @extern "ares"
+
+# One lexical token, as `@lex` produces it: the kind is the variant, the payload
+# its lexeme (`Token.Word.{ "foo" }`, `Token.Int.{ "12" }`). `@parse` rejoins the
+# lexemes, so a token built by hand needs only a lexeme that lexes as its kind.
+$ Token : @union =
+    Int: @Str,
+    Real: @Str,
+    Imaginary: @Str,
+    Str: @Str,
+    Word: @Str,
+    At: @Str,
+    Op: @Str,
+    Eq: @Str,
+    FatArrow: @Str,
+    Arrow: @Str,
+    Lambda: @Str,
+    Colon: @Str,
+    Dollar: @Str,
+    Comma: @Str,
+    Dot: @Str,
+    Ellipsis: @Str,
+    LParen: @Str,
+    RParen: @Str,
+    LBrace: @Str,
+    RBrace: @Str,
+    LBrack: @Str,
+    RBrack: @Str,
+    Let: @Str,
+    In: @Str,
+    If: @Str,
+    Is: @Str,
+    Else: @Str,
+    With: @Str,
+    Do: @Str,
+    Ctl: @Str,
+    Comment: @Str,
+
+# The `<@Meta>` operations, usable only where the compiler handles `@Meta`
+# (inside `@e`). `@abort` fails the build with its message, and `@emit` prints one
+# and continues. `@fresh prefix` mints a unique identifier for hygienic generated
+# binders. `@link` / `@link_path` add a library or a search path to the link line
+# and insert nothing. `@import_path` adds a directory to the module search, and
+# `@option "format.width" "120"` sets a project option; only the `@build` of a
+# project's `BUILD.ares` may call them, and a path is relative to that file.
+$ @abort : @Str -> <@Meta> a = @extern "ares"
+$ @emit : @Str -> <@Meta> {} = @extern "ares"
+$ @fresh : @Str -> <@Meta> @Str = @extern "ares"
+$ @link : @Str -> <@Meta> @Code = @extern "ares"
+$ @link_path : @Str -> <@Meta> @Code = @extern "ares"
+$ @import_path : @Str -> <@Meta> {} = @extern "ares"
+$ @option : @Str -> @Str -> <@Meta> {} = @extern "ares"
+
+# Reflection over a declared type, by name. `@type_kind` is `"struct"` or
+# `"union"`; `@type_fields` lists a struct's fields, `@type_variants` a union's
+# `(tag, arity)` pairs. `@type_of` is a global value's type, as source. They read
+# the program being compiled, so they are `<@Meta>` operations too.
+$ @type_kind : @Str -> <@Meta> @Str = @extern "ares"
+$ @type_params : @Str -> <@Meta> @Vec @Str = @extern "ares"
+$ @type_fields : @Str -> <@Meta> @Vec @Str = @extern "ares"
+$ @type_variants : @Str -> <@Meta> @Vec { @Str, @Int } = @extern "ares"
+$ @type_of : @Str -> <@Meta> @Str = @extern "ares"
+
+# What `@lookup` finds under a name: a struct or union with its declared shape, a
+# global value with its type as source, or nothing. It never faults, so a
+# generator matches `Missing` to handle a name nobody declared.
+$ Decl : @union =
+    Struct: { params: @Vec @Str, fields: @Vec @Str },
+    Union: { params: @Vec @Str, variants: @Vec { @Str, @Int } },
+    Value: @Str,
+    Missing: {},
+$ @lookup : @Str -> <@Meta> Decl = @extern "ares"
+
+# Every name a bare reference at the running `@e` can resolve to (its module's
+# own globals, then what it imports), each with its type as source, by name.
+$ @scope : {} -> <@Meta> @Vec { @Str, @Str } = @extern "ares"
+
+# Where the running `@e` is: its file, line and column (both from 1).
+$ Site : @struct = file: @Str, line: @Int, column: @Int
+$ @here : {} -> <@Meta> Site = @extern "ares"
+
+# Type-check an expression fragment as if written at the running `@e`, seeing
+# that module's imports, and give its type as source. An ill-typed fragment fails
+# the build with the checker's error.
+$ @check : @Code -> <@Meta> @Str = @extern "ares"
+
+# A compile-time diagnostic: the message, then a `note:` line per note and a
+# `help:` line per help, shown at the running `@e`. `@fail` is an error that fails
+# the build (`META_ABORT`); `@warn` a warning, after which the build goes on
+# (`META_WARNING`). `diag msg` is one with no notes or helps.
+$ Diag : @struct = message: @Str, notes: @Vec @Str, helps: @Vec @Str
+$ diag : @Str -> Diag = \message => { .message = message, .notes = [], .helps = [] }
+$ @fail : Diag -> <@Meta> a = @extern "ares"
+$ @warn : Diag -> <@Meta> {} = @extern "ares"
+
+# Arithmetic. Each operator has its OWN interface, so a type implements exactly the
+# operations it has: `Money` adds but does not divide. An interface is an ordinary
+# struct whose field is the operation, an implementation is a value of it, and the
+# operator is a function that takes one as its context parameter, found by the
+# operands' type. This is why `+ - * / %` are not special-cased in the compiler.
+# Signed integers and @Nat share add/sub/mul (two's complement), but @Nat divides
+# unsigned (`@udiv`/`@umod`); floats use the `@f*` family. Instances bottom out at
+# the machine intrinsics, never at the operators themselves. An operator takes ONE
+# type for both operands and the result, so widen explicitly (`@cast`,
+# `f32_to_f64`) rather than relying on a mixed-width overload.
+
+# `Real` is a friendly alias for the word-size float `@Float64`; the compiler knows
+# only `@Float64`, not `Real`.
+$ Real : @alias = @Float64
+
+$ IAdd : @struct t = add: t -> t -> t,
+$ ISub : @struct t = sub: t -> t -> t,
+$ IMul : @struct t = mul: t -> t -> t,
+$ IDiv : @struct t = div: t -> t -> t,
+$ IMod : @struct t = mod: t -> t -> t,
+
+# The additive and multiplicative identities, which a reduction needs as its seed
+# (`LA.dot`, a product over an empty range).
+$ IZero : @struct t = zero: t,
+$ IOne : @struct t = one: t,
+
+# Exponentiation has its own interface, because the algorithms differ by type:
+# integers multiply in a loop, reals go through libm.
+$ IPow : @struct t = raise: t -> t -> t,
+
+$ (^) : @use { d: IPow t } -> t -> t -> t = \b e => d.raise b e
+
+# Unary minus is `zero - x`, so a type negates exactly when it can subtract from
+# its zero. One definition covers every numeric type and `Cpx` alike.
+$ neg : @use { s: ISub t, z: IZero t } -> t -> t = \x => s.sub z.zero x
+
+$ (+) : @use { d: IAdd t } -> t -> t -> t = \a b => d.add a b
+$ (-) : @use { d: ISub t } -> t -> t -> t = \a b => d.sub a b
+$ (*) : @use { d: IMul t } -> t -> t -> t = \a b => d.mul a b
+$ (/) : @use { d: IDiv t } -> t -> t -> t = \a b => d.div a b
+$ (%) : @use { d: IMod t } -> t -> t -> t = \a b => d.mod a b
+
+# Signed integers: `@idiv`/`@imod` truncate toward zero.
+$ impl_IAdd_for_int : IAdd @Int = .{ .add = \a b => @iadd a b }
+$ impl_ISub_for_int : ISub @Int = .{ .sub = \a b => @isub a b }
+$ impl_IMul_for_int : IMul @Int = .{ .mul = \a b => @imul a b }
+$ impl_IDiv_for_int : IDiv @Int = .{ .div = \a b => @idiv a b }
+$ impl_IMod_for_int : IMod @Int = .{ .mod = \a b => @imod a b }
+$ impl_IZero_for_int : IZero @Int = .{ .zero = 0 }
+$ impl_IOne_for_int : IOne @Int = .{ .one = 1 }
+
+$ impl_IAdd_for_int8 : IAdd @Int8 = .{ .add = \a b => @cast (@iadd a b) }
+$ impl_ISub_for_int8 : ISub @Int8 = .{ .sub = \a b => @cast (@isub a b) }
+$ impl_IMul_for_int8 : IMul @Int8 = .{ .mul = \a b => @cast (@imul a b) }
+$ impl_IDiv_for_int8 : IDiv @Int8 = .{ .div = \a b => @cast (@idiv a b) }
+$ impl_IMod_for_int8 : IMod @Int8 = .{ .mod = \a b => @imod a b }
+$ impl_IZero_for_int8 : IZero @Int8 = .{ .zero = 0 }
+$ impl_IOne_for_int8 : IOne @Int8 = .{ .one = 1 }
+
+$ impl_IAdd_for_int16 : IAdd @Int16 = .{ .add = \a b => @cast (@iadd a b) }
+$ impl_ISub_for_int16 : ISub @Int16 = .{ .sub = \a b => @cast (@isub a b) }
+$ impl_IMul_for_int16 : IMul @Int16 = .{ .mul = \a b => @cast (@imul a b) }
+$ impl_IDiv_for_int16 : IDiv @Int16 = .{ .div = \a b => @cast (@idiv a b) }
+$ impl_IMod_for_int16 : IMod @Int16 = .{ .mod = \a b => @imod a b }
+$ impl_IZero_for_int16 : IZero @Int16 = .{ .zero = 0 }
+$ impl_IOne_for_int16 : IOne @Int16 = .{ .one = 1 }
+
+$ impl_IAdd_for_int32 : IAdd @Int32 = .{ .add = \a b => @cast (@iadd a b) }
+$ impl_ISub_for_int32 : ISub @Int32 = .{ .sub = \a b => @cast (@isub a b) }
+$ impl_IMul_for_int32 : IMul @Int32 = .{ .mul = \a b => @cast (@imul a b) }
+$ impl_IDiv_for_int32 : IDiv @Int32 = .{ .div = \a b => @cast (@idiv a b) }
+$ impl_IMod_for_int32 : IMod @Int32 = .{ .mod = \a b => @imod a b }
+$ impl_IZero_for_int32 : IZero @Int32 = .{ .zero = 0 }
+$ impl_IOne_for_int32 : IOne @Int32 = .{ .one = 1 }
+
+$ impl_IAdd_for_int64 : IAdd @Int64 = .{ .add = \a b => @iadd a b }
+$ impl_ISub_for_int64 : ISub @Int64 = .{ .sub = \a b => @isub a b }
+$ impl_IMul_for_int64 : IMul @Int64 = .{ .mul = \a b => @imul a b }
+$ impl_IDiv_for_int64 : IDiv @Int64 = .{ .div = \a b => @idiv a b }
+$ impl_IMod_for_int64 : IMod @Int64 = .{ .mod = \a b => @imod a b }
+$ impl_IZero_for_int64 : IZero @Int64 = .{ .zero = 0 }
+$ impl_IOne_for_int64 : IOne @Int64 = .{ .one = 1 }
+
+# Nats: the same add/sub/mul bits, but UNSIGNED division.
+$ impl_IAdd_for_nat : IAdd @Nat = .{ .add = \a b => @iadd a b }
+$ impl_ISub_for_nat : ISub @Nat = .{ .sub = \a b => @isub a b }
+$ impl_IMul_for_nat : IMul @Nat = .{ .mul = \a b => @imul a b }
+$ impl_IDiv_for_nat : IDiv @Nat = .{ .div = \a b => @udiv a b }
+$ impl_IMod_for_nat : IMod @Nat = .{ .mod = \a b => @umod a b }
+$ impl_IZero_for_nat : IZero @Nat = .{ .zero = 0 }
+$ impl_IOne_for_nat : IOne @Nat = .{ .one = 1 }
+
+$ impl_IAdd_for_nat8 : IAdd @Nat8 = .{ .add = \a b => @cast (@iadd a b) }
+$ impl_ISub_for_nat8 : ISub @Nat8 = .{ .sub = \a b => @cast (@isub a b) }
+$ impl_IMul_for_nat8 : IMul @Nat8 = .{ .mul = \a b => @cast (@imul a b) }
+$ impl_IDiv_for_nat8 : IDiv @Nat8 = .{ .div = \a b => @udiv a b }
+$ impl_IMod_for_nat8 : IMod @Nat8 = .{ .mod = \a b => @umod a b }
+$ impl_IZero_for_nat8 : IZero @Nat8 = .{ .zero = 0 }
+$ impl_IOne_for_nat8 : IOne @Nat8 = .{ .one = 1 }
+
+$ impl_IAdd_for_nat16 : IAdd @Nat16 = .{ .add = \a b => @cast (@iadd a b) }
+$ impl_ISub_for_nat16 : ISub @Nat16 = .{ .sub = \a b => @cast (@isub a b) }
+$ impl_IMul_for_nat16 : IMul @Nat16 = .{ .mul = \a b => @cast (@imul a b) }
+$ impl_IDiv_for_nat16 : IDiv @Nat16 = .{ .div = \a b => @udiv a b }
+$ impl_IMod_for_nat16 : IMod @Nat16 = .{ .mod = \a b => @umod a b }
+$ impl_IZero_for_nat16 : IZero @Nat16 = .{ .zero = 0 }
+$ impl_IOne_for_nat16 : IOne @Nat16 = .{ .one = 1 }
+
+$ impl_IAdd_for_nat32 : IAdd @Nat32 = .{ .add = \a b => @cast (@iadd a b) }
+$ impl_ISub_for_nat32 : ISub @Nat32 = .{ .sub = \a b => @cast (@isub a b) }
+$ impl_IMul_for_nat32 : IMul @Nat32 = .{ .mul = \a b => @cast (@imul a b) }
+$ impl_IDiv_for_nat32 : IDiv @Nat32 = .{ .div = \a b => @udiv a b }
+$ impl_IMod_for_nat32 : IMod @Nat32 = .{ .mod = \a b => @umod a b }
+$ impl_IZero_for_nat32 : IZero @Nat32 = .{ .zero = 0 }
+$ impl_IOne_for_nat32 : IOne @Nat32 = .{ .one = 1 }
+
+$ impl_IAdd_for_nat64 : IAdd @Nat64 = .{ .add = \a b => @iadd a b }
+$ impl_ISub_for_nat64 : ISub @Nat64 = .{ .sub = \a b => @isub a b }
+$ impl_IMul_for_nat64 : IMul @Nat64 = .{ .mul = \a b => @imul a b }
+$ impl_IDiv_for_nat64 : IDiv @Nat64 = .{ .div = \a b => @udiv a b }
+$ impl_IMod_for_nat64 : IMod @Nat64 = .{ .mod = \a b => @umod a b }
+$ impl_IZero_for_nat64 : IZero @Nat64 = .{ .zero = 0 }
+$ impl_IOne_for_nat64 : IOne @Nat64 = .{ .one = 1 }
+
+# Floats, each width with its own intrinsic family.
+$ impl_IAdd_for_float64 : IAdd @Float64 = .{ .add = \a b => @fadd a b }
+$ impl_ISub_for_float64 : ISub @Float64 = .{ .sub = \a b => @fsub a b }
+$ impl_IMul_for_float64 : IMul @Float64 = .{ .mul = \a b => @fmul a b }
+$ impl_IDiv_for_float64 : IDiv @Float64 = .{ .div = \a b => @fdiv a b }
+$ impl_IMod_for_float64 : IMod @Float64 = .{ .mod = \a b => @fmod a b }
+$ impl_IZero_for_float64 : IZero @Float64 = .{ .zero = 0.0 }
+$ impl_IOne_for_float64 : IOne @Float64 = .{ .one = 1.0 }
+
+$ impl_IAdd_for_float32 : IAdd @Float32 = .{ .add = \a b => @f32add a b }
+$ impl_ISub_for_float32 : ISub @Float32 = .{ .sub = \a b => @f32sub a b }
+$ impl_IMul_for_float32 : IMul @Float32 = .{ .mul = \a b => @f32mul a b }
+$ impl_IDiv_for_float32 : IDiv @Float32 = .{ .div = \a b => @f32div a b }
+$ impl_IMod_for_float32 : IMod @Float32 = .{ .mod = \a b => @f32mod a b }
+$ impl_IZero_for_float32 : IZero @Float32 = .{ .zero = 0.0 }
+$ impl_IOne_for_float32 : IOne @Float32 = .{ .one = 1.0 }
+
+$ int_pow : @Int -> @Int -> @Int = \base e =>
+    if e < 0 => 0 else if e == 0 => 1 else base * int_pow base (e - 1)
+
+$ impl_IPow_for_int : IPow @Int = .{ .raise = int_pow }
+$ real_pow : Real -> Real -> Real = \b e => @fpow b e
+$ impl_IPow_for_float64 : IPow @Float64 = .{ .raise = real_pow }
+$ impl_IPow_for_float32 : IPow @Float32 = .{ .raise = \b e => @f32pow b e }
+
+# Bitwise operators, F#'s spelling: `&&&` `|||` `^^^` `<<<` `>>>` and prefix `~~~`
+# (`|` delimits arms and rows, `^` raises to a power). `&&&` and the shifts bind
+# like `*`, `|||` and `^^^` like `+`, all tighter than comparison. `>>>` is
+# arithmetic on the signed types and logical on the nats, as division is signed or
+# unsigned by type. A shift count is an `@Int`; see `@ishl` for counts past the
+# width. A narrow type wraps what it shifts left or complements back into range.
+$ IAnd : @struct t = and: t -> t -> t,
+$ IOr : @struct t = or: t -> t -> t,
+$ IXor : @struct t = xor: t -> t -> t,
+$ INot : @struct t = not: t -> t,
+$ IShl : @struct t = shl: t -> @Int -> t,
+$ IShr : @struct t = shr: t -> @Int -> t,
+
+$ (&&&) : @use { d: IAnd t } -> t -> t -> t = \a b => d.and a b
+$ (|||) : @use { d: IOr t } -> t -> t -> t = \a b => d.or a b
+$ (^^^) : @use { d: IXor t } -> t -> t -> t = \a b => d.xor a b
+$ complement : @use { d: INot t } -> t -> t = \a => d.not a
+$ (<<<) : @use { d: IShl t } -> t -> @Int -> t = \a n => d.shl a n
+$ (>>>) : @use { d: IShr t } -> t -> @Int -> t = \a n => d.shr a n
+
+$ impl_IAnd_for_int : IAnd @Int = .{ .and = \a b => @iand a b }
+$ impl_IOr_for_int : IOr @Int = .{ .or = \a b => @ior a b }
+$ impl_IXor_for_int : IXor @Int = .{ .xor = \a b => @ixor a b }
+$ impl_INot_for_int : INot @Int = .{ .not = \a => @inot a }
+$ impl_IShl_for_int : IShl @Int = .{ .shl = \a n => @ishl a n }
+$ impl_IShr_for_int : IShr @Int = .{ .shr = \a n => @ishr a n }
+
+$ impl_IAnd_for_int8 : IAnd @Int8 = .{ .and = \a b => @iand a b }
+$ impl_IOr_for_int8 : IOr @Int8 = .{ .or = \a b => @ior a b }
+$ impl_IXor_for_int8 : IXor @Int8 = .{ .xor = \a b => @ixor a b }
+$ impl_INot_for_int8 : INot @Int8 = .{ .not = \a => @inot a }
+$ impl_IShl_for_int8 : IShl @Int8 = .{ .shl = \a n => @cast (@ishl a n) }
+$ impl_IShr_for_int8 : IShr @Int8 = .{ .shr = \a n => @ishr a n }
+
+$ impl_IAnd_for_int16 : IAnd @Int16 = .{ .and = \a b => @iand a b }
+$ impl_IOr_for_int16 : IOr @Int16 = .{ .or = \a b => @ior a b }
+$ impl_IXor_for_int16 : IXor @Int16 = .{ .xor = \a b => @ixor a b }
+$ impl_INot_for_int16 : INot @Int16 = .{ .not = \a => @inot a }
+$ impl_IShl_for_int16 : IShl @Int16 = .{ .shl = \a n => @cast (@ishl a n) }
+$ impl_IShr_for_int16 : IShr @Int16 = .{ .shr = \a n => @ishr a n }
+
+$ impl_IAnd_for_int32 : IAnd @Int32 = .{ .and = \a b => @iand a b }
+$ impl_IOr_for_int32 : IOr @Int32 = .{ .or = \a b => @ior a b }
+$ impl_IXor_for_int32 : IXor @Int32 = .{ .xor = \a b => @ixor a b }
+$ impl_INot_for_int32 : INot @Int32 = .{ .not = \a => @inot a }
+$ impl_IShl_for_int32 : IShl @Int32 = .{ .shl = \a n => @cast (@ishl a n) }
+$ impl_IShr_for_int32 : IShr @Int32 = .{ .shr = \a n => @ishr a n }
+
+$ impl_IAnd_for_int64 : IAnd @Int64 = .{ .and = \a b => @iand a b }
+$ impl_IOr_for_int64 : IOr @Int64 = .{ .or = \a b => @ior a b }
+$ impl_IXor_for_int64 : IXor @Int64 = .{ .xor = \a b => @ixor a b }
+$ impl_INot_for_int64 : INot @Int64 = .{ .not = \a => @inot a }
+$ impl_IShl_for_int64 : IShl @Int64 = .{ .shl = \a n => @ishl a n }
+$ impl_IShr_for_int64 : IShr @Int64 = .{ .shr = \a n => @ishr a n }
+
+$ impl_IAnd_for_nat : IAnd @Nat = .{ .and = \a b => @iand a b }
+$ impl_IOr_for_nat : IOr @Nat = .{ .or = \a b => @ior a b }
+$ impl_IXor_for_nat : IXor @Nat = .{ .xor = \a b => @ixor a b }
+$ impl_INot_for_nat : INot @Nat = .{ .not = \a => @inot a }
+$ impl_IShl_for_nat : IShl @Nat = .{ .shl = \a n => @ishl a n }
+$ impl_IShr_for_nat : IShr @Nat = .{ .shr = \a n => @ushr a n }
+
+$ impl_IAnd_for_nat8 : IAnd @Nat8 = .{ .and = \a b => @iand a b }
+$ impl_IOr_for_nat8 : IOr @Nat8 = .{ .or = \a b => @ior a b }
+$ impl_IXor_for_nat8 : IXor @Nat8 = .{ .xor = \a b => @ixor a b }
+$ impl_INot_for_nat8 : INot @Nat8 = .{ .not = \a => @cast (@inot a) }
+$ impl_IShl_for_nat8 : IShl @Nat8 = .{ .shl = \a n => @cast (@ishl a n) }
+$ impl_IShr_for_nat8 : IShr @Nat8 = .{ .shr = \a n => @ushr a n }
+
+$ impl_IAnd_for_nat16 : IAnd @Nat16 = .{ .and = \a b => @iand a b }
+$ impl_IOr_for_nat16 : IOr @Nat16 = .{ .or = \a b => @ior a b }
+$ impl_IXor_for_nat16 : IXor @Nat16 = .{ .xor = \a b => @ixor a b }
+$ impl_INot_for_nat16 : INot @Nat16 = .{ .not = \a => @cast (@inot a) }
+$ impl_IShl_for_nat16 : IShl @Nat16 = .{ .shl = \a n => @cast (@ishl a n) }
+$ impl_IShr_for_nat16 : IShr @Nat16 = .{ .shr = \a n => @ushr a n }
+
+$ impl_IAnd_for_nat32 : IAnd @Nat32 = .{ .and = \a b => @iand a b }
+$ impl_IOr_for_nat32 : IOr @Nat32 = .{ .or = \a b => @ior a b }
+$ impl_IXor_for_nat32 : IXor @Nat32 = .{ .xor = \a b => @ixor a b }
+$ impl_INot_for_nat32 : INot @Nat32 = .{ .not = \a => @cast (@inot a) }
+$ impl_IShl_for_nat32 : IShl @Nat32 = .{ .shl = \a n => @cast (@ishl a n) }
+$ impl_IShr_for_nat32 : IShr @Nat32 = .{ .shr = \a n => @ushr a n }
+
+$ impl_IAnd_for_nat64 : IAnd @Nat64 = .{ .and = \a b => @iand a b }
+$ impl_IOr_for_nat64 : IOr @Nat64 = .{ .or = \a b => @ior a b }
+$ impl_IXor_for_nat64 : IXor @Nat64 = .{ .xor = \a b => @ixor a b }
+$ impl_INot_for_nat64 : INot @Nat64 = .{ .not = \a => @inot a }
+$ impl_IShl_for_nat64 : IShl @Nat64 = .{ .shl = \a n => @ishl a n }
+$ impl_IShr_for_nat64 : IShr @Nat64 = .{ .shr = \a n => @ushr a n }
+
+# Float width conversions. Unlike integers, `@Float32` and `@Float64` differ in
+# runtime representation, so widening is genuine work: these bind the C runtime
+# helpers (`arx_f2d`/`arx_d2f`) through the same `@extern` seam as `C.i2d`.
+$ f32_to_f64 : @Float32 -> @Float64 = @extern "C" "arx_f2d" ""
+$ f64_to_f32 : @Float64 -> @Float32 = @extern "C" "arx_d2f" ""
+
+# Comparison, as interfaces. `IEq` is equality and `IOrd` is ordering, each with a
+# single operation, so `!=` is `eq` negated and `>` `<=` `>=` are `<` read the
+# other way round: a type needs only `eq` to compare and only `lt` to be ordered.
+# Signed integers order with `@ilt`, @Nat and the sized nats with `@ult` (a Nat
+# past the signed range would otherwise order wrong), floats with `@flt`, strings
+# lexicographically with `@slt`.
+#
+# There is no structural fallback: a type is comparable when it has an instance.
+# Write one, or let `DERIVE.derive_eq` / `DERIVE.derive_ord` generate it from the
+# declaration. That is the trade for an honest type: `==` means "this type knows
+# how to compare itself", not "the runtime will try something".
+$ IEq : @struct t = eq: t -> t -> @Bool,
+$ IOrd : @struct t = lt: t -> t -> @Bool,
+
+$ (==) : @use { d: IEq t } -> t -> t -> @Bool = \a b => d.eq a b
+$ (!=) : @use { d: IEq t } -> t -> t -> @Bool = \a b => not (d.eq a b)
+$ (<) : @use { d: IOrd t } -> t -> t -> @Bool = \a b => d.lt a b
+$ (>) : @use { d: IOrd t } -> t -> t -> @Bool = \a b => d.lt b a
+$ (<=) : @use { d: IOrd t } -> t -> t -> @Bool = \a b => not (d.lt b a)
+$ (>=) : @use { d: IOrd t } -> t -> t -> @Bool = \a b => not (d.lt a b)
+
+$ impl_IEq_for_int : IEq @Int = .{ .eq = \a b => @ieq a b }
+$ impl_IOrd_for_int : IOrd @Int = .{ .lt = \a b => @ilt a b }
+
+$ impl_IEq_for_int8 : IEq @Int8 = .{ .eq = \a b => @ieq a b }
+$ impl_IOrd_for_int8 : IOrd @Int8 = .{ .lt = \a b => @ilt a b }
+
+$ impl_IEq_for_int16 : IEq @Int16 = .{ .eq = \a b => @ieq a b }
+$ impl_IOrd_for_int16 : IOrd @Int16 = .{ .lt = \a b => @ilt a b }
+
+$ impl_IEq_for_int32 : IEq @Int32 = .{ .eq = \a b => @ieq a b }
+$ impl_IOrd_for_int32 : IOrd @Int32 = .{ .lt = \a b => @ilt a b }
+
+$ impl_IEq_for_int64 : IEq @Int64 = .{ .eq = \a b => @ieq a b }
+$ impl_IOrd_for_int64 : IOrd @Int64 = .{ .lt = \a b => @ilt a b }
+
+$ impl_IEq_for_nat : IEq @Nat = .{ .eq = \a b => @ieq a b }
+$ impl_IOrd_for_nat : IOrd @Nat = .{ .lt = \a b => @ult a b }
+
+$ impl_IEq_for_nat8 : IEq @Nat8 = .{ .eq = \a b => @ieq a b }
+$ impl_IOrd_for_nat8 : IOrd @Nat8 = .{ .lt = \a b => @ult a b }
+
+$ impl_IEq_for_nat16 : IEq @Nat16 = .{ .eq = \a b => @ieq a b }
+$ impl_IOrd_for_nat16 : IOrd @Nat16 = .{ .lt = \a b => @ult a b }
+
+$ impl_IEq_for_nat32 : IEq @Nat32 = .{ .eq = \a b => @ieq a b }
+$ impl_IOrd_for_nat32 : IOrd @Nat32 = .{ .lt = \a b => @ult a b }
+
+$ impl_IEq_for_nat64 : IEq @Nat64 = .{ .eq = \a b => @ieq a b }
+$ impl_IOrd_for_nat64 : IOrd @Nat64 = .{ .lt = \a b => @ult a b }
+
+$ impl_IEq_for_float64 : IEq @Float64 = .{ .eq = \a b => @feq a b }
+$ impl_IOrd_for_float64 : IOrd @Float64 = .{ .lt = \a b => @flt a b }
+$ impl_IEq_for_float32 : IEq @Float32 = .{ .eq = \a b => @feq a b }
+$ impl_IOrd_for_float32 : IOrd @Float32 = .{ .lt = \a b => @flt a b }
+
+# Strings compare byte-wise (`@seq`) and order lexicographically (`@slt`).
+$ impl_IEq_for_str : IEq @Str = .{ .eq = \a b => @seq a b }
+$ impl_IOrd_for_str : IOrd @Str = .{ .lt = \a b => @slt a b }
+
+# `@Bool` has equality but no ordering: a two-case test, no intrinsic needed.
+$ impl_IEq_for_bool : IEq @Bool = .{ .eq = \a b => if a => b else not b }
+
+# Aggregates compare through their components', so equality composes without any
+# structural fallback: a tuple needs one instance per arity, a sequence one.
+$ impl_IEq_for_tup2 : @use { ea: IEq a, eb: IEq b } -> IEq { a, b } =
+    .{ .eq = \x y => ea.eq x.0 y.0 && eb.eq x.1 y.1 }
+$ impl_IEq_for_tup3 : @use { ea: IEq a, eb: IEq b, ec: IEq c } -> IEq { a, b, c } =
+    .{ .eq = \x y => ea.eq x.0 y.0 && eb.eq x.1 y.1 && ec.eq x.2 y.2 }
+
+$ vec_eq_from : @use { d: IEq t } -> @Vec t -> @Vec t -> @Int -> @Bool = \x y i =>
+    if i >= @vec_len x =>
+        @true
+    else if d.eq (@vec_get x i) (@vec_get y i) =>
+        vec_eq_from x y (i + 1)
+    else
+        @false
+
+$ impl_IEq_for_vec : @use { d: IEq t } -> IEq (@Vec t) =
+    .{ .eq = \x y => if @vec_len x == @vec_len y => vec_eq_from x y 0 else @false }
+
+$ impl_IEq_for_array : IEq @Array = .{ .eq = \a b => @seq a b }
+
+# Function composition as a value: `compose f g` is `\x => f (g x)`, and it is what
+# the operator's function form `(<|>)` refers to (the infix `f <|> g` expands to the
+# lambda instead, so no global is spelled `<|>`). One row `e` covers both steps, so
+# the two must agree on their effects here; the infix form, typed per site, unions
+# two different rows.
+$ compose : (b -> <e> c) -> (a -> <e> b) -> a -> <e> c = \f g x => f (g x)
+
+# Rendering and parsing, as interfaces. `to_string` takes the renderer for its
+# argument's type; `from_string` takes the parser for the type the CALLER expects,
+# so `let n : @Int = from_string s` picks the `@Int` parser by the expected type
+# rather than by an argument. `?(e)` interpolation desugars to `to_string e`, so a
+# type joins string interpolation by having an `IToString` instance (write one, or
+# let `DERIVE.derive_show` generate it).
+$ IToString : @struct t = show: t -> @Str,
+$ IFromString : @struct t = parse: @Str -> t,
+
+$ to_string : @use { d: IToString t } -> t -> @Str = \x => d.show x
+$ from_string : @use { d: IFromString t } -> @Str -> t = \s => d.parse s
+
+$ impl_IToString_for_str : IToString @Str = .{ .show = \s => s }
+$ impl_IToString_for_bool : IToString @Bool = .{ .show = \b => if b => "true" else "false" }
+
+# A negative value prints through `@Nat`, because negating the minimum `@Int`
+# overflows back to itself while its `@Nat` reinterpretation is the magnitude.
+$ int_to_str : @Int -> @Str = \n =>
+    if n < 0 => "-" ++ to_string_udigits (@cast (0 - n)) "" else to_string_digits n ""
+
+$ impl_IToString_for_int : IToString @Int = .{ .show = int_to_str }
+$ impl_IToString_for_nat : IToString @Nat = .{ .show = \n => to_string_udigits n "" }
+
+# The sized integers reuse the word-size printers: `@cast` to `@Int` (signed) or
+# `@Nat` (unsigned) is an erased width reinterpret, so the value is unchanged.
+$ impl_IToString_for_int8 : IToString @Int8 =
+    .{ .show = \x => int_to_str (let n : @Int = @cast x in n) }
+$ impl_IToString_for_int16 : IToString @Int16 =
+    .{ .show = \x => int_to_str (let n : @Int = @cast x in n) }
+$ impl_IToString_for_int32 : IToString @Int32 =
+    .{ .show = \x => int_to_str (let n : @Int = @cast x in n) }
+$ impl_IToString_for_int64 : IToString @Int64 =
+    .{ .show = \x => int_to_str (let n : @Int = @cast x in n) }
+
+$ nat_to_str : @Nat -> @Str = \n => to_string_udigits n ""
+$ impl_IToString_for_nat8 : IToString @Nat8 =
+    .{ .show = \x => nat_to_str (let n : @Nat = @cast x in n) }
+$ impl_IToString_for_nat16 : IToString @Nat16 =
+    .{ .show = \x => nat_to_str (let n : @Nat = @cast x in n) }
+$ impl_IToString_for_nat32 : IToString @Nat32 =
+    .{ .show = \x => nat_to_str (let n : @Nat = @cast x in n) }
+$ impl_IToString_for_nat64 : IToString @Nat64 =
+    .{ .show = \x => nat_to_str (let n : @Nat = @cast x in n) }
+
+# Floats serialize through the C runtime: `arx_real_to_str`/`arx_f32_to_str` format
+# the shortest round-tripping decimal (the same rule as display), and libc `atof`
+# parses one back. `@Float32` widens/narrows via the conversions above.
+$ real_to_str : @Float64 -> @Str = @extern "C" "arx_real_to_str" ""
+$ f32_to_str : @Float32 -> @Str = @extern "C" "arx_f32_to_str" ""
+$ impl_IToString_for_float64 : IToString @Float64 = .{ .show = real_to_str }
+$ impl_IToString_for_float32 : IToString @Float32 = .{ .show = f32_to_str }
+
+# `from_string` reads bytes with `@array_get`/`@array_len`, so parsing stays in the
+# language; only the float parser is foreign.
+$ str_to_int : @Str -> @Int = \s =>
+    if @array_len s == 0 =>
+        0
+    else if @array_get s 0 == 45 =>
+        0 - from_string_digits s 1 0
+    else
+        from_string_digits s 0 0
+
+$ impl_IFromString_for_str : IFromString @Str = .{ .parse = \s => s }
+$ impl_IFromString_for_bool : IFromString @Bool = .{ .parse = \s => s == "true" }
+$ impl_IFromString_for_int : IFromString @Int = .{ .parse = str_to_int }
+$ impl_IFromString_for_nat : IFromString @Nat =
+    .{ .parse = \s => let n : @Nat = @cast (str_to_int s) in n }
+
+$ str_to_real : @Str -> @Float64 = @extern "C" "atof" "libc"
+$ impl_IFromString_for_float64 : IFromString @Float64 = .{ .parse = str_to_real }
+$ impl_IFromString_for_float32 : IFromString @Float32 =
+    .{ .parse = \s => f64_to_f32 (str_to_real s) }
+
+$ impl_IFromString_for_int8 : IFromString @Int8 =
+    .{ .parse = \s => let n : @Int8 = @cast (str_to_int s) in n }
+$ impl_IFromString_for_int16 : IFromString @Int16 =
+    .{ .parse = \s => let n : @Int16 = @cast (str_to_int s) in n }
+$ impl_IFromString_for_int32 : IFromString @Int32 =
+    .{ .parse = \s => let n : @Int32 = @cast (str_to_int s) in n }
+$ impl_IFromString_for_int64 : IFromString @Int64 =
+    .{ .parse = \s => let n : @Int64 = @cast (str_to_int s) in n }
+$ impl_IFromString_for_nat8 : IFromString @Nat8 =
+    .{ .parse = \s => let n : @Nat8 = @cast (str_to_int s) in n }
+$ impl_IFromString_for_nat16 : IFromString @Nat16 =
+    .{ .parse = \s => let n : @Nat16 = @cast (str_to_int s) in n }
+$ impl_IFromString_for_nat32 : IFromString @Nat32 =
+    .{ .parse = \s => let n : @Nat32 = @cast (str_to_int s) in n }
+$ impl_IFromString_for_nat64 : IFromString @Nat64 =
+    .{ .parse = \s => let n : @Nat64 = @cast (str_to_int s) in n }
+
+# ---- complex numbers ----
+# `Cpx` is an ordinary struct, not a base type: the compiler knows only the `i`
+# suffix, which it desugars to the hook below. Everything else here is the same
+# overloading any user type gets, so a program may swap in its own complex type
+# by defining its own hook.
+$ Cpx : @struct = re: Real, im: Real,
+
+# `1.2i` resolves `@IImagLit` and calls its single field, so a program that wants
+# its own complex type defines its own instance.
+$ impl_IImagLit_for_Cpx : @IImagLit Cpx = .{ .of_imag = \x => Cpx.{ 0.0, x } }
+
+$ impl_IAdd_for_Cpx : IAdd Cpx = .{ .add = \a b => Cpx.{ a.re + b.re, a.im + b.im } }
+$ impl_ISub_for_Cpx : ISub Cpx = .{ .sub = \a b => Cpx.{ a.re - b.re, a.im - b.im } }
+$ impl_IMul_for_Cpx : IMul Cpx = .{
+    .mul = \a b => Cpx.{ a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re },
+}
+# The textbook quotient. It divides by `|b|^2`, so it loses range for operands near
+# the square root of the float limits; CPX.div_smith trades a branch for that range.
+$ impl_IDiv_for_Cpx : IDiv Cpx = .{
+    .div = \a b =>
+        let d = b.re * b.re + b.im * b.im in
+        Cpx.{ (a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d },
+}
+$ impl_IZero_for_Cpx : IZero Cpx = .{ .zero = Cpx.{ 0.0, 0.0 } }
+$ impl_IOne_for_Cpx : IOne Cpx = .{ .one = Cpx.{ 1.0, 0.0 } }
+
+# An operator takes ONE type for both operands, so a real is not promoted to a
+# complex: write `CPX.of_real x + z`, not `x + z`. (`1 + 3i` was already a type
+# error; now `1.0 + 3i` is too.)
+
+# `3.0 - 1.5i` rather than `3.0 + -1.5i`; the imaginary part always shows, so a
+# real-valued Cpx still reads as complex.
+$ cpx_to_str : Cpx -> @Str = \z =>
+    if z.im < 0.0 => "?(z.re) - ?(0.0 - z.im)i" else "?(z.re) + ?(z.im)i"
+
+$ impl_IToString_for_Cpx : IToString Cpx = .{ .show = cpx_to_str }
+$ impl_IEq_for_Cpx : IEq Cpx = .{ .eq = \a b => a.re == b.re && a.im == b.im }
+
+# `x :: xs` prepends `x` to a `@Vec` (the default sequence). O(n): builds a fresh
+# vector, so a `::`-recursion is quadratic -- push (`@vec_push`) / index iteration is
+# the idiomatic way to build a vector.
+$ vcons : t -> @Vec t -> @Vec t = \x v => vcons_onto (@vec_push (@vec_new {}) x) v 0
+
+# `x :: xs` prepends through its own interface, so a sequence type joins the
+# surface with an instance. The element and the sequence are separate parameters, so
+# one instance names both.
+$ ICons : @struct t s = cons: t -> s -> s,
+
+$ (::) : @use { d: ICons t s } -> t -> s -> s = \x xs => d.cons x xs
+
+$ impl_ICons_for_vec : ICons t (@Vec t) = .{ .cons = \x v => vcons x v }
+
+# The inclusive Ints from `lo` to `hi` (empty when `lo > hi`), as a `@Vec`: its
+# length is a runtime value, not the static size of a `[n]T` tensor.
+$ range : @Int -> @Int -> @Vec @Int = \lo hi => range_onto (@vec_new {}) lo hi
+
+# A closed range `[lo ... hi]` builds whatever its `@IRange` instance returns. A
+# sequence type joins the range surface with an instance of its own; `@Vec` is what
+# the bare form builds, because this instance is declared FIRST.
+$ impl_IRange_for_vec : @IRange @Int (@Vec @Int) = .{ .range = \lo hi => range lo hi }
+
+# The OPTIONAL persistent cons list, an ordinary `@union` (not a compiler builtin,
+# and no longer the default). It is also the worked example of a type joining the
+# whole `[]` surface from user space: the three overloads below give it literals,
+# `::`, and sequence patterns, with no compiler support of its own.
+$ List : @union a = Nil: {}, Cons: { a, List a },
+
+$ impl_ISeqLit_for_List : @ISeqLit t (List t) = .{
+    .of_vec = \v => list_onto List.Nil v (@vec_len v - 1),
+}
+
+$ impl_ICons_for_List : ICons t (List t) = .{ .cons = \x l => List.Cons.{ x, l } }
+
+# The same closed range as a List. The tail slot is lazy, so this one is built a
+# cell at a time: `[lo ... hi]` over a huge bound costs only what is walked, where
+# the `@Vec` overload above materializes every element up front.
+$ range_list : @Int -> @Int -> List @Int = \lo hi =>
+    if lo > hi => List.Nil else List.Cons.{ lo, range_list (lo + 1) hi }
+
+$ impl_IRange_for_List : @IRange @Int (List @Int) = .{ .range = \lo hi => range_list lo hi }
+
+# `++` joins two of a kind, through its own interface, so a sequence type of your
+# own joins the surface by having an instance. `@Str` and `@Array` are the packed
+# byte buffers (`@acat`), `@Vec` copies, and a List rebuilds its left spine onto the
+# right with a lazy tail, so the rest of the join happens as the result is walked.
+$ ICat : @struct t = cat: t -> t -> t,
+
+$ (++) : @use { d: ICat t } -> t -> t -> t = \a b => d.cat a b
+
+$ impl_ICat_for_str : ICat @Str = .{ .cat = \a b => @acat a b }
+$ impl_ICat_for_array : ICat @Array = .{ .cat = \a b => @acat a b }
+$ impl_ICat_for_vec : ICat (@Vec t) = .{
+    .cat = \xs ys => vcons_onto (vcons_onto (@vec_new {}) xs 0) ys 0,
+}
+$ impl_ICat_for_List : ICat (List t) = .{
+    .cat = \xs ys =>
+        xs |> \ | List.Cons.{ h, t } => List.Cons.{ h, impl_ICat_for_List.cat t ys } | _ => ys,
+}
+
+$ impl_ISeqView_for_List : @ISeqView (List t) t = .{
+    .view = \l => l |> \ | List.Cons.{ h, t } => SeqView.More.{ h, t } | _ => SeqView.Empty,
+}
+
+# A `[...]` literal builds whatever its `@ISeqLit` instance returns. `@Vec` is what
+# an unconstrained literal defaults to, so its instance is the identity on the
+# payload the compiler collects; a sequence type joins the surface by returning
+# itself instead.
+$ impl_ISeqLit_for_vec : @ISeqLit t (@Vec t) = .{ .of_vec = \v => v }
+
+# The packed byte buffer `@Array` joins the same two surfaces through its own
+# instances: `[1, 2, 3] : @Array` builds one from the collected payload, and
+# `[a, b] ++ r` matches one by stepping the view below.
+$ impl_ISeqLit_for_array : @ISeqLit @Int @Array = .{ .of_vec = \v => array_onto @Array.{ 0 } v 0 }
+
+# A single-axis `xs.[lo ... hi]` slice, inclusive at both ends. An `@ISlice`
+# instance joins a type to the slice surface; a sized tensor `[n]T` slices by its
+# own rule (its result shape is computed from the bounds, which no interface
+# method's type can say).
+$ impl_ISlice_for_vec : @ISlice (@Vec t) (@Vec t) =
+    .{ .slice = \v lo hi => @vec_slice v lo (hi + 1) }
+$ impl_ISlice_for_array : @ISlice @Array @Array =
+    .{ .slice = \a lo hi => @array_slice a lo (hi + 1) }
+$ impl_ISlice_for_str : @ISlice @Str @Str = .{ .slice = \s lo hi => @array_slice s lo (hi + 1) }
+
+# One step of a sequence, produced by an `@ISeqView` instance: `Empty` at the end,
+# or `More elem rest` (the head element and the remaining sequence). A user sequence
+# type joins the `[..]`/`::`/`++` PATTERN surface with an instance returning this
+# view; the compiler matches sequence patterns by unfolding it. An `@ISeqViewBack`
+# instance returns the same view from the other end (the last element and
+# everything before it), which `rest ++ [z]` patterns step.
+$ SeqView : @union s t = Empty: {}, More: { t, s },
+
+# The built-in growable vector `@Vec` joins the `[..]`/`::`/`++` PATTERN surface: its
+# view is `Empty` when empty, else the first element and the tail (a slice). `[...]`
+# literals build a `@Vec`, so this is what a sequence pattern unfolds by default.
+$ impl_ISeqView_for_vec : @ISeqView (@Vec t) t = .{
+    .view = \v =>
+        if @vec_len v == 0 =>
+            SeqView.Empty
+        else
+            SeqView.More.{ @vec_get v 0, @vec_slice v 1 (@vec_len v) },
+}
+
+$ impl_ISeqView_for_array : @ISeqView @Array @Int = .{
+    .view = \a =>
+        if @array_len a == 0 =>
+            SeqView.Empty
+        else
+            SeqView.More.{ @array_get a 0, @array_slice a 1 (@array_len a) },
+}
+
+# A `@Str` steps as its bytes, so `[c] ++ rest` reads the first byte as an `@Int`.
+$ impl_ISeqView_for_str : @ISeqView @Str @Int = .{
+    .view = \s =>
+        if @array_len s == 0 =>
+            SeqView.Empty
+        else
+            SeqView.More.{ @array_get s 0, @array_slice s 1 (@array_len s) },
+}
+
+$ impl_ISeqViewBack_for_vec : @ISeqViewBack (@Vec t) t = .{
+    .view_back = \v =>
+        let n = @vec_len v in
+        if n == 0 => SeqView.Empty else SeqView.More.{ @vec_get v (n - 1), @vec_slice v 0 (n - 1) },
+}
+
+$ impl_ISeqViewBack_for_array : @ISeqViewBack @Array @Int = .{
+    .view_back = \a =>
+        let n = @array_len a in
+        if n == 0 =>
+            SeqView.Empty
+        else
+            SeqView.More.{ @array_get a (n - 1), @array_slice a 0 (n - 1) },
+}
+
+$ impl_ISeqViewBack_for_str : @ISeqViewBack @Str @Int = .{
+    .view_back = \s =>
+        let n = @array_len s in
+        if n == 0 =>
+            SeqView.Empty
+        else
+            SeqView.More.{ @array_get s (n - 1), @array_slice s 0 (n - 1) },
+}
+
+# The canonical infinite stream: `.head` is the current element and `.tail` the
+# rest. `tail` is recursive, so it holds its value lazily and a stream is
+# genuinely unbounded: each cell is built when something looks at it.
+$ Stream : @struct t = head : t, tail : Stream t
+
+# The ascending Ints from `lo` upward, with no end. A `Stream` is the only shape
+# that can hold an unbounded sequence (not a finite `@Vec`, not a `[n]T` tensor).
+$ count_from : @Int -> Stream @Int = \lo => { .head = lo, .tail = count_from (lo + 1) }
+
+# The open range `[lo ...]` counterpart of `@IRange`. Declared FIRST, so a bare
+# `[lo ...]` builds a `Stream`.
+$ impl_IRangeFrom_for_Stream : @IRangeFrom @Int (Stream @Int) =
+    .{ .range_from = \lo => count_from lo }
+
+# The open range as a List. A `List` tail is lazy, so an unbounded one is just as
+# representable as a `Stream`; this is the instance `([lo ...] : List T)` picks.
+$ count_from_list : @Int -> List @Int = \lo => List.Cons.{ lo, count_from_list (lo + 1) }
+$ impl_IRangeFrom_for_List : @IRangeFrom @Int (List @Int) =
+    .{ .range_from = \lo => count_from_list lo }
+
+# The `Loop` effect gives imperative `break` / `continue` to the iteration
+# combinators below: `break` stops the loop, `continue` skips the rest of the
+# current step. Neither resumes or carries a value (each just aborts the body, like
+# `Exn.throw`). Any OTHER effects the body performs pass through to the outer
+# handler. `break {}` / `continue {}` work anywhere via these prelude wrappers (an
+# effect's ops are unqualified only inside its own module).
+$ Loop : @effect = break : {} -> a, continue : {} -> a,
+$ break : {} -> <Loop> a = \u => Loop.break u
+$ continue : {} -> <Loop> a = \u => Loop.continue u
+
+# A union with no variants, so no expression builds one and no value has this
+# type. A function that never returns needs no such type (its result is a type
+# variable, like `@abort`'s); this marks an input that cannot exist, such as the
+# `Err` side of a `Result t InconstructibleUnion`.
+$ InconstructibleUnion : @union =
+
+# Turn an impossible value into any type. The match has no arms because there is
+# nothing to match.
+$ absurd : InconstructibleUnion -> a = \n => n |> @absurd
+
+# The outcome of a computation that can go wrong: `Ok` with the answer or `Err`
+# with what went wrong. RESULT holds the functions over it.
+$ Result : @union t e =
+    Ok: t,
+    Err: e,
+
+# A type whose values count as good or bad joins with an instance mapping each
+# value to a `Result`: the good case and what it carries become `Ok`, the bad case
+# `Err`. A `@Bool` is `Ok {}` or `Err {}`; OPT's `Option` is `Ok` its payload or
+# `Err {}`.
+$ IToResult : @struct c t e = to_result: c -> Result t e,
+
+$ impl_IToResult_for_bool : IToResult @Bool {} {} =
+    .{ .to_result = \c => if c => Result.Ok.{ {} } else Result.Err.{ {} } }
+
+$ impl_IToResult_for_Result : IToResult (Result t e) t e = .{ .to_result = \r => r }
+
+# `when c <| \x => body` is an `if` with no `else`: it runs `body` for its effects
+# on what `c` carries when `c` is good, and is `{}` otherwise. The body's effect
+# row is a parameter, so one `when` serves any effects.
+$ when : @use { d: IToResult c t e } -> c -> (t -> <r> {}) -> <r> {} = \c body =>
+    d.to_result c |> \ | Result.Ok.{ x } => body x | _ => {}
+
+# `for` runs `body` on each element FOR ITS EFFECTS, returning `{}`.
+# Iteration is an interface too, and the one whose shape needs the most from the
+# type system: the body's effect row is a PARAMETER of the interface, so an instance
+# stays polymorphic in it and each use site instantiates it (a body that prints runs
+# under `<@IO>`, a pure one under `<>`).
+$ IFor : @struct s a e = each: s -> (a -> <Loop | e> {}) -> <e> {},
+
+$ for : @use { d: IFor s a e } -> s -> (a -> <Loop | e> {}) -> <e> {} = \xs body => d.each xs body
+
+$ impl_IFor_for_vec : IFor (@Vec a) a e = .{ .each = \xs body => for_go xs body 0 }
+
+$ forever : Stream {} = { .head = {}, .tail = forever }
+
+# Over a `Stream`, iteration is INDEFINITE: it runs until `break`, or forever
+# (`forever` and `count_from` are ready-made infinite sources).
+$ stream_for : Stream a -> (a -> <Loop | e> {}) -> <e> {} = \s body =>
+    let more =
+        do body s.head
+        ctl k
+        | Loop.continue u => @true
+        | Loop.break u    => @false
+        | _               => @true
+    in
+    if more => stream_for s.tail body else {}
+
+$ impl_IFor_for_Stream : IFor (Stream a) a e = .{ .each = stream_for }
+
+# Over a List, iteration walks the spine one cons at a time. The tail slot is lazy,
+# so a list the body stops early on is only ever built as far as the body looked.
+$ list_for : List a -> (a -> <Loop | e> {}) -> <e> {} = \xs body =>
+    xs |> \
+        | List.Nil => {}
+        | List.Cons.{ h, t } =>
+            let more =
+                do body h
+                ctl k
+                | Loop.continue u => @true
+                | Loop.break u    => @false
+                | _               => @true
+            in
+            if more => list_for t body else {}
+
+$ impl_IFor_for_List : IFor (List a) a e = .{ .each = list_for }
+
+# `formap` TRANSFORMS: it maps `body` over the structure and returns the result
+# (the effectful analogue of `map`, like Haskell's `traverse`). `continue` drops an
+# element, `break` stops early keeping what was collected. The three ways a step can
+# end:
+$ LoopStep : @union b = Keep: { b }, Skip: {}, Stop: {},
+
+# `formap`'s interface carries the result structure as well, since mapping changes
+# the element type: `@Vec a` goes to `@Vec b`, a `List a` to a `List b`.
+$ IFormap : @struct s a t b e = mapping: s -> (a -> <Loop | e> b) -> <e> t,
+
+$ formap : @use { d: IFormap s a t b e } -> s -> (a -> <Loop | e> b) -> <e> t = \xs f =>
+    d.mapping xs f
+
+$ impl_IFormap_for_vec : IFormap (@Vec a) a (@Vec b) b e = .{
+    .mapping = \xs f => formap_vec xs f 0 (@vec_new {}),
+}
+
+# `let`-force each step: a data constructor's fields are lazy, so building the Cons
+# directly would defer the effects until the result were observed.
+$ list_formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs f =>
+    xs |> \
+        | List.Cons.{ h, t } => (
+            formap_step h f |> \
+                | LoopStep.Keep.{ y } => let ys = list_formap t f in List.Cons.{ y, ys }
+                | LoopStep.Skip       => list_formap t f
+                | _                   => List.Nil
+        )
+        | _                  => List.Nil
+
+$ impl_IFormap_for_List : IFormap (List a) a (List b) b e = .{ .mapping = list_formap }
+
+# A compile-time check, run as `$ @e <| assert ok msg`. A false condition aborts
+# the build with `msg`, so a module states its own invariants and checking it is
+# testing it. It returns empty code, so the directive inserts nothing. `@abort`
+# carries `<@Meta>`, so `assert` does too and cannot run at run time by accident.
+$ assert : @Bool -> @Str -> <@Meta> @Code = \ok msg => if ok => @parse_items "" else @abort msg
+
+# ---- internal recursion workers ----
+# The accumulator loops the public `to_string` / `from_string` / `vcons` / `range`
+# / `for` / `formap` above are built from. Hidden: an importer sees only those.
+
+$ @private
+
+$ to_string_digits : @Int -> @Str -> @Str = \n acc =>
+    if n < 10 =>
+        (@array_push "" (48 + n)) ++ acc
+    else
+        to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
+
+# `@Nat` prints unsigned: it divides with `@udiv`/`@umod` so a value above the
+# signed range still renders correctly. A single digit fits an `@Int`, so `@cast`
+# each one down before appending it as a byte.
+$ to_string_udigit : @Nat -> @Int = \n => @cast n
+
+$ to_string_udigits : @Nat -> @Str -> @Str = \n acc =>
+    if n < 10 =>
+        (@array_push "" (48 + to_string_udigit n)) ++ acc
+    else
+        to_string_udigits (n / 10) ((@array_push "" (48 + to_string_udigit (n % 10))) ++ acc)
+
+$ from_string_digits : @Str -> @Int -> @Int -> @Int = \s i acc =>
+    if i == @array_len s => acc else from_string_digits s (i + 1) (acc * 10 + (@array_get s i - 48))
+
+$ array_onto : @Array -> @Vec @Int -> @Int -> @Array = \acc v i =>
+    if i >= @vec_len v => acc else array_onto (@array_push acc (@vec_get v i)) v (i + 1)
+
+# Right to left, so the payload's order survives into the cons cells.
+$ list_onto : List t -> @Vec t -> @Int -> List t = \acc v i =>
+    if i < 0 => acc else list_onto (List.Cons.{ @vec_get v i, acc }) v (i - 1)
+
+$ vcons_onto : @Vec t -> @Vec t -> @Int -> @Vec t = \acc v i =>
+    if i >= @vec_len v => acc else vcons_onto (@vec_push acc (@vec_get v i)) v (i + 1)
+
+$ range_onto : @Vec @Int -> @Int -> @Int -> @Vec @Int = \acc lo hi =>
+    if lo > hi => acc else range_onto (@vec_push acc lo) (lo + 1) hi
+
+$ for_go : @Vec a -> (a -> <Loop | e> {}) -> @Int -> <e> {} = \xs body i =>
+    if i >= @vec_len xs =>
+        {}
+    else
+        let more =
+            do body (@vec_get xs i)
+            ctl k
+            | Loop.continue u => @true
+            | Loop.break u    => @false
+            | _               => @true
+        in
+        if more => for_go xs body (i + 1) else {}
+
+$ formap_step : a -> (a -> <Loop | e> b) -> <e> LoopStep b = \x f =>
+    do let y = f x in LoopStep.Keep.{ y }
+    ctl k
+    | Loop.continue u => LoopStep.Skip
+    | Loop.break u    => LoopStep.Stop
+    | s               => s
+
+$ formap_vec : @Vec a -> (a -> <Loop | e> b) -> @Int -> @Vec b -> <e> @Vec b = \xs f i acc =>
+    if i >= @vec_len xs =>
+        acc
+    else
+        formap_step (@vec_get xs i) f |> \
+            | LoopStep.Keep.{ y } => formap_vec xs f (i + 1) (@vec_push acc y)
+            | LoopStep.Skip       => formap_vec xs f (i + 1) acc
+            | _                   => acc

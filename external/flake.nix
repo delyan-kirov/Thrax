@@ -10,7 +10,7 @@
       pkgs = import nixpkgs { inherit system; };
     in
     {
-      # `thxdo build release` enters this shell to bootstrap and build libffi
+      # `thrax build release` enters this shell to bootstrap and build libffi
       # from the git subtree (the fork ships no generated `configure`) when
       # autoreconf is not already on PATH. The heavy, rarely-needed toolchain is
       # kept OUT of the main dev shell so the everyday `nix develop` stays lean.
