@@ -296,10 +296,11 @@ ctrl_expr
   : KW_LET let_binder EQ expr KW_IN expr
   | KW_IF expr FATARROW expr KW_ELSE expr
   | LAMBDA params FATARROW expr
-  /* The multi-arm lambda: ONE argument matched against the arms, top to bottom.
-   * It replaces `is`: a match is `s |> \ | p => a | q => b`, which the checker
-   * elaborates as a match on `s`. An empty match is `x |> @absurd` (a CORE
-   * function), not a lambda with no arms. */
+  /* The multi-arm lambda: its arguments matched against the arms, top to
+   * bottom, one argument per comma-separated pattern (`\ | 0, xs => ...` takes
+   * two). One pattern is one argument, so a match is `s |> \ | p => a | q => b`,
+   * which the checker elaborates as a match on `s`. An empty match is
+   * `x |> @absurd` (a CORE function), not a lambda with no arms. */
   | LAMBDA arms
   | handle
   ;
@@ -456,7 +457,14 @@ arms : arm | arms arm ;
 
 /* An arm's `| pat` alternatives (or-patterns) share the body; the parser
    emits one arm per alternative. */
-alts : BAR pattern | alts BAR pattern ;
+alts : BAR arm_pats | alts BAR arm_pats ;
+
+/* One pattern per argument. The comma SEPARATES arguments and never builds a
+   tuple (a tuple pattern is `{ a, b }`, one argument): a bare comma builds
+   nothing anywhere in Ares, so it stays free to separate. Every alternative
+   of every arm lists the same number of patterns, the lambda's arity; a
+   handler's value arms take exactly one. parser.rs checks both counts. */
+arm_pats : pattern | arm_pats COMMA pattern ;
 
 arm
   : alts FATARROW expr

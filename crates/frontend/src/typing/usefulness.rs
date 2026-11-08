@@ -487,6 +487,24 @@ pub fn show(p: &DPat) -> String {
     }
 }
 
+/// Show a witness of a match over `arity` arguments the way its arms list
+/// them: comma-separated, one pattern per argument, without the tuple's
+/// braces. The checker sees such a match as one over the tuple of its
+/// arguments. See Note [Multi-argument arms].
+pub fn show_args(p: &DPat, arity: usize) -> String {
+    if arity == 1 {
+        return show(p);
+    }
+    let mut slots = vec!["_".to_string(); arity];
+    if let DPat::Ctor(Ctor::Product { kind: ProductKind::Tuple, fields }, args) = p {
+        for (f, a) in fields.iter().zip(args) {
+            let i: usize = f.as_str().parse().expect("a tuple field is its index");
+            slots[i] = show(a);
+        }
+    }
+    slots.join(", ")
+}
+
 /// A dead part of a match: a whole arm, or one alternative of an or-pattern arm
 /// whose other alternatives are live.
 #[derive(Debug, PartialEq)]

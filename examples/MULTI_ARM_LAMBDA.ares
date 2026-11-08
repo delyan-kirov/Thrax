@@ -1,11 +1,12 @@
 $ @mod MULTI_ARM_LAMBDA
 
 # \file multi_arm_lambda.ares
-# \info The multi-arm lambda `\ | p => e | q => f` takes ONE argument and
-#       matches it against the arms, top to bottom, with the usual arms:
-#       or-patterns, guards, exhaustiveness. A match is the multi-arm lambda
-#       applied to the scrutinee, `s |> \ | ...`. Several arguments are matched
-#       as a tuple. Each `chk*` is 0 when correct and 1 otherwise.
+# \info The multi-arm lambda `\ | p => e | q => f` matches its argument against
+#       the arms, top to bottom, with the usual arms: or-patterns, guards,
+#       exhaustiveness. A match is the multi-arm lambda applied to the
+#       scrutinee, `s |> \ | ...`. Arms of several comma-separated patterns,
+#       `| p, q => e`, match several curried arguments at once; the comma never
+#       builds a tuple. Each `chk*` is 0 when correct and 1 otherwise.
 
 # --- Literal arms and a catch-all ----------------------------------------------
 $ classify : @Int -> @Str = \
@@ -45,7 +46,7 @@ $ warm : Color -> @Int = \ | Color.Red.{} | Color.Green.{} => 1 | Color.Blue.{} 
 
 $ chk_warm : @Int = if warm Color.Red.{} == 1 && warm Color.Blue.{} == 0 => 0 else 1
 
-# --- Recursion over a vector, and several arguments as a tuple -------------------
+# --- Recursion over a vector, and one tuple argument -----------------------------
 $ sum : @Vec @Int -> @Int = \ | [] => 0 | h :: t => h + sum t
 $ count_down : { @Int, @Int } -> @Int =
     \ | { 0, acc } => acc | { n, acc } => count_down { n - 1, acc + n }
@@ -53,15 +54,49 @@ $ count_down : { @Int, @Int } -> @Int =
 $ chk_sum : @Int = if sum [1, 2, 3] == 6 => 0 else 1
 $ chk_count_down : @Int = if count_down { 4, 0 } == 10 => 0 else 1
 
-# --- Nested: parenthesize the inner one ------------------------------------------
-$ both_zero : @Int -> @Int -> @Bool = \a =>
-    \ | 0 => (a |> \ | 0 => @true | _ => @false) | _ => @false
+# --- Several arguments: one pattern each, separated by `,` -------------------------
+$ both_zero : @Int -> @Int -> @Bool = \ | 0, 0 => @true | _, _ => @false
+
+$ take : @Int -> List @Int -> List @Int = \
+    | 0, _       => []
+    | _, []      => []
+    | n, x :: xs => x :: take (n - 1) xs
+
+$ total : List @Int -> @Int = \ | [] => 0 | x :: xs => x + total xs
+
+# Or-patterns and guards see every argument; a tuple argument is still `{ ... }`.
+$ quadrant : @Int -> @Int -> @Int -> @Int = \
+    | 0, _, _ | _, 0, _         => 0
+    | x, y, _ if x > 0 && y > 0 => 1
+    | _, _, d                   => d
+
+$ swap_sum : { @Int, @Int } -> @Int -> @Int = \ | { a, b }, c => b - a + c
 
 $ chk_both_zero : @Int = if both_zero 0 0 && !(both_zero 1 0) && !(both_zero 0 1) => 0 else 1
+$ chk_take : @Int =
+    if total (take 2 [7, 8, 9]) == 15 && total (take 5 [1]) == 1 && total (take 0 [4]) == 0 =>
+        0
+    else
+        1
+$ chk_quadrant : @Int =
+    if quadrant 0 3 9 == 0
+        && quadrant 3 0 9 == 0
+        && quadrant 2 2 9 == 1
+        && quadrant (0 - 1) 2 9 == 9 =>
+        0
+    else
+        1
+$ chk_swap_sum : @Int = if swap_sum { 1, 5 } 10 == 14 => 0 else 1
+
+# --- Nested: parenthesize the inner one ------------------------------------------
+$ first_zero : @Int -> @Int -> @Bool = \a =>
+    \ | 0 => (a |> \ | 0 => @true | _ => @false) | _ => @false
+
+$ chk_first_zero : @Int = if first_zero 0 0 && !(first_zero 1 0) && !(first_zero 0 1) => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @Int =
     chk_classify + chk_sign + chk_small + chk_yes_no + chk_warm + chk_sum + chk_count_down
-        + chk_both_zero
+        + chk_both_zero + chk_take + chk_quadrant + chk_swap_sum + chk_first_zero
 
 $ @e <| assert (test == 0) "MULTI_ARM_LAMBDA: a check failed"

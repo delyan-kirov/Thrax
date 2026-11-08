@@ -1,0 +1,4 @@
+$ @mod PARSE_ARM_ALT_ARITY
+
+# The alternatives of an or-pattern arm list the same number of patterns.
+$ f : @Int -> @Int -> @Int = \ | 0, _ | 1 => 0 | _, _ => 1  #~ error[UNEXPECTED_TOKEN]: this alternative has 1 pattern, but the alternatives before it have 2

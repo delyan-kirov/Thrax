@@ -642,9 +642,15 @@ pub enum Expr {
     /// A match on `scrut`: the body of a multi-arm lambda `\ | p => e ...`, or of
     /// `@absurd` (no arms). There is no default arm; a catch-all is written as an
     /// ordinary `| _ => d` or `| x => d` arm.
+    ///
+    /// `arity` is how many arguments of a multi-arm lambda the arms match. It is
+    /// 1 unless the arms list several comma-separated patterns, `| p, q => e`:
+    /// then `scrut` is the tuple of the lambda's parameters and each pattern
+    /// list is a tuple pattern over it. See Note [Multi-argument arms].
     Match {
         scrut: Aol<Expr>,
         arms: Slice<Arm>,
+        arity: u32,
     },
     /// `\p1 p2 => body`.
     Lambda {

@@ -378,7 +378,7 @@ impl<'a> Checker<'a> {
                 self.check(then, expected)?;
                 self.check(alt, expected)
             }
-            Expr::Match { scrut, arms } => {
+            Expr::Match { scrut, arms, .. } => {
                 let ts = self.infer(*scrut)?;
                 for arm in self.ast.slice(*arms).iter() {
                     self.enter_scope();
@@ -855,7 +855,7 @@ impl<'a> Checker<'a> {
                 Ok(ty)
             }
 
-            Expr::Match { scrut, arms } => {
+            Expr::Match { scrut, arms, .. } => {
                 let ts = self.infer(*scrut)?;
                 let result = self.unifier.fresh();
                 for arm in self.ast.slice(*arms).iter() {

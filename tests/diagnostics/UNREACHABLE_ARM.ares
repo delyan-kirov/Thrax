@@ -3,3 +3,4 @@ $ @mod UNREACHABLE_ARM
 # A warning, not an error: the module still checks.
 $ f : @Int -> @Int = \c => c |> \ | _ => 1 | 2 => 3  #~ warning[UNREACHABLE_ARM]: the arms before it already match every value it matches
 $ g : @Int -> @Int = \ | _ => 1 | 2 => 3  #~ warning[UNREACHABLE_ARM]: the arms before it already match every value it matches
+$ k : @Int -> @Int -> @Int = \ | _, 0 => 1 | 2, 0 => 3 | _, _ => 4  #~ warning[UNREACHABLE_ARM]: the arms before it already match every value it matches

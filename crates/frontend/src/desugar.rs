@@ -774,7 +774,7 @@ impl<'a> Desugarer<'a> {
                 })
             }
 
-            Expr::Match { scrut, arms } => {
+            Expr::Match { scrut, arms, .. } => {
                 let scrut = *scrut;
                 let mut lowered = Vec::new();
                 // Collect handles first so the node borrow does not span the

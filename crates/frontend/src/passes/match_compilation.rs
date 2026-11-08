@@ -17,6 +17,8 @@
 //!
 //! Entry point: [`compile_matches`].
 
+use std::collections::HashMap;
+
 use utilities::{Aol, StrId};
 
 use crate::core::{CoreArm, CoreProgram, FreshNames, Pat, Term, Terms};
@@ -29,6 +31,9 @@ pub fn compile_matches(program: &mut CoreProgram) {
 
 struct MatchCompiler {
     names: FreshNames,
+    /// Scrutinees never built: each names the variables holding the parts of
+    /// a tuple literal matched in place. See Note [Tuple scrutinees].
+    spread: HashMap<StrId, Vec<StrId>>,
 }
 
 /// A one-armed case: `when scrut is pat then body else default`.
@@ -51,7 +56,10 @@ fn when(t: &mut Terms, test: Aol<Term>, body: Aol<Term>, default: Aol<Term>) -> 
 
 impl MatchCompiler {
     fn new() -> MatchCompiler {
-        MatchCompiler { names: FreshNames::new("%m", 0) }
+        MatchCompiler {
+            names: FreshNames::new("%m", 0),
+            spread: HashMap::new(),
+        }
     }
 
     fn fresh(&mut self, tag: &str) -> StrId {
@@ -77,8 +85,44 @@ impl MatchCompiler {
             Some(d) => d,
             None => t.add(Term::Fault("no pattern matched (non-exhaustive match)".into())),
         };
+        if let Some(items) = spreadable(t, scrut, arms) {
+            return self.compile_spread(t, s, items, arms, ultimate);
+        }
         let chain = self.compile_arms(t, s, arms, 0, ultimate);
         t.let_(s, scrut, chain)
+    }
+
+    // Note [Tuple scrutinees]
+    //
+    // A multi-argument arm `| p, q => e` matches the tuple `{ #arg0, #arg1 }` of
+    // the lambda's parameters. Binding that tuple and reading its fields back
+    // would allocate it on every call, only to take it apart. So when the
+    // scrutinee is a tuple literal and every arm is a tuple pattern of its
+    // width, a wildcard or a binder, the tuple is never built: its parts are
+    // bound to variables (a compiler-made variable is used as it is, since no
+    // pattern can rebind it) and each tuple pattern matches them directly.
+    // Only an arm binding the whole scrutinee, `| t => ...`, rebuilds the
+    // tuple, inside that arm. See Note [Multi-argument arms].
+
+    /// Compile `arms` against the parts `items` of a tuple literal without
+    /// building it, `s` standing for the tuple. See Note [Tuple scrutinees].
+    fn compile_spread(&mut self, t: &mut Terms, s: StrId, items: Vec<Aol<Term>>, arms: &[CoreArm], fail: Aol<Term>) -> Aol<Term> {
+        let mut binds = Vec::new();
+        let parts: Vec<StrId> = items
+            .into_iter()
+            .map(|item| match t.get(item) {
+                Term::Var { module: None, name } if is_compiler_name(*name) => *name,
+                _ => {
+                    let part = self.fresh("c");
+                    binds.push((part, item));
+                    part
+                }
+            })
+            .collect();
+        self.spread.insert(s, parts);
+        let chain = self.compile_arms(t, s, arms, 0, fail);
+        self.spread.remove(&s);
+        binds.into_iter().rev().fold(chain, |body, (part, item)| t.let_(part, item, body))
     }
 
     // Note [Fallthrough thunks]
@@ -224,6 +268,18 @@ impl MatchCompiler {
     /// Match `pat` against the variable `sv`; on full match run `on_match`, else
     /// `on_fail`.
     fn compile_pat(&mut self, t: &mut Terms, sv: StrId, pat: &Pat, on_match: Aol<Term>, on_fail: Aol<Term>) -> Aol<Term> {
+        if let Some(parts) = self.spread.get(&sv).cloned() {
+            return match pat {
+                Pat::Wild => on_match,
+                Pat::Var(name) => {
+                    let items = parts.iter().map(|p| t.var(*p)).collect();
+                    let tuple = t.add(Term::Tuple(items));
+                    t.let_(*name, tuple, on_match)
+                }
+                Pat::Tuple(pats) => self.compile_binders(t, &parts, pats, on_match, on_fail),
+                _ => unreachable!("`spreadable` admits only tuple patterns, binders and wildcards"),
+            };
+        }
         match pat {
             Pat::Wild => on_match,
             Pat::Var(name) => {
@@ -507,6 +563,26 @@ fn fails_at_most_once_unbound(arm: &CoreArm) -> bool {
             Pat::Variant { fields, .. } => fields.iter().all(irrefutable),
             p => irrefutable(p),
         }
+}
+
+/// The parts of `scrut` when it is a tuple literal that every arm takes apart
+/// in place: a tuple pattern of its width, a wildcard or a binder.
+/// See Note [Tuple scrutinees].
+fn spreadable(t: &Terms, scrut: Aol<Term>, arms: &[CoreArm]) -> Option<Vec<Aol<Term>>> {
+    let Term::Tuple(items) = t.get(scrut) else {
+        return None;
+    };
+    let fits = |pat: &Pat| match pat {
+        Pat::Tuple(pats) => pats.len() == items.len(),
+        Pat::Wild | Pat::Var(_) => true,
+        _ => false,
+    };
+    arms.iter().all(|arm| fits(&arm.pat)).then(|| items.clone())
+}
+
+/// A name the compiler made (`#arg0`, `%m...`), which no pattern can bind.
+fn is_compiler_name(name: StrId) -> bool {
+    name.as_str().starts_with(['#', '%'])
 }
 
 /// Whether `pat` matches every value of its type, so it cannot fail.
