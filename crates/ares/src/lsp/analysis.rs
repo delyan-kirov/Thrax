@@ -393,10 +393,18 @@ fn check_root(base: Rc<Base>, root_path: &Path, root_src: String, fresh: bool) -
     }
 
     let generative = is_generative(&root_src);
+    // A type whose `@e` entries have not been spliced in lacks their members,
+    // so any error past parsing may be only early, as a lenient compile round
+    // treats it.
+    let awaiting = checker.awaits_splices();
     let mut found = Vec::new();
     for mut d in errors {
-        // Names a generator injects only exist once it runs (on save).
-        if generative && d.root().code == Code::TypeUnbound {
+        // Names and members a generator injects only exist once it runs (on save).
+        if awaiting && d.root().code != Code::UnexpectedToken {
+            d = d
+                .with_severity(Severity::Hint)
+                .with_note("a type here still waits for the members its `@e` entries generate; saving checks it fully");
+        } else if generative && d.root().code == Code::TypeUnbound {
             d = d
                 .with_severity(Severity::Hint)
                 .with_note("this module runs generators, which may define it; saving checks it fully");

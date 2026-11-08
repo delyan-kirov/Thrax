@@ -474,3 +474,41 @@ fn builtins_are_defined_in_core() {
     assert!(c.child.wait().unwrap().success());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn members_a_splice_generates_are_not_errors_while_editing() {
+    let dir = std::env::temp_dir().join(format!("ares-lsp-splice-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("COPY.ares");
+    let src = "$ @mod COPY\n\n$ @import DERIVE\n\n$ Point : @struct = x: @Int, y: @Int\n\
+               $ Point3 : @struct = @e <| DERIVE.fields_of \"Point\", z: @Int\n\n\
+               $ sum : Point3 -> @Int = \\p => p.x + p.z\n";
+    std::fs::write(&path, src).unwrap();
+    let path = path.canonicalize().unwrap();
+    let uri = ares::lsp::path_to_uri(&path);
+
+    let mut c = Client::start();
+    c.request(
+        "initialize",
+        Json::obj([("initializationOptions", Json::obj([("lsp", Json::obj([("grace", Json::Bool(false))]))]))]),
+    );
+    c.notify("initialized", Json::obj([]));
+    c.notify(
+        "textDocument/didOpen",
+        Json::obj([(
+            "textDocument",
+            Json::obj([
+                ("uri", Json::str(uri.clone())),
+                ("languageId", Json::str("ares")),
+                ("version", Json::int(1)),
+                ("text", Json::str(src)),
+            ]),
+        )]),
+    );
+    // `x` comes from the splice, which only runs on save: until then the
+    // checker's complaint about it is a hint, not an error.
+    let diags = c.diagnostics(&uri);
+    assert!(diags.iter().all(|d| d.get("severity").as_i64() != Some(1)), "{diags:?}");
+    let _ = c.child.kill();
+    let _ = std::fs::remove_dir_all(&dir);
+}
