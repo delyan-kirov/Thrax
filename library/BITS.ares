@@ -1,0 +1,59 @@
+$ @mod BITS
+
+# \file BITS.ares
+# \info Bitwise operations on the 64-bit two's complement `@Int`, and the IEEE 754
+#       encodings of the float types, as named functions over CORE's bitwise
+#       intrinsics (`@iand`, `@ishl`, `@f64_bits`, ...). The operators `&&&`
+#       `|||` `^^^` `<<<` `>>>` `~~~` reach the same intrinsics for every integer
+#       type; these names are the `@Int`-only spelling.
+
+$ min_int : @Int = 0 - 9223372036854775807 - 1
+$ max_int : @Int = 9223372036854775807
+
+$ band : @Int -> @Int -> @Int = \a b => @iand a b
+$ bor : @Int -> @Int -> @Int = \a b => @ior a b
+$ bxor : @Int -> @Int -> @Int = \a b => @ixor a b
+$ bnot : @Int -> @Int = \a => @inot a
+
+# 2 to the `n`, as a `@Nat` so that 2^63 is representable. 0 for `n >= 64` or
+# `n < 0`.
+$ pow2 : @Int -> @Nat = \n => @ishl 1 n
+
+# Shifts by `n` bits. A count of 64 or more, or a negative one, shifts every bit
+# out, as in the mathematical definition (C leaves it undefined).
+$ shl : @Int -> @Int -> @Int = \a n => @ishl a n
+$ shr_u : @Int -> @Int -> @Int = \a n => @ushr a n
+$ shr_s : @Int -> @Int -> @Int = \a n => @ishr a n
+
+# The low `w` bits, zero-extended (`zext`) or sign-extended (`sext`), for w in
+# 1..64. This is how a value is narrowed to a C integer type of that width.
+$ zext : @Int -> @Int -> @Int = \a w => if w >= 64 => a else @iand a (@ishl 1 w - 1)
+
+$ sext : @Int -> @Int -> @Int = \a w => if w >= 64 => a else @ishr (@ishl a (64 - w)) (64 - w)
+
+# Number of the highest set bit plus one (0 for 0), for a nonnegative value.
+$ bit_len : @Int -> @Int = \a => if a <= 0 => 0 else len_go a 32 0
+
+# The IEEE 754 binary64 bit pattern of `x`, as the `@Int` holding those bits.
+# Every NaN encodes as the one quiet NaN, so the result does not depend on the
+# platform that computed it.
+$ f64_bits : @Float64 -> @Int = \x => if x != x => 9221120237041090560 else @f64_bits x
+
+# The IEEE 754 binary32 bit pattern of `x` in the low 32 bits, NaN as in `f64_bits`.
+$ f32_bits : @Float32 -> @Int = \x => if x != x => 2143289344 else @f32_bits x
+
+# The float whose IEEE 754 bit pattern is `b` (for `bits_f32`, the low 32 bits).
+$ bits_f64 : @Int -> @Float64 = \b => @bits_f64 b
+$ bits_f32 : @Int -> @Float32 = \b => @bits_f32 b
+
+$ @private
+
+# Binary search for the highest set bit: `s` halves from 32, and `n` counts the
+# bits shifted out so far. The last step leaves `a` as 1.
+$ len_go : @Int -> @Int -> @Int -> @Int = \a s n =>
+    if s == 0 =>
+        n + a
+    else if @ishr a s != 0 =>
+        len_go (@ishr a s) (s / 2) (n + s)
+    else
+        len_go a (s / 2) n

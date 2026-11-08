@@ -4,8 +4,8 @@
 //!
 //! libffi is a rarely-changing native dependency, so this does NOT build it:
 //! it links a PREBUILT one, resolved in order:
-//!   1. `$THRAX_LIBFFI`, a prefix holding `lib/libffi.a` and `include/ffi.h`,
-//!      linked statically. `thxdo build release` builds the vendored
+//!   1. `$ARES_LIBFFI`, a prefix holding `lib/libffi.a` and `include/ffi.h`,
+//!      linked statically. `thrax build release` builds the vendored
 //!      `external/libffi` into `external/artifacts/libffi` and points this at it;
 //!   2. the environment's libffi via `$LIBFFI`/`$LIBFFI_DEV` (the dev shell and
 //!      CI export these), linked dynamically;
@@ -41,7 +41,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/ffi_shim.c");
     println!("cargo:rerun-if-changed=src/host.c");
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=THRAX_LIBFFI");
+    println!("cargo:rerun-if-env-changed=ARES_LIBFFI");
     println!("cargo:rerun-if-env-changed=LIBFFI");
     println!("cargo:rerun-if-env-changed=LIBFFI_DEV");
 
@@ -50,12 +50,12 @@ fn main() {
     let tools = build_cc::tools();
     let windows = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
 
-    build_thraxstd(&manifest, &out, &tools, windows);
+    build_aresstd(&manifest, &out, &tools, windows);
 
     let (include, link) = resolve_libffi();
 
     // Compile the shim against the chosen libffi's headers and archive it.
-    let shim_o = out.join("thx_ffi_shim.o");
+    let shim_o = out.join("arx_ffi_shim.o");
     let mut compile = Command::new(&tools.cc);
     compile.args(["-O2", "-fPIC", "-c"]).arg(manifest.join("src/ffi_shim.c"));
     if let Some(dir) = &include {
@@ -64,21 +64,21 @@ fn main() {
     compile.arg("-o").arg(&shim_o);
     run(&mut compile);
 
-    let host_o = out.join("thx_host.o");
+    let host_o = out.join("arx_host.o");
     run(Command::new(&tools.cc)
         .args(["-O2", "-fPIC", "-c"])
         .arg(manifest.join("src/host.c"))
         .arg("-o")
         .arg(&host_o));
 
-    let shim_a = out.join("libthxffishim.a");
+    let shim_a = out.join("libarxffishim.a");
     let _ = std::fs::remove_file(&shim_a);
     run(Command::new(&tools.ar).arg("rcs").arg(&shim_a).arg(&shim_o).arg(&host_o));
 
     println!("cargo:rustc-link-search=native={}", out.display());
     // The shim references libffi, so it must precede libffi for a single-pass
     // static linker to resolve the symbols.
-    println!("cargo:rustc-link-lib=static=thxffishim");
+    println!("cargo:rustc-link-lib=static=arxffishim");
     match link {
         Link::Static(dir) => {
             println!("cargo:rustc-link-search=native={}", dir.display());
@@ -99,33 +99,33 @@ fn main() {
 }
 
 /// Compile and archive the standard library's native support functions
-/// (`crates/ccg/src/thraxstd.c`, the single source shared with the native
-/// backend) into this crate's link, so the interpreter serves `thx_*` in-process
+/// (`crates/ccg/src/aresstd.c`, the single source shared with the native
+/// backend) into this crate's link, so the interpreter serves `arx_*` in-process
 /// through the same C code rather than reimplementing it.
-fn build_thraxstd(manifest: &Path, out: &Path, tools: &build_cc::Tools, windows: bool) {
-    let src = manifest.join("../ccg/src/thraxstd.c");
+fn build_aresstd(manifest: &Path, out: &Path, tools: &build_cc::Tools, windows: bool) {
+    let src = manifest.join("../ccg/src/aresstd.c");
     println!("cargo:rerun-if-changed={}", src.display());
 
     println!("cargo:rerun-if-changed={}", manifest.join("../ccg/src/portable.h").display());
-    let obj = out.join("thraxstd.o");
+    let obj = out.join("aresstd.o");
     run(Command::new(&tools.cc)
         .args(["-O2", "-fPIC", "-c"])
         .arg(&src)
         .arg("-o")
         .arg(&obj));
 
-    let lib = out.join("libthraxstd.a");
+    let lib = out.join("libaresstd.a");
     let _ = std::fs::remove_file(&lib);
     run(Command::new(&tools.ar).arg("rcs").arg(&lib).arg(&obj));
 
     println!("cargo:rustc-link-search=native={}", out.display());
-    // No Rust code references these symbols (the interpreter resolves `thx_*`
+    // No Rust code references these symbols (the interpreter resolves `arx_*`
     // dynamically, in-process, via `dlsym`), so force the whole archive in. Export
     // it with `-rdynamic` so `dlsym(RTLD_DEFAULT)` finds it; a build-script link
     // arg is used (not `RUSTFLAGS`/config, which CI overrides). This covers this
-    // crate's own test binaries; `thrax` and `ccg` set it for theirs. On Windows
+    // crate's own test binaries; `ares` and `ccg` set it for theirs. On Windows
     // the functions are `dllexport`ed instead, which needs no flag.
-    println!("cargo:rustc-link-lib=static:+whole-archive=thraxstd");
+    println!("cargo:rustc-link-lib=static:+whole-archive=aresstd");
     if !windows {
         println!("cargo:rustc-link-arg-tests=-rdynamic");
     }
@@ -133,12 +133,12 @@ fn build_thraxstd(manifest: &Path, out: &Path, tools: &build_cc::Tools, windows:
 
 fn resolve_libffi() -> (Option<PathBuf>, Link) {
     // 1. An explicitly named static libffi (the release build's vendored one).
-    if let Some(prefix) = env::var_os("THRAX_LIBFFI") {
+    if let Some(prefix) = env::var_os("ARES_LIBFFI") {
         let prefix = PathBuf::from(prefix);
         let archive = prefix.join("lib/libffi.a");
         assert!(
             archive.exists() && prefix.join("include/ffi.h").exists(),
-            "THRAX_LIBFFI={} holds no lib/libffi.a and include/ffi.h",
+            "ARES_LIBFFI={} holds no lib/libffi.a and include/ffi.h",
             prefix.display()
         );
         println!("cargo:rerun-if-changed={}", archive.display());

@@ -1,4 +1,4 @@
-# Thrax Effect System Design Decisions
+# Ares Effect System Design Decisions
 
 **Status:** design locked; typed effect rows (M3.1) are implemented on both
 engines (see the language reference, documentation/language-reference.md section 8, for the
@@ -41,7 +41,7 @@ Hard constraints:
 
 ## 1. Evaluation strategy: strict (CBV), with lazy recursive slots
 
-**Decision.** Thrax is uniformly **call-by-value and pure**, with one exception
+**Decision.** Ares is uniformly **call-by-value and pure**, with one exception
 carved out by the type: a slot whose type leads back to the type declaring it
 holds its value lazily (see section 1a). Every other slot is eager. That is what
 makes an unbounded structure an ordinary declaration; streaming may also be
@@ -157,7 +157,7 @@ The original design is kept below for the record.
 
 
 **Decision (revises the original "codata via effects only" stance, 2026-06-27).**
-Thrax supports **codata** as a first-class kind, declared `@codata` and defined
+Ares supports **codata** as a first-class kind, declared `@codata` and defined
 by **copatterns** (the data/codata duality: data is built by constructors and
 eliminated by pattern matching; codata is built by defining its **observations**
 and eliminated by **observing** them). Observations are **non-memoized**.
@@ -194,7 +194,7 @@ observing `s.tail` = **call** the corresponding closure. Data stays strict and
 untouched; this adds one value kind and two IR forms (copattern construction,
 observation).
 
-**Status: IMPLEMENTED** (both engines; `examples/CODATA.thx`). Surface syntax
+**Status: IMPLEMENTED** (both engines; `examples/CODATA.ares`). Surface syntax
 settled: `$ Stream : @codata = head : t, tail : Stream t,` declares the
 observations (type params come from free tyvars, like a struct); a value is built
 `{ .head = e, .tail = e }` (type-directed: a record literal against a codata type)
@@ -608,7 +608,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     (resume = splice, affine-guarded), `ret` runs `els` on normal completion.
     Validated: exceptions (resume 0), generator (resume 1, sum + list), state
     (parameter-passing, deep); affine double-resume faults; valgrind-clean;
-    `dat/EFFECTS.thx` in the suite.
+    `dat/EFFECTS.ares` in the suite.
   - [X] **3b effect-qualified op resolution (2026-06-27).** Operations are now
     module-scoped symbols whose canonical identity is `Effect.op`, registered in
     MR's symbol table and resolved through the ordinary scope + `ExOverload`
@@ -617,7 +617,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     resolves when unambiguous (one in scope, or the ambient effect picks it) else
     needs `Effect.op`; a perform may also resolve by type via `ExOverload`. Clause
     heads accept `is Effect.op a` and must qualify a shared name. The old
-    `AMBIGUOUS_NAME` up-front rejection is gone. `dat/EFFECT_OVERLOAD.thx` covers
+    `AMBIGUOUS_NAME` up-front rejection is gone. `dat/EFFECT_OVERLOAD.ares` covers
     it.
   - [X] **`defer` (2026-06-27).** `defer <cleanup> in <body>` keyword (Go-style
     surface; Koka-style runtime; no `discontinue`). Desugars to an internal
@@ -627,7 +627,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     the live stack, so enclosing handlers are still installed), and when a stored
     continuation completes. Detected via the resumption's `used` flag + a kval
     refcount ("stored") check -- NOT a destructor, so timing is correct. Also made
-    `do <body>` (no `ctl`) a plain block. `dat/FINALLY.thx`. Limitation: a stored
+    `do <body>` (no `ctl`) a plain block. `dat/FINALLY.ares`. Limitation: a stored
     continuation dropped without ever being resumed does not run its `defer`.
   - [X] **`@finale` replaces `defer` (2026-11-08).** The keyword is gone:
     `@finale cleanup body` is a CORE builtin over two thunks, so it pipes,
@@ -636,7 +636,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     (a saturated call directly, a first-class one through an eta wrapper), so
     the runtime and its semantics are unchanged. A handler-return clause cannot
     replace it: the return clause never runs when an outer handler drops the
-    continuation, which is exactly the abort case. `examples/FINALE.thx`.
+    continuation, which is exactly the abort case. `examples/FINALE.ares`.
   - [X] **Multi-shot resumptions (2026-10-04, issue #228).** A resumption may be
     resumed any number of times; each resume after the last splices a COPY of the
     captured slice (frames cloned, a fresh let box per `K_RET`, aliased frames
@@ -644,7 +644,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     `Never` skips the capture entirely (and so is faster than before for
     `for`/`formap` and exceptions), `Once` still moves, only `Many` copies.
     `ctl @oneshot k` restores the move where `k` escapes and nothing can be
-    proved. No typing or surface change otherwise. Both engines; `examples/AMB.thx`
+    proved. No typing or surface change otherwise. Both engines; `examples/AMB.ares`
     (two-way choice, collected paths, a backtracking triple search) agrees across
     them and is valgrind-clean. See section 2.
   - [X] **Exact resumption ownership (2026-10-10, issue #230).** The `Once`/`Many`
@@ -668,7 +668,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     operations typed with an open tail `<L | mu>`; Koka-style `<...>` surface
     syntax on the arrow (`A -> <E1, E2 | `e> B`, bare arrow = pure). Catches
     unhandled effects at compile time. TC-only (types erased before CR/IR/IT);
-    `dat/EFFECTS.thx` + `dat/COROUTINES.thx` annotated and passing,
+    `dat/EFFECTS.ares` + `dat/COROUTINES.ares` annotated and passing,
     valgrind-clean. Known gap: no effect SUBSUMPTION (application uses row
     equality), so an explicitly-pure arrow isn't callable in an effectful
     context unless made row-polymorphic.
@@ -695,7 +695,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
   - [X] **Vector updates in place in the C backend (issues #248, #382).** A
     non-recursive `let` moves its value into the slot (only a recursive `let`
     keeps a copying box), and a moved vector operand reaches the built-in
-    as owned (`THxK_vec_update`), so a push or set on a vector nothing else
+    as owned (`ARESxK_vec_update`), so a push or set on a vector nothing else
     holds updates it in place, growing pushes geometrically.
   - [ ] General reuse in the C backend: a dead constructor's cell reused for a
     new one of the same shape (Perceus reuse, issue #384).
@@ -724,7 +724,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
       without host-stack overflow, valgrind-clean. (A non-tail resume still grows
       the `kont` vector O(N) on the heap, which is fine; the host stack is
       bounded.)
-    - **Coroutines validated** (`dat/COROUTINES.thx`): a two-task round-robin
+    - **Coroutines validated** (`dat/COROUTINES.ares`): a two-task round-robin
       scheduler with first-class stored resumptions resumed cross-context works,
       valgrind-clean.
     - **Effects still do not cross a builtin-invoked closure** (`Machine::apply`,
@@ -758,7 +758,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
 ## 12. Surface syntax (decided 2026-06-27)
 
 The M2 (untyped) surface. The current implemented surface is in the language
-reference (documentation/language-reference.md section 8). Chosen to reuse Thrax's existing grammar and spend as few keywords as possible;
+reference (documentation/language-reference.md section 8). Chosen to reuse Ares's existing grammar and spend as few keywords as possible;
 the result is **closest to Flix**.
 
 - **Declaration.** `$ Eff : @effect = op : A -> B, ...` an `@effect` annotation

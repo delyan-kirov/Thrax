@@ -10,12 +10,12 @@ tmp.*
 lib/*
 
 build
-thrax-out
+ares-out
 result
 target
 !/crates/utilities/src/target/
 artifacts
 external/musl
 
-# Written by `thxdo tags` (tools/editors/TAGS.thx)
+# Written by `thrax tags` (tools/editors/TAGS.ares)
 /tags

@@ -7,9 +7,9 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 
 extern "C" {
-    fn thx_host_dl_open(name: *const c_char) -> *mut c_void;
-    fn thx_host_dl_sym(handle: *mut c_void, sym: *const c_char) -> *mut c_void;
-    fn thx_host_stdio_binary();
+    fn arx_host_dl_open(name: *const c_char) -> *mut c_void;
+    fn arx_host_dl_sym(handle: *mut c_void, sym: *const c_char) -> *mut c_void;
+    fn arx_host_stdio_binary();
 }
 
 /// A loaded shared library, kept open for the life of the process.
@@ -19,7 +19,7 @@ pub struct Library(*mut c_void);
 /// Load the library named `name` (a soname, a DLL name, or a path), or `None`.
 pub fn open_library(name: &str) -> Option<Library> {
     let name = CString::new(name).ok()?;
-    let p = unsafe { thx_host_dl_open(name.as_ptr()) };
+    let p = unsafe { arx_host_dl_open(name.as_ptr()) };
     (!p.is_null()).then_some(Library(p))
 }
 
@@ -28,7 +28,7 @@ pub fn open_library(name: &str) -> Option<Library> {
 pub fn symbol(lib: Option<Library>, sym: &str) -> Option<*mut c_void> {
     let sym = CString::new(sym).ok()?;
     let handle = lib.map_or(std::ptr::null_mut(), |l| l.0);
-    let p = unsafe { thx_host_dl_sym(handle, sym.as_ptr()) };
+    let p = unsafe { arx_host_dl_sym(handle, sym.as_ptr()) };
     (!p.is_null()).then_some(p)
 }
 
@@ -36,5 +36,5 @@ pub fn symbol(lib: Option<Library>, sym: &str) -> Option<*mut c_void> {
 /// output a foreign call prints matches the interpreter's own byte for byte. A
 /// no-op elsewhere.
 pub fn stdio_binary() {
-    unsafe { thx_host_stdio_binary() };
+    unsafe { arx_host_stdio_binary() };
 }

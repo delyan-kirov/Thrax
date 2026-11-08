@@ -1,4 +1,4 @@
-//! The layout rules: how Thrax syntax maps onto a document.
+//! The layout rules: how Ares syntax maps onto a document.
 //!
 //! Tokens are first grouped into bracket trees ([`trees`]). [`Layout`] then
 //! reads the shapes the formatter cares about off the token stream with a small

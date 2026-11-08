@@ -612,7 +612,7 @@ impl<'a> Parser<'a> {
                     c_union: false,
                 })
             }
-            // A builtin declaration (`$ @iadd : t -> t -> t = @extern "thrax"`): the
+            // A builtin declaration (`$ @iadd : t -> t -> t = @extern "ares"`): the
             // one other `@`-named value, and the checker allows it only in CORE.
             _ if matches!(self.peek_at(1)?.kind, Kind::Colon) => {
                 let at_tok = self.bump()?;
@@ -627,7 +627,7 @@ impl<'a> Parser<'a> {
                         &format!(
                             "'{}' is a compiler intrinsic and is not extensible in user \
                              code; an '@'-named value is '@main', '@build', or a builtin \
-                             defined as '@extern \"thrax\"'",
+                             defined as '@extern \"ares\"'",
                             self.text(at_tok)
                         ),
                     ));
@@ -1820,7 +1820,7 @@ impl<'a> Parser<'a> {
             ));
         }
         // `(List @Int32).Cons`: a type applied to its arguments, which is how a
-        // reader asks for a constructor at a fixed instantiation. Thrax infers
+        // reader asks for a constructor at a fixed instantiation. Ares infers
         // those arguments instead, so an ascription is where the types go.
         Err(Diagnostic::error(
             Code::UnexpectedToken,
@@ -2263,7 +2263,7 @@ impl<'a> Parser<'a> {
         Ok(self.expr(Expr::Array { size }))
     }
 
-    /// `@extern "abi" "symbol" "lib"`, `@extern "thrax"` for a runtime builtin, or
+    /// `@extern "abi" "symbol" "lib"`, `@extern "ares"` for a runtime builtin, or
     /// `@extern "load"` for a load from C memory.
     fn parse_extern(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '@extern'
@@ -2293,7 +2293,7 @@ impl<'a> Parser<'a> {
     // -- control forms ------------------------------------------------------
 
     /// `let`, `with` and `if` take one binding, subject or arm; a comma once chained several. Report it, recovered, with the
-    /// nested spelling as the fix, so every one is reported (and `thrax fix`
+    /// nested spelling as the fix, so every one is reported (and `ares fix`
     /// rewrites them all). Returns whether another entry follows.
     fn chained_comma(&mut self, form: &str, stop: Kind, nested: &str) -> Result<bool> {
         let t = self.peek()?;

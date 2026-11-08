@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "ares"
+version = "0.1.1"
+dependencies = [
+ "ccg",
+ "frontend",
+ "interpreter",
+ "utilities",
+]
+
+[[package]]
 name = "ccg"
 version = "0.1.1"
 dependencies = [
@@ -23,16 +33,6 @@ name = "interpreter"
 version = "0.1.1"
 dependencies = [
  "frontend",
- "utilities",
-]
-
-[[package]]
-name = "thrax"
-version = "0.1.1"
-dependencies = [
- "ccg",
- "frontend",
- "interpreter",
  "utilities",
 ]
 

@@ -1,9 +1,9 @@
-# Thrax Concurrency and Parallelism Design
+# Ares Concurrency and Parallelism Design
 
 **Status:** sections 2.1 to 2.5 implemented, with the gaps listed in
 section 6. Tracked by the GitHub issues labelled `multi-threading`.
 **Date:** 2026-10-18.
-**Scope:** how Thrax programs run work concurrently (interleaved) and in
+**Scope:** how Ares programs run work concurrently (interleaved) and in
 parallel (on several cores), what the runtime must change to allow it, and how
 the effect system decides what may cross a thread boundary.
 
@@ -22,7 +22,7 @@ Two different problems hide behind the word "multi-threading":
 They want different tools, and a language that conflates them usually ends up
 with locks everywhere. This design treats them separately.
 
-### What Thrax already has
+### What Ares already has
 
 - **Pure, strict, no mutation, no cycles** (effect-system-design.md, section 1).
   Every data value is an immutable finite DAG. There is no shared mutable state
@@ -34,7 +34,7 @@ with locks everywhere. This design treats them separately.
 - **Typed effect rows** on every arrow (`A -> <E> B`), with row variables for
   effect polymorphism, and handlers that discharge what they handle.
 - **Exact, non-atomic reference counting.** `struct Value { Tag tag; unsigned rc; ... }`.
-  `THxMEM_unique` (`rc == 1`) drives in-place reuse, and the ownership pass
+  `ARESxMEM_unique` (`rc == 1`) drives in-place reuse, and the ownership pass
   (#230) emits moves and drops, so many values are provably uniquely owned.
 
 ### What blocked OS threads (before section 6)
@@ -92,7 +92,7 @@ effects, roughly `<exn, div, ndet, console, net, fsys, ui, st<global>>`, where
 
 `Task` for pure parallelism, with the same marking trick as Koka: objects
 reachable from a value passed to another task are marked multi-threaded, and
-only those use atomic counts. Like Thrax, Lean is refcounted, pure and reuses
+only those use atomic counts. Like Ares, Lean is refcounted, pure and reuses
 uniquely owned values in place.
 
 ### OCaml 5
@@ -100,7 +100,7 @@ uniquely owned values in place.
 **Domains** are OS threads for parallelism; **effects** implement fibers inside
 a domain. Libraries such as Eio build structured concurrency (task groups,
 cancellation, IO scheduling) entirely on effect handlers. This is the closest
-architectural match to Thrax: effects for concurrency, a separate mechanism for
+architectural match to Ares: effects for concurrency, a separate mechanism for
 parallelism.
 
 ### Others
@@ -123,8 +123,8 @@ parallelism.
 
 ## 2. Decisions
 
-Thrax sits in the Koka, Lean 4 and OCaml 5 corner: pure, refcounted, with
-effects. The design reuses their proven parts. The one Thrax-specific idea is
+Ares sits in the Koka, Lean 4 and OCaml 5 corner: pure, refcounted, with
+effects. The design reuses their proven parts. The one Ares-specific idea is
 section 2.3.
 
 Syntax in this section is a sketch, not settled surface.
@@ -132,9 +132,9 @@ Syntax in this section is a sketch, not settled surface.
 ### 2.1 Concurrency is an effect (one OS thread)
 
 A library module provides an `Async` effect and a scheduler handler written in
-Thrax over the existing continuations.
+Ares over the existing continuations.
 
-```thrax
+```ares
 $ Async : @effect = spawn : ({} -> <Async> {}) -> {}, yield : {} -> {},
 $ run_async : ({} -> <Async> a) -> a = ...   # round-robin over stored continuations
 ```
@@ -150,7 +150,7 @@ $ run_async : ({} -> <Async> a) -> a = ...   # round-robin over stored continuat
 
 ### 2.2 Pure parallelism: `par` and parallel `formap`
 
-```thrax
+```ares
 $ par : ({} -> b) -> Future b = ...          # the argument must be PURE (empty row)
 $ get : Future b -> b = ...
 ```
@@ -180,10 +180,10 @@ C runtime work:
 
 ### 2.3 Effect rows as the thread-safety check
 
-Rust decides what may cross threads with the `Send` and `Sync` traits. Thrax
+Rust decides what may cross threads with the `Send` and `Sync` traits. Ares
 can decide it with the effect row instead:
 
-```thrax
+```ares
 $ spawn_par : ({} -> <e> a) -> <Par | e> Future a = ...
 ```
 
@@ -207,7 +207,7 @@ case `e = <>`.
    transaction, which is exactly the property Haskell's design rests on.
 
 STM is not the foundation: it solves contention on shared mutable state, which
-Thrax does not have until it adds mutable cells. Its transactional variables
+Ares does not have until it adds mutable cells. Its transactional variables
 (`@TVar`) are those cells, and the only ones: a `TVar` is written only by a
 committed transaction.
 
@@ -232,7 +232,7 @@ was implemented under #284 and reverted under #297:
 The extensible route is an ordinary effect whose handler discharges into
 `@IO`:
 
-```thrax
+```ares
 $ Gpu : @effect = draw : Mesh -> {}, present : {} -> {}
 
 $ run_gpu : ({} -> <Gpu | e> a) -> <@IO | e> a = \body =>
@@ -258,11 +258,11 @@ C state such as `rand`.
 ## 3. Rejected
 
 - **Locks and mutexes as the primary API.** They do not compose, they
-  deadlock, and they protect shared mutable state Thrax does not have. They may
+  deadlock, and they protect shared mutable state Ares does not have. They may
   appear later inside library handlers, never as the user-facing model.
 - **STM as the foundation.** Right tool for shared mutable cells, which come
   last if at all (section 2.4).
-- **A tracing garbage collector.** Thrax is refcounted by design
+- **A tracing garbage collector.** Ares is refcounted by design
   (effect-system-design.md, section 0). Shared marking keeps refcounting viable
   across threads.
 - **Atomic counts everywhere (Swift).** Taxes all single-threaded code for the
@@ -317,7 +317,7 @@ Still open:
 
 ### Runtime (#280)
 
-All of it lives in `crates/ccg/src/runtime.c` behind `THRAX_THREADS`. The
+All of it lives in `crates/ccg/src/runtime.c` behind `ARES_THREADS`. The
 emitter defines it only for a program that names `@par`, `@spawn` or `@await`
 and targets a platform with threads (not wasm), and then links `-lpthread`. A
 sequential program compiles exactly as before, so its timings are unchanged.
@@ -352,7 +352,7 @@ sequential program compiles exactly as before, so its timings are unchanged.
 - **Leak check.** `g_live` is per thread and signed (a block can be freed by a
   thread other than the one that allocated it); each worker folds its count
   into a global at exit.
-- **Pool.** One mutex-guarded deque per thread, `THRAX_THREADS` threads in all
+- **Pool.** One mutex-guarded deque per thread, `ARES_THREADS` threads in all
   (default: online cores), started on the first `@par`. The owner works
   newest-first, thieves take oldest-first. `@await` runs a task nobody has
   started yet in place, and otherwise helps with queued work, so a pool whose
@@ -368,8 +368,8 @@ sequential program compiles exactly as before, so its timings are unchanged.
   are dropped: they are pure, so their results were unobservable.
 
 Measured on a 12-thread machine: a CPU-bound parallel reduction scales about
-5.8x. A parallel-enabled program run with `THRAX_THREADS=1` is about 1 to 4
-percent slower than the same program without `THRAX_THREADS`, depending on the
+5.8x. A parallel-enabled program run with `ARES_THREADS=1` is about 1 to 4
+percent slower than the same program without `ARES_THREADS`, depending on the
 workload (5 to 19 percent before the sign encoding of #293). Still open from
 #293: passing the machine state as a context pointer instead of thread-locals,
 moving rather than marking a value handed to a task with `rc == 1`, and
@@ -383,10 +383,10 @@ clean report.
 - Builtins: `@par : ({} -> b) -> @Future b` (a pure task),
   `@spawn : ({} -> <@IO> b) -> <@IO> @Future b`, and
   `@await : @Future b -> b`. `@Future` is an opaque base type.
-- `library/PAR.thx`: `Future`, `par`, `spawn`, `get`, `both`, and over
+- `library/PAR.ares`: `Future`, `par`, `spawn`, `get`, `both`, and over
   `@Vec` the parallel `map`, `formap` (pure body: a task has no `Loop` to break
   out of its siblings), `map_chunks` and `reduce`.
-- `library/LA.thx`: `map` over a tensor's leading axis, and its parallel
+- `library/LA.ares`: `map` over a tensor's leading axis, and its parallel
   counterparts `par_map` and `par_map_chunks` (#294), which split that axis
   into O(1) slices, map each slice in a `@par` task, and assemble the result
   with `create`. About 6x on 12 threads for a CPU-bound map.
@@ -403,7 +403,7 @@ clean report.
   thread-safe effect is the builtin `@IO`, the one effect no handler on the
   spawning thread serves. Every handled effect must be discharged inside the
   task, which `par_with`/`spawn_with` do (section 4). A task that performs a handled effect is reported as such, with
-  `help:` to handle it inside the task (`tests/diagnostics/TASK_*.thx`).
+  `help:` to handle it inside the task (`tests/diagnostics/TASK_*.ares`).
 
 ### Channels and STM (#283)
 
@@ -421,18 +421,18 @@ clean report.
   read set out of the log, since a task it runs while helping uses the same
   log, and waits until a version changes. Without any other task, a receive
   on an empty channel or a retry is a deadlock fault.
-- `library/PAR.thx`: `Channel`, `channel`, `send`, `recv`.
-- `library/STM.thx`: `TVar`, the `Stm` effect (`read`, `write`, `retry`, plus
+- `library/PAR.ares`: `Channel`, `channel`, `send`, `recv`.
+- `library/STM.ares`: `TVar`, the `Stm` effect (`read`, `write`, `retry`, plus
   `save`/`rollback` for `or_else`), `modify`, `or_else`, and `atomically`, a
   handler that runs the transaction against the log, commits, and reruns it
   on a conflict or after a retry. A transaction's row is `<Stm>`, so
   `@IO` in one is a compile-time error
-  (`tests/diagnostics/STM_IO_IN_TRANSACTION.thx`).
+  (`tests/diagnostics/STM_IO_IN_TRANSACTION.ares`).
 - The operations are polymorphic in the variable's type (`read : TVar a ->
   a`), which effect typing allows since #291: a handler clause sees such a
   type as opaque, and `atomically` only passes values through.
-- `examples/STDLIB_CHANNELS.thx` (a worker pool) and
-  `examples/STDLIB_STM.thx` (transfers from six tasks, a `retry` waiting for
+- `examples/STDLIB_CHANNELS.ares` (a worker pool) and
+  `examples/STDLIB_STM.ares` (transfers from six tasks, a `retry` waiting for
   deposits, `or_else` undoing writes); both perform `@IO`, so the corpus runs
   them rather than a compile-time assert. Clean under `-fsanitize=thread` at
   2, 4 and 8 threads.
@@ -440,14 +440,14 @@ clean report.
 ### `@IO` stays one effect (#297)
 
 - The resource split of #284 is reverted (section 2.5). `@IO` is a plain
-  builtin label again, every `library/C.thx` and `library/IO.thx` binding is
+  builtin label again, every `library/C.ares` and `library/IO.ares` binding is
   `<@IO>`, and the entry and build checks compare label sets over `@IO` itself.
 - A `par` task that performs `@IO` is reported as "a pure parallel task
   performs effect `@IO`", with `help:` to start it with `spawn`.
 
 ### `Async` on one thread (#279, #291, #292)
 
-- `library/ASYNC.thx`: the effect `Async m e` (`spawn`, `yield`, `chan`,
+- `library/ASYNC.ares`: the effect `Async m e` (`spawn`, `yield`, `chan`,
   `send`, `recv`, `wait_fd`) and `run_async : ({} -> <Async m e | e> a) -> <e>
   Option a`. A deep handler turns each task into a `Step` (finished, or
   stopped at an operation with its continuation), and a round-robin loop
@@ -469,9 +469,9 @@ clean report.
 - Structured: a group returns once no task in it can run. `None` means `main`
   never finished, which is a deadlock (every remaining task is parked).
 - Deterministic apart from descriptor readiness, so both engines agree
-  (`examples/STDLIB_ASYNC.thx`: producer/consumer, fan-in, interleaving,
+  (`examples/STDLIB_ASYNC.ares`: producer/consumer, fan-in, interleaving,
   typed messages, a task effect served outside the group, deadlock;
-  `examples/STDLIB_ASYNC_IO.thx`: a task reading a pipe while another
+  `examples/STDLIB_ASYNC_IO.ares`: a task reading a pipe while another
   computes, checked at run time because it performs `@IO`).
 - Open: channels and tasks of one group share one message type `m` (a group
   that needs several uses a union); channels between OS threads (#283).

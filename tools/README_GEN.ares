@@ -1,0 +1,242 @@
+$ @mod README_GEN
+
+$ with STR
+
+# \file README_GEN.ares
+# \info Parse and test examples in readme and generate the README file
+
+# Discard already-parsed code, returning empty code. Parsing happens inside
+# `@parse_items`/`@parse_str` (which trap on a syntax error), so
+# `$ @e <| validate <| @parse_items ..` VALIDATES the items without inserting them
+# (a bare `$ @e <| @parse_items ..` would insert).
+$ validate : @Code -> @Code = \_ => @parse_items ""
+
+# `s` spelled as a Ares string literal. `?` is escaped because `?(` opens an
+# interpolation.
+$ quote : @Str -> @Str = \s =>
+    let esc = \needle repl t => STR.replace t needle repl in
+    "\"" ++ (s |> esc "\\" "\\\\" |> esc "\"" "\\\"" |> esc "\n" "\\n" |> esc "?" "\\?") ++ "\""
+
+# Validate the items `src`, then define `name` as their text laid out by
+# `@format`, so the README shows each snippet as `ares fmt` writes it.
+$ formatted : @Str -> @Str -> @Code = \name src =>
+    validate (@parse_items src);
+    @parse_items ("$ " ++ name ++ " : @Str = " ++ quote (STR.trim_right (@format src)))
+
+# ---- Markdown helpers -----------------------------------------------------
+
+$ nl : @Str = "\n"
+$ fence : @Str -> @Str = \code => "```ares\n" ++ code ++ "\n```\n"
+$ sh : @Str -> @Str = \code => "```sh\n" ++ code ++ "\n```\n"
+
+# ---- Examples (the source of truth) ---------------------------------------
+
+$ ex_inference : @Str =
+    "$ Prob : @effect = pick : @Int -> @Int, observe : @Bool -> {},\n"
+        ++ "\n"
+        ++ "# The weight of a set of worlds: `yes` of them made the model true, `all`\n"
+        ++ "# survived every `observe`, each worth `1 / den`.\n"
+        ++ "$ Mass : @struct = yes: @Int, all: @Int, den: @Int\n"
+        ++ "\n"
+        ++ "$ gcd : @Int -> @Int -> @Int = \\a b => if b == 0 => a else gcd b (a % b)\n"
+        ++ "\n"
+        ++ "$ impl_IAdd_for_Mass : IAdd Mass = .{\n"
+        ++ "    .add = \\a b =>\n"
+        ++ "        let den = a.den / gcd a.den b.den * b.den in\n"
+        ++ "        let sa = den / a.den in\n"
+        ++ "        let sb = den / b.den in\n"
+        ++ "        Mass.{ .yes = a.yes * sa + b.yes * sb, .all = a.all * sa + b.all * sb, .den = den }\n"
+        ++ "}\n"
+        ++ "\n"
+        ++ "$ nothing : Mass = Mass.{ .yes = 0, .all = 0, .den = 1 }\n"
+        ++ "\n"
+        ++ "# Resume `k` with every outcome `i ..< n` and add up the worlds that follow.\n"
+        ++ "$ each : (@Int -> Mass) -> @Int -> @Int -> Mass = \\k i n =>\n"
+        ++ "    if i == n => nothing else k i + each k (i + 1) n\n"
+        ++ "\n"
+        ++ "$ infer : ({} -> <Prob> @Bool) -> Mass = \\model =>\n"
+        ++ "    do model {}\n"
+        ++ "    ctl k\n"
+        ++ "    | Prob.pick n     => let m = each k 0 n in Mass.{ .yes = m.yes, .all = m.all, .den = m.den * n }\n"
+        ++ "    | Prob.observe ok => if ok => k {} else nothing\n"
+        ++ "    | b               => Mass.{ .yes = if b => 1 else 0, .all = 1, .den = 1 }\n"
+        ++ "\n"
+        ++ "# P(model is true | every observation held), reduced.\n"
+        ++ "$ chance : ({} -> <Prob> @Bool) -> @Str = \\model =>\n"
+        ++ "    let m = infer model in let g = gcd m.yes m.all in \"\?(m.yes / g)/\?(m.all / g)\"\n"
+        ++ "\n"
+        ++ "# Two children, at least one a boy. Both boys\? 1/3\n"
+        ++ "$ two_boys : {} -> <Prob> @Bool = \\u =>\n"
+        ++ "    let a = pick 2 in let b = pick 2 in observe (a == 0 || b == 0); a == 0 && b == 0\n"
+        ++ "\n"
+        ++ "# The same, but that boy was born on a Tuesday: 13/27\n"
+        ++ "$ tuesday_boy : {} -> <Prob> @Bool = \\u =>\n"
+        ++ "    let a = pick 2 in\n"
+        ++ "    let a_day = pick 7 in\n"
+        ++ "    let b = pick 2 in\n"
+        ++ "    let b_day = pick 7 in\n"
+        ++ "    observe (a == 0 && a_day == 2 || b == 0 && b_day == 2); a == 0 && b == 0\n"
+        ++ "\n"
+        ++ "# Monty Hall: does switching win\? 2/3\n"
+        ++ "$ switching_wins : {} -> <Prob> @Bool = \\u =>\n"
+        ++ "    let car = pick 3 in\n"
+        ++ "    let guess = pick 3 in\n"
+        ++ "    let left = (guess + 1) % 3 in\n"
+        ++ "    let right = (guess + 2) % 3 in\n"
+        ++ "    let opened =\n"
+        ++ "        if car == guess =>\n"
+        ++ "            (if pick 2 == 0 => left else right)\n"
+        ++ "        else if car == left =>\n"
+        ++ "            right\n"
+        ++ "        else\n"
+        ++ "            left\n"
+        ++ "    in\n"
+        ++ "    3 - guess - opened == car"
+
+# A self-contained expression we can actually RUN and check at build time.
+$ ex_expr : @Str = "let sq = \\x => x * x in sq 3 + sq 4"
+
+$ ex_ffi : @Str =
+    "$ puts : @Str -> <@IO> @Int = @extern \"C\" \"puts\" \"libc\"\n"
+        ++ "$ @main : @Vec @Str -> <@IO> @Int = \\args => puts \"Hello world\"; 0"
+
+# ---- Compile-time validation ("unit tests") -------------------------------
+# A malformed declaration or a wrong expected value fails the build here. Each
+# snippet `ex_x` is shown in the README as `fmt_x`, its canonical layout.
+
+$ @e <| formatted "fmt_inference" ex_inference
+$ @e <| formatted "fmt_ffi" ex_ffi
+$ @e <| formatted "fmt_entry" ex_entry
+$ @e <| assert (@eval (@parse_str ex_expr) == 25) "ex_expr should evaluate to 25"
+
+# ---- README assembly ------------------------------------------------------
+
+$ header: @Str =
+    "# Ares\n\n"
+        ++ "Ares is a functional language with algebraic data types (structs *and* sum\n"
+        ++ "types), pattern matching, and typed **algebraic effects with handlers**. It\n"
+        ++ "compiles to native C, cross-compiles to WebAssembly, and can also be interpreted.\n"
+
+$ autogen_note : @Str =
+    "\n## Autogenerated\n\n"
+        ++ "> This file is GENERATED by `tools/README_GEN.ares`, the single source of\n"
+        ++ "> truth for its examples (each is validated at build time). Do not edit by\n"
+        ++ "> hand; edit the generator and regenerate with `ares run tools/README_GEN.ares`.\n\n"
+
+$ links : @Str =
+    "\n## Links\n\n"
+        ++ "- **[Try it in your browser](https://delyan-kirov.github.io/ares-applications/)**\n"
+        ++ "- **[Source on GitHub](https://github.com/delyan-kirov/Ares)**: the compiler, standard library, and docs.\n"
+        ++ "- **[Examples](examples/)**: a small program for each feature (also the test corpus).\n"
+
+$ building : @Str =
+    "\n## Building\n\n"
+        ++ "**With nix** (recommended):\n\n"
+        ++ sh
+            (
+                "nix develop      # dev shell; `ares` is already on PATH here\n"
+                    ++ "cargo build      # or build it yourself: target/debug/ares\n"
+                    ++ "cargo test       # the frontend, interpreter, and backend suites"
+            )
+        ++ "\n**Without nix**: any host with a recent `cargo`/`rustc` and a C toolchain:\n\n"
+        ++ sh "cargo build --release   # target/release/ares"
+        ++ "\nLinux is the development platform; macOS, Windows and wasm are tested in CI,\n"
+        ++ "and each release ships an SDK for them. See\n"
+        ++ "[documentation/platforms.md](documentation/platforms.md).\n"
+
+$ ex_entry : @Str =
+    "$ @main : @Vec @Str -> <@IO> @Int = \\args =>\n" ++ "\tC.puts \"hello\";\n" ++ "\t0"
+
+$ compiling : @Str =
+    "\n## Compiling and running\n\n"
+        ++ "`ares` takes a subcommand and, optionally, a `.ares` file. With no file it\n"
+        ++ "uses `MAIN.ares` in the current directory.\n\n"
+        ++ "A program is a module with an entry point, and there is exactly one accepted\n"
+        ++ "shape: `@main` takes the argument vector (`args[0]` is the program) and\n"
+        ++ "returns the exit code. It is the only name the compiler knows.\n\n"
+        ++ fence fmt_entry
+        ++ "\nEvery other module is a library. Checking one runs its compile-time\n"
+        ++ "assertions (`$ @e <| assert ..`), so a module states its own invariants and\n"
+        ++ "type-checking it is testing it.\n\n"
+        ++ sh
+            (
+                "ares run     MAIN.ares          # run under the interpreter\n"
+                    ++ "ares check   examples/FIB.ares  # type-check, print types, run `$ @e` checks\n"
+                    ++ "ares expand  MAIN.ares          # the source after metaprogram expansion\n"
+                    ++ "ares emit-c  MAIN.ares          # print the generated C (native backend)\n"
+                    ++ "ares build   MAIN.ares          # compile to a native executable\n"
+                    ++ "ares --target=wasm32-wasi build MAIN.ares   # cross-compile to wasm"
+            )
+        ++ "\nThe compiler is also the tooling. Every error carries a stable code\n"
+        ++ "(`ares explain CODE` says what it means), keeps going past the first\n"
+        ++ "mistake, and offers a fix when it knows one; `ares fix` applies the sure\n"
+        ++ "ones. `???` is a typed hole: the error names the type that goes there and\n"
+        ++ "the names in scope that fit.\n\n"
+        ++ sh
+            (
+                "ares fmt     MAIN.ares          # format in place (--check only reports)\n"
+                    ++ "ares fix     MAIN.ares          # apply every fix the compiler is sure of\n"
+                    ++ "ares explain TYPE_MISMATCH     # what a diagnostic code means\n"
+                    ++ "ares lsp                       # language server for an editor"
+            )
+        ++ "\n`ares lsp` serves diagnostics, fixes, hover, go-to-definition, completion,\n"
+        ++ "symbols and formatting. It ranks errors so the one that matters most stands\n"
+        ++ "out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.\n"
+
+$ features : @Str =
+    "\n## Features\n\n"
+        ++ "- **Algebraic data types**: structs and sum types, generic by default, composed with `with`-splicing.\n"
+        ++ "- **Pattern matching**: nested, literal, string, and range patterns, `++` sequence patterns that match a prefix, a suffix, or both ends, and fall-through guards.\n"
+        ++ "- **Typed algebraic effects with handlers**: the effect row is part of the type; continuations are first-class and resumable.\n"
+        ++ "- **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.\n"
+        ++ "- **C FFI with no ceremony**: `@extern \"C\" \"sym\" \"lib\"` binds a foreign function; C structs pass by value both ways.\n"
+        ++ "- **WebAssembly**: cross-compile with `--target=wasm32-wasi`, or run the whole compiler in the browser.\n"
+        ++ "- **Interfaces resolved by type**: an interface is a struct, an implementation is a value of it, and a function takes one as a named `@use` field the compiler infers. One mechanism; no overloading, so a name's printed type is its contract.\n"
+        ++ "- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`@e` inserts generated code, plus a `@build` entry that generates part of a module from what is on disk).\n"
+
+$ example : @Str =
+    "\n## Example: exact probabilistic inference\n\n"
+        ++ "Example implementation of exact probabilistic inference by enumeration.\n\n"
+        ++ fence fmt_inference
+
+$ ffi : @Str =
+    "\n## Native backend and FFI\n\n"
+        ++ "Ares lowers the whole IR to self-contained C, algebraic effects included, via\n"
+        ++ "a CEK-style machine emitted in C. Foreign C functions are bound with `@extern`;\n"
+        ++ "the library name is symbolic (no path or soname in source).\n\n"
+        ++ fence fmt_ffi
+
+$ layout : @Str =
+    "\n## Project layout\n\n"
+        ++ "| Directory | Contents |\n"
+        ++ "| --- | --- |\n"
+        ++ "| `crates/frontend` | lexer, parser, type checker, lowering, IR |\n"
+        ++ "| `crates/interpreter` | the reified-K (CEK) machine and the `@extern` FFI |\n"
+        ++ "| `crates/ccg` | the C backend (emits standalone C plus its runtime) |\n"
+        ++ "| `crates/ares` | the `ares` driver (CLI) |\n"
+        ++ "| `library/` | the standard library (`C` libc namespace, `CORE`, and the rest) |\n"
+        ++ "| `examples/` | annotated `.ares` programs (also the test corpus) |\n"
+        ++ "| `tools/` | dev tooling, incl. this README generator |\n"
+        ++ "| `documentation/` | language spec and design notes |\n"
+
+$ footer : @Str = "\n## License\n\n" ++ "MIT, see [LICENSE](LICENSE).\n"
+
+$ readme : @Str =
+    header
+        ++ links
+        ++ building
+        ++ compiling
+        ++ features
+        ++ example
+        ++ ffi
+        ++ layout
+        ++ footer
+        ++ autogen_note
+
+# ---- Write the file via the C library (fopen/fputs/fclose) ----------------
+
+$ write_all : @Str -> @Str -> <@IO> @Int = \path content =>
+    let f = C.fopen { path, "wb" } in if f == 0 => 0 - 1 else C.fputs { content, f }; C.fclose f
+
+$ @main : @Vec @Str -> <@IO> @Int = \args =>
+    let rc = write_all "README.md" readme in if rc == 0 => 0 else 1

@@ -1,14 +1,14 @@
 # The language server and the diagnostics behind it
 
-`thrax lsp` is the compiler speaking the Language Server Protocol over stdio.
+`ares lsp` is the compiler speaking the Language Server Protocol over stdio.
 It is not a second front end: every diagnostic, fix and type it shows is the
-one `thrax check` produces, so the editor and the command line never disagree.
+one `ares check` produces, so the editor and the command line never disagree.
 This document describes what it does, how it stays fast, and the ideas it takes
 from Flix, GHC and rustc, plus a few from the research literature.
 
 ## What an editor gets
 
-| Request | What Thrax does |
+| Request | What Ares does |
 |---|---|
 | diagnostics | every error and warning, ranked, with the most important one marked |
 | code actions | each `help:` that carries edits, as a quick fix; plus "apply every safe fix" |
@@ -16,8 +16,8 @@ from Flix, GHC and rustc, plus a few from the research literature.
 | go to definition | globals, across modules (locals are not tracked yet) |
 | completion | visible names with their types, a module's members after `M.`, a hole's fits |
 | document symbols | the file's definitions, structs, unions, aliases and effects |
-| formatting | `thrax fmt`, whole file or a range (widened to whole items) |
-| semantic tokens | highlighting from the lexer itself, so an editor needs no Thrax grammar |
+| formatting | `ares fmt`, whole file or a range (widened to whole items) |
+| semantic tokens | highlighting from the lexer itself, so an editor needs no Ares grammar |
 
 Text sync is incremental. Positions are negotiated: UTF-8 when the client
 offers it (Neovim and Helix do), UTF-16 otherwise.
@@ -28,12 +28,12 @@ A diagnostic has a stable code (`error[TYPE_MISMATCH]`), a message that says
 what is wrong, `note:` lines that say why, and `help:` lines that say what to
 do. A `help:` may carry machine edits and an applicability, after rustc:
 
-- `MachineApplicable`: certainly right. `thrax fix` and the editor's "apply
+- `MachineApplicable`: certainly right. `ares fix` and the editor's "apply
   every safe fix" use only these (a missing `$ with IO`, `2.` to `2.0`).
 - `MaybeIncorrect`: a likely fix (a did-you-mean).
 - `HasPlaceholders`: an edit with a hole left to fill.
 
-On the command line a fix shows the patched line under its `help:`. `thrax
+On the command line a fix shows the patched line under its `help:`. `ares
 explain CODE` prints the code's entry in `documentation/errors.md`.
 
 `???` is a typed hole (after GHC). It has whatever type its context needs, and
@@ -57,7 +57,7 @@ way Flix's do:
   not cascade into its uses (rustc's `ty::Error`). Uses of a name whose item did
   not even parse get the error type too.
 - **Driver.** A module that fails still exports what checked, and its
-  dependents are checked against it. `thrax check` prints every error, in
+  dependents are checked against it. `ares check` prints every error, in
   dependency order, up to `[check] max_errors`.
 
 Inside one definition the checker still stops at its first error. Recovering
@@ -68,7 +68,7 @@ natural next step.
 
 An editor that underlines everything in the same red is a flashlight: it
 shows that something is wrong everywhere and nothing about where to start.
-Thrax ranks its diagnostics and maps the rank onto the severities every
+Ares ranks its diagnostics and maps the rank onto the severities every
 editor already renders differently. Each diagnostic carries its role in
 `data.role`:
 
@@ -95,7 +95,7 @@ order. Two refinements come from the literature:
   Its errors are held back as hints until typing pauses for `grace_ms`, while
   errors the edit causes elsewhere (a caller it broke) show at once.
 
-`tools/editors/neovim/thrax.lua` turns this into one loud error: only the
+`tools/editors/neovim/ares.lua` turns this into one loud error: only the
 focus gets inline text, and quieter roles are underlined with dots.
 
 ## Fixes the compiler has tried
@@ -113,7 +113,7 @@ code actions, at most 8 trials per request.
 - **As you type** (debounced by `debounce_ms`): parse, resolve, type-check and
   check exhaustiveness. No compile-time code runs. In a module whose `$ @e` or
   `@build` may define names, an unbound name is only a hint until saved.
-- **On save**: the whole compile-time pipeline runs as `thrax check` would
+- **On save**: the whole compile-time pipeline runs as `ares check` would
   (every `$ @e` expansion, `@build`, the asserts), and its faults show in the
   editor. Spans in generated code are mapped back to the site that generated
   it. With `check = "save"` everything waits for save, as with rust-analyzer's
@@ -144,9 +144,9 @@ Measured on alec (27 modules, 7.6k lines), release build:
 
 | | before | now |
 |---|---|---|
-| open `TEST.thx` (builds the base) | 105 ms | 108 ms |
-| each edit of `TEST.thx` | 90 ms | 4 to 9 ms |
-| each edit of `PARSE.thx` (a large module) | 55 ms | about 21 ms |
+| open `TEST.ares` (builds the base) | 105 ms | 108 ms |
+| each edit of `TEST.ares` | 90 ms | 4 to 9 ms |
+| each edit of `PARSE.ares` (a large module) | 55 ms | about 21 ms |
 
 The next step is per-definition reuse inside the edited module: a definition
 with a signature is checked from that signature, so a body edit need only
@@ -154,10 +154,10 @@ re-check that body.
 
 ## Configuration
 
-A project sets its options with `@option` in its `BUILD.thx` (language
+A project sets its options with `@option` in its `BUILD.ares` (language
 reference, section 11.4, lists them all):
 
-```thrax
+```ares
 $ @mod BUILD
 
 $ @build : {} -> <@Meta, @IO> @Code = \_ =>
@@ -168,14 +168,14 @@ $ @build : {} -> <@Meta, @IO> @Code = \_ =>
 
 The table in `crates/utilities/src/config.rs` is the single source, so adding
 an option is adding a row. A misspelled option gets a did-you-mean. When
-`BUILD.thx` fails the server reports it on stderr and uses the defaults.
+`BUILD.ares` fails the server reports it on stderr and uses the defaults.
 
 An editor's settings (`initializationOptions`, or `workspace/didChangeConfiguration`
-under `thrax`) use the same sections and keys, and override the project.
+under `ares`) use the same sections and keys, and override the project.
 
 ## Formatting
 
-`thrax fmt` prints tokens verbatim and chooses only the whitespace between
+`ares fmt` prints tokens verbatim and chooses only the whitespace between
 them, so it cannot change what a program means; it re-lexes its own output and
 refuses if a single token or comment differs, or if the result stops parsing.
 It works on tokens rather than the AST because the AST already desugars forms
@@ -196,16 +196,16 @@ were written.
 
 ## Editors
 
-- Neovim: `tools/editors/neovim/thrax.lua`. Highlighting comes from the
+- Neovim: `tools/editors/neovim/ares.lua`. Highlighting comes from the
   server's semantic tokens.
 - Helix: `tools/editors/helix/languages.toml`. Helix ignores semantic tokens
   and highlights only through tree-sitter, so it also needs the grammar:
-  `thxdo tree-sitter` generates it and `hx --grammar build` compiles it, and the
-  hand-written `tools/editors/helix/queries/thrax/highlights.scm` maps its
+  `thrax tree-sitter` generates it and `hx --grammar build` compiles it, and the
+  hand-written `tools/editors/helix/queries/ares/highlights.scm` maps its
   nodes to colors.
 
-The tree-sitter grammar is not written by hand: `tools/editors/TREE_SITTER_GEN.thx`
-(a Thrax program) reads the Bison spec `documentation/thrax.y` and writes
+The tree-sitter grammar is not written by hand: `tools/editors/TREE_SITTER_GEN.ares`
+(a Ares program) reads the Bison spec `documentation/ares.y` and writes
 `grammar.js`, carrying over the rules and their precedence, removing empty
 productions the way tree-sitter needs, and spelling each terminal. The output is
 ignored by git. The tree-sitter CLI comes from `tools/editors/flake.nix`, kept
@@ -223,6 +223,6 @@ is not in the spec.
 - `crates/frontend/src/parser.rs`: item-level recovery. `typing.rs`: the error
   type, per-definition recovery, holes and their fits.
 - `crates/frontend/src/format.rs`: the formatter.
-- `crates/thrax/src/lsp/`: the server (`server.rs`), the incremental analysis
+- `crates/ares/src/lsp/`: the server (`server.rs`), the incremental analysis
   (`analysis.rs`), documents and positions (`text.rs`).
-- `crates/thrax/src/tools.rs`: `fmt`, `fix`, `explain`, `config`.
+- `crates/ares/src/tools.rs`: `fmt`, `fix`, `explain`, `config`.

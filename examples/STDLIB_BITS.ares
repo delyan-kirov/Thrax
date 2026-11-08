@@ -1,0 +1,61 @@
+$ @mod STDLIB_BITS
+
+# \file STDLIB_BITS.ares
+# \info The standard library's BITS module: bitwise operations and shifts on
+#       the 64-bit `@Int`, width narrowing, and the IEEE 754 encodings of the
+#       float types (what a binary encoder writes for a float). Then CORE's
+#       bitwise operators, which work on every integer type.
+
+$ with BITS
+
+$ ck_and : @Int = if band 12 10 == 8 => 0 else 1
+$ ck_or : @Int = if bor 12 10 == 14 => 0 else 1
+$ ck_xor : @Int = if bxor 12 10 == 6 => 0 else 1
+$ ck_not : @Int = if bnot 0 == 0 - 1 => 0 else 1
+$ ck_neg : @Int = if band (0 - 1) 255 == 255 => 0 else 1
+$ ck_shl : @Int = if shl 1 40 == 1099511627776 => 0 else 1
+$ ck_shr_u : @Int = if shr_u (0 - 1) 60 == 15 => 0 else 1
+$ ck_shr_s : @Int = if shr_s (0 - 16) 2 == 0 - 4 => 0 else 1
+$ ck_zext : @Int = if zext (0 - 1) 8 == 255 => 0 else 1
+$ ck_sext : @Int = if sext 255 8 == 0 - 1 => 0 else 1
+$ ck_bits1 : @Int = if f64_bits 1.0 == 4607182418800017408 => 0 else 1
+$ ck_bits2 : @Int = if f64_bits 5e-324 == 1 => 0 else 1
+$ ck_bits3 : @Int = if f32_bits (f64_to_f32 0.1) == 1036831949 => 0 else 1
+$ ck_minus : @Int = if f64_bits (0.0 - 2.5) == bor min_int 4612811918334230528 => 0 else 1
+$ ck_wide : @Int =
+    if shl 1 64 == 0 && shr_u (0 - 1) 64 == 0 && shr_s (0 - 5) 70 == 0 - 1 => 0 else 1
+$ ck_neg_count : @Int = if shl 1 (0 - 1) == 0 && shr_s (0 - 5) (0 - 1) == 0 - 1 => 0 else 1
+$ ck_ext : @Int = if zext 0x1234 0 == 0 && sext 0x80 8 == 0 - 128 && sext 0x7f 8 == 127 => 0 else 1
+$ ck_len : @Int =
+    if bit_len 0 == 0 && bit_len 1 == 1 && bit_len 255 == 8 && bit_len max_int == 63 => 0 else 1
+$ ck_pow2 : @Int = let top : @Nat = @cast min_int in if pow2 63 == top && pow2 64 == 0 => 0 else 1
+$ ck_round : @Int =
+    if bits_f64 (f64_bits (0.0 - 2.5)) == 0.0 - 2.5 && bits_f32 1036831949 == f64_to_f32 0.1 =>
+        0
+    else
+        1
+$ ck_nan : @Int = if f64_bits (0.0 / 0.0) == 9221120237041090560 => 0 else 1
+
+# The operators: `&&&` and the shifts bind like `*`, `|||` and `^^^` like `+`.
+$ ck_ops : @Int = if (12 &&& 10 ||| 1 ^^^ 3) == 10 && ~~~0 == 0 - 1 && 1 <<< 3 + 1 == 9 => 0 else 1
+
+# `>>>` is arithmetic on a signed type and logical on a nat.
+$ ck_shr : @Int =
+    let s : @Int = 0 - 8 in let u : @Nat = 0 - 8 in if s >>> 1 == 0 - 4 && u >>> 61 == 7 => 0 else 1
+
+# A narrow type wraps what leaves its range.
+$ ck_narrow : @Int =
+    let a : @Nat8 = 200 in
+    let b : @Int8 = 0 - 100 in
+    let c : @Nat16 = 0xff00 in
+    if a <<< 1 == 144 && ~~~a == 55 && b <<< 1 == 56 && b >>> 1 == 0 - 50 && c >>> 4 == 0xff0 =>
+        0
+    else
+        1
+
+$ test : @Int =
+    ck_and + ck_or + ck_xor + ck_not + ck_neg + ck_shl + ck_shr_u + ck_shr_s + ck_zext + ck_sext
+        + ck_bits1 + ck_bits2 + ck_bits3 + ck_minus + ck_wide + ck_neg_count + ck_ext + ck_len
+        + ck_pow2 + ck_round + ck_nan + ck_ops + ck_shr + ck_narrow
+
+$ @e <| assert (test == 0) "STDLIB_BITS: a check failed"

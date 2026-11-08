@@ -336,7 +336,7 @@ impl<'a> Lexer<'a> {
             }
             match self.cur() {
                 // In literal text, `\` escapes the next char (so `\"`/`\?` are
-                // literal). Inside an interpolant `\` is ordinary Thrax (lambda).
+                // literal). Inside an interpolant `\` is ordinary Ares (lambda).
                 b'\\' if depth == 0 => {
                     self.cursor += 1;
                     if self.cursor < self.bytes().len() && self.cur() != b'\n' {
@@ -575,7 +575,7 @@ impl<'a> Lexer<'a> {
 /// Decode a string literal's bytes from its raw source slice `raw` (the literal
 /// *including* its surrounding quotes), interpreting C-style escapes. `start` is
 /// `raw`'s byte offset in the whole source and `line` its line, both only for
-/// diagnostics. Thrax strings are byte vectors, so the result is raw bytes, not
+/// diagnostics. Ares strings are byte vectors, so the result is raw bytes, not
 /// required to be valid UTF-8. The lexer defers to this so it stays borrow-free;
 /// the parser calls it when building a string node or pattern.
 pub fn decode_string(raw: &str, start: usize, line: Line) -> Result<Vec<u8>> {

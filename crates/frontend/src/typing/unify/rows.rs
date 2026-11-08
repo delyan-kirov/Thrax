@@ -42,7 +42,7 @@ impl Unifier {
 
     // Note [Nominal struct / record row bridge]
     //
-    // Thrax has both nominal structs (`$ P : @struct = x: @Int, y: @Int`) and
+    // Ares has both nominal structs (`$ P : @struct = x: @Int, y: @Int`) and
     // structural records (`{ x: @Int | r }`, a row). A function written against
     // a row should accept any struct with those fields, so a struct has to meet
     // a row somewhere, without the two kinds of type becoming one.

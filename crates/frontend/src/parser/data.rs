@@ -14,7 +14,7 @@
 use utilities::{Aol, SecondaryMap, Slice, Span, Store, StrId};
 
 /// The `@extern` ABI that names a runtime builtin rather than a foreign symbol.
-pub const BUILTIN_ABI: &str = "thrax";
+pub const BUILTIN_ABI: &str = "ares";
 
 /// The `@extern` ABI of a load from C memory: `{ p: @Ptr, i: @Int } -> T` reads
 /// element `i` of a C array of `T` at `p`. It names no symbol or library.
@@ -588,7 +588,7 @@ pub enum Expr {
         symbol: StrId,
         lib: StrId,
     },
-    /// `@extern "thrax"`: the definition it is the body of IS the runtime builtin
+    /// `@extern "ares"`: the definition it is the body of IS the runtime builtin
     /// of the same name. Only CORE declares these, so a builtin has a signature and
     /// a doc comment in source; every reference lowers to the bare builtin.
     Builtin,

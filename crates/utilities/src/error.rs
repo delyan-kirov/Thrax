@@ -89,7 +89,7 @@ pub enum Code {
     /// `@abort` ran: a compile-time check or generator failed the build.
     MetaAbort,
     MetaWarning,
-    /// A project's `BUILD.thx` is malformed, imported, or one of its directives
+    /// A project's `BUILD.ares` is malformed, imported, or one of its directives
     /// is used elsewhere.
     BuildScript,
     IntLiteralRange,
@@ -227,7 +227,7 @@ impl Aside {
 
 /// How safe it is to apply a [`Help`]'s edits without a human looking (the
 /// rustc scale). Only [`Applicability::MachineApplicable`] fixes are applied by
-/// `thrax fix` or marked preferred in an editor.
+/// `ares fix` or marked preferred in an editor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Applicability {
     /// The edit is certainly what was meant and yields valid code.

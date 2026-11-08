@@ -1,13 +1,13 @@
 # Diagnostic codes
 
-Every Thrax diagnostic carries a stable code, such as `error[TYPE_MISMATCH]`.
-`thrax explain CODE` prints the section below for that code, and the language
+Every Ares diagnostic carries a stable code, such as `error[TYPE_MISMATCH]`.
+`ares explain CODE` prints the section below for that code, and the language
 server shows the code next to the message. A code never changes meaning; a new
 kind of failure gets a new code.
 
 Each section says what the code means, the usual causes, and how to fix it. A
 diagnostic's own `help:` lines are more specific, and when the compiler knows
-the exact change it is offered as a fix (`thrax fix`, or the editor's quick fix).
+the exact change it is offered as a fix (`ares fix`, or the editor's quick fix).
 
 ## ASCII_CTR_CHAR
 
@@ -95,7 +95,7 @@ Every top-level item starts with `$` at the beginning of a line.
 
 ## UNSUPPORTED
 
-The syntax is recognized but Thrax does not support it, such as renaming an
+The syntax is recognized but Ares does not support it, such as renaming an
 import.
 
 The message says what to write instead.
@@ -126,7 +126,7 @@ capitalized; a lowercase name in a type is a type variable.
 A global definition has no type annotation. Every global states its type,
 since that type is its contract with every importer; there are no exceptions,
 not even for a constant. The fix inserts the type that was deduced for it:
-`$ answer = 42` becomes `$ answer : @Int = 42`. `thrax fix` applies it.
+`$ answer = 42` becomes `$ answer : @Int = 42`. `ares fix` applies it.
 
 ## TYPE_CYCLE
 
@@ -165,7 +165,7 @@ instance per type.
 A `$ with MODULE` names a module that cannot be found, or a qualified name
 `M.x` uses a module that is not in scope.
 
-Check the spelling (a did-you-mean fix is offered), that the file `MODULE.thx`
+Check the spelling (a did-you-mean fix is offered), that the file `MODULE.ares`
 is next to the importing file, in `library/`, or in a directory given with
 `--import-dir`.
 
@@ -220,7 +220,7 @@ A match arm can never be chosen, because earlier arms already match every value
 it would. This is a warning.
 
 Delete the arm, or move it above the arm that covers it. The level is set by
-`@option "lints.unreachable_arm" "..."` in the project's `BUILD.thx` (`allow`,
+`@option "lints.unreachable_arm" "..."` in the project's `BUILD.ares` (`allow`,
 `warn` or `deny`).
 
 ## RUNTIME_FAULT

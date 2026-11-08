@@ -1,12 +1,12 @@
 use frontend::ir::data::builtin_arity;
 
-/// Every `@extern "thrax"` declaration in CORE names a builtin the machine
+/// Every `@extern "ares"` declaration in CORE names a builtin the machine
 /// runs, so a misspelled declaration fails here rather than when it is called.
 /// The operators the parser rewrites away, and `@finale` (which the desugarer
 /// lowers to a finalization frame), are declared only for their types.
 #[test]
 fn core_builtins_are_known_to_the_machine() {
-    let src = include_str!("../../../../library/CORE.thx");
+    let src = include_str!("../../../../library/CORE.ares");
     let parsed = frontend::parse(src).expect("parse CORE");
     let ast = &parsed.ast;
     let mut seen = 0;

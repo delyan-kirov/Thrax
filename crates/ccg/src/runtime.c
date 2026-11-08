@@ -7,10 +7,10 @@
 #include <string.h>
 #include <time.h>
 
-/* THRAX_THREADS is defined by the emitter for a program that spawns parallel
+/* ARES_THREADS is defined by the emitter for a program that spawns parallel
  * tasks (`@par`) on a target with threads. Without it the machine state is plain
  * globals and every count is non-atomic, so a sequential program pays nothing.
- * The thread headers and `THX_TLS` come from portable.h, emitted ahead of this. */
+ * The thread headers and `ARX_TLS` come from portable.h, emitted ahead of this. */
 
 typedef struct Value Value;
 typedef struct Frame Frame;
@@ -24,19 +24,19 @@ typedef struct TVar TVar;
 typedef void (*BlockFn)(Frame *fr, Value *in);
 
 /* Provided by the generated program. */
-extern BlockFn THxRT_code_table[];
-extern const size_t THxRT_code_nlocals[];
+extern BlockFn ARESxRT_code_table[];
+extern const size_t ARESxRT_code_nlocals[];
 /* Per code, a bit per parameter the body only borrows (frontend
  * `Code::borrowed`): it never moves or drops one. */
-extern const unsigned char THxRT_code_borrowed[];
-extern const size_t THxRT_code_count;
+extern const unsigned char ARESxRT_code_borrowed[];
+extern const size_t ARESxRT_code_count;
 
 /* One foreign-call wrapper per distinct `@extern`: it marshals the collected
  * arguments across the C ABI and calls the symbol. Provided by the generated
  * program (see the ccg `emit_extern_table`). */
 typedef Value *(*ExternFn)(Value **args);
-extern ExternFn THxRT_extern_table[];
-extern const size_t THxRT_extern_count;
+extern ExternFn ARESxRT_extern_table[];
+extern const size_t ARESxRT_extern_count;
 
 typedef enum {
   T_INT,
@@ -56,7 +56,7 @@ typedef enum {
   T_OP,        /* an effect operation, first-class; performs when applied */
   T_RESUMP,    /* a captured continuation (a delimited stack slice) */
   T_THUNK,     /* an unforced lazy slot: a nullary closure, forced in place */
-  T_FUTURE,    /* a parallel task's handle (`@par`); only with THRAX_THREADS */
+  T_FUTURE,    /* a parallel task's handle (`@par`); only with ARES_THREADS */
   T_BLACKHOLE, /* a shared thunk another thread is forcing right now */
   T_CHAN,      /* a channel's handle (`@Chan`) */
   T_TVAR       /* a transactional variable's handle (`@TVar`) */
@@ -74,11 +74,11 @@ typedef struct {
  * value starts local and is marked, with everything it reaches, when it crosses
  * to another thread; marking only ever raises the level.
  *
- * With THRAX_THREADS the level is also encoded in the sign of `rc` (Lean 4's
+ * With ARES_THREADS the level is also encoded in the sign of `rc` (Lean 4's
  * scheme), so the counting fast path is one load and one compare: `rc > 0` is a
  * local count, `rc < 0` a shared one (`-rc` owners, atomic), and `rc == 0` is
  * immortal, or freed. A shared value made immortal keeps its negative count.
- * `shared` stays the authority on the slow paths. Without THRAX_THREADS `rc` is
+ * `shared` stays the authority on the slow paths. Without ARES_THREADS `rc` is
  * only ever positive. */
 enum { SH_LOCAL = 0, SH_SHARED = 1, SH_IMMORTAL = 2 };
 struct Value {
@@ -122,13 +122,13 @@ struct Value {
       size_t nenv;
     } clos;
     struct {
-      int id; /* a THxB_* constant */
+      int id; /* a ARESxB_* constant */
       size_t arity;
       Value **args;
       size_t nargs;
     } builtin;
     struct {
-      int idx; /* index into the generated THxRT_extern_table */
+      int idx; /* index into the generated ARESxRT_extern_table */
       size_t arity;
       Value **args;
       size_t nargs;
@@ -235,7 +235,7 @@ struct Resump {
   int shared;
 };
 
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
 #define RES_INC(p) __atomic_add_fetch((p), 1, __ATOMIC_RELAXED)
 #define RES_DEC(p) __atomic_sub_fetch((p), 1, __ATOMIC_ACQ_REL)
 #define RES_GET(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
@@ -268,7 +268,7 @@ struct Chan {
   unsigned rc;
   Value **buf;
   size_t head, len, cap;
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   pthread_mutex_t mu;
 #endif
 };
@@ -286,7 +286,7 @@ struct TVar {
 /* The count of a channel or a transactional variable, which any thread may
  * hold. */
 static void obj_retain(unsigned *rc) {
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   __atomic_fetch_add(rc, 1, __ATOMIC_RELAXED);
 #else
   ++*rc;
@@ -295,7 +295,7 @@ static void obj_retain(unsigned *rc) {
 
 /* Whether this release dropped the last reference. */
 static int obj_release(unsigned *rc) {
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   return __atomic_sub_fetch(rc, 1, __ATOMIC_ACQ_REL) == 0;
 #else
   return --*rc == 0;
@@ -307,83 +307,83 @@ static int obj_release(unsigned *rc) {
 static void *xmalloc(size_t n) {
   void *p = malloc(n ? n : 1);
   if (!p) {
-    fprintf(stderr, "thrax: out of memory\n");
+    fprintf(stderr, "ares: out of memory\n");
     exit(70);
   }
   return p;
 }
 
-_Noreturn static void thrax_fault(const char *msg) {
-  fprintf(stderr, "thrax: runtime fault: %s\n", msg);
+_Noreturn static void ares_fault(const char *msg) {
+  fprintf(stderr, "ares: runtime fault: %s\n", msg);
   exit(1);
 }
 
 /*------------------------------------------------------------------------------
- *\THE MEMORY ENGINE (precise reference counting; port of THxMEMRC.c)
+ *\THE MEMORY ENGINE (precise reference counting; port of ARESxMEMRC.c)
  *-----------------------------------------------------------------------------*/
 
 /* Releases v's children and frees its owned raw payload blocks; called once,
  * when v's count reaches zero. */
-static void THxVALUE_destroy(Value *v);
+static void ARESxVALUE_destroy(Value *v);
 
 /* Live allocations (values + raw blocks) made minus freed by this thread. A
  * block may be freed by a thread other than the one that allocated it, so one
  * thread's count can go negative; a worker folds its count into
  * `g_live_folded` when it exits, and the sum stays exact. */
-static THX_TLS long long g_live = 0;
-#ifdef THRAX_THREADS
+static ARX_TLS long long g_live = 0;
+#ifdef ARES_THREADS
 static long long g_live_folded = 0;
 #endif
 
-/* Built with -DTHRAX_ALLOC_STATS, a program reports on stderr at exit how many
+/* Built with -DARES_ALLOC_STATS, a program reports on stderr at exit how many
  * counted blocks it allocated in all, for measuring allocation behaviour. */
-#ifdef THRAX_ALLOC_STATS
+#ifdef ARES_ALLOC_STATS
 static long long g_allocs_total = 0, g_reuses_total = 0;
 static void alloc_stats_report(void) {
-  fprintf(stderr, "thrax: %lld allocations, %lld cells reused\n",
+  fprintf(stderr, "ares: %lld allocations, %lld cells reused\n",
           __atomic_load_n(&g_allocs_total, __ATOMIC_RELAXED),
           __atomic_load_n(&g_reuses_total, __ATOMIC_RELAXED));
 }
 #endif
 
-#ifdef THRAX_RC_STATS
+#ifdef ARES_RC_STATS
 /* Every count change on a value, reported at exit: build the emitted C with
- * -DTHRAX_RC_STATS to measure reference-count traffic. Thread-local, so a
+ * -DARES_RC_STATS to measure reference-count traffic. Thread-local, so a
  * threaded program reports the main thread's share. */
-static THX_TLS unsigned long long g_rc_retains = 0, g_rc_releases = 0;
+static ARX_TLS unsigned long long g_rc_retains = 0, g_rc_releases = 0;
 static void rc_stats_report(void) {
-  fprintf(stderr, "thrax: %llu retains, %llu releases\n", g_rc_retains, g_rc_releases);
+  fprintf(stderr, "ares: %llu retains, %llu releases\n", g_rc_retains, g_rc_releases);
 }
 __attribute__((constructor)) static void rc_stats_init(void) { atexit(rc_stats_report); }
-#define THX_RC_COUNT(n) (++(n))
+#define ARX_RC_COUNT(n) (++(n))
 #else
-#define THX_RC_COUNT(n) ((void)0)
+#define ARX_RC_COUNT(n) ((void)0)
 #endif
 
 /* Allocate `size` zeroed bytes with value lifetime (counted). */
-static void *THxMEM_alloc(size_t size) {
+static void *ARESxMEM_alloc(size_t size) {
   void *p = calloc(1, size ? size : 1);
-  if (!p) thrax_fault("out of memory");
+  if (!p) ares_fault("out of memory");
   ++g_live;
-#ifdef THRAX_ALLOC_STATS
+#ifdef ARES_ALLOC_STATS
   if (__atomic_fetch_add(&g_allocs_total, 1, __ATOMIC_RELAXED) == 0) atexit(alloc_stats_report);
 #endif
   return p;
 }
 
-/* Resize a THxMEM_alloc'd block (or allocate one for NULL). Bytes past the
+/* Resize a ARESxMEM_alloc'd block (or allocate one for NULL). Bytes past the
  * old size are not zeroed. */
-static void *THxMEM_realloc(void *p, size_t size) {
+static void *ARESxMEM_realloc(void *p, size_t size) {
   void *q = realloc(p, size ? size : 1);
-  if (!q) thrax_fault("out of memory");
+  if (!q) ares_fault("out of memory");
   if (!p) ++g_live;
   return q;
 }
 
-static void THxMEM_free(void *p) {
+static void ARESxMEM_free(void *p) {
   if (!p) return;
-#ifndef THRAX_THREADS
-  if (g_live == 0) thrax_fault("THxMEM_free: more frees than allocations");
+#ifndef ARES_THREADS
+  if (g_live == 0) ares_fault("ARESxMEM_free: more frees than allocations");
 #endif
   --g_live;
   free(p);
@@ -393,24 +393,24 @@ static void THxMEM_free(void *p) {
  * records, variants, closures and partial applications. A freed block goes on
  * its size class's list for this thread instead of back to malloc, and the
  * next allocation of that size takes it. Every size is a multiple of 8 and a
- * class holds blocks of exactly its size, so a block from THxMEM_alloc may be
- * freed here and a block from here by THxMEM_free: both are plain malloc
+ * class holds blocks of exactly its size, so a block from ARESxMEM_alloc may be
+ * freed here and a block from here by ARESxMEM_free: both are plain malloc
  * blocks of at least the size asked for. A block on a list is not live, so the
  * leak check stays exact. A block may be freed, and so recycled, by a thread
  * other than the one that allocated it; each list is touched only by its
  * owning thread. */
-#define THX_CELL_CLASSES 33 /* sizes 8 .. 256 */
-#define THX_CELL_KEEP 8192  /* blocks a class keeps before handing back to malloc */
+#define ARX_CELL_CLASSES 33 /* sizes 8 .. 256 */
+#define ARX_CELL_KEEP 8192  /* blocks a class keeps before handing back to malloc */
 typedef struct FreeCell {
   struct FreeCell *next;
 } FreeCell;
-static THX_TLS FreeCell *g_cells[THX_CELL_CLASSES];
-static THX_TLS unsigned g_ncells[THX_CELL_CLASSES];
+static ARX_TLS FreeCell *g_cells[ARX_CELL_CLASSES];
+static ARX_TLS unsigned g_ncells[ARX_CELL_CLASSES];
 
 /* `size` (a multiple of 8) zeroed bytes with value lifetime (counted). */
-static inline void *THxMEM_cell(size_t size) {
+static inline void *ARESxMEM_cell(size_t size) {
   size_t k = size >> 3;
-  if (k < THX_CELL_CLASSES && g_cells[k]) {
+  if (k < ARX_CELL_CLASSES && g_cells[k]) {
     FreeCell *c = g_cells[k];
     g_cells[k] = c->next;
     --g_ncells[k];
@@ -418,18 +418,18 @@ static inline void *THxMEM_cell(size_t size) {
     memset(c, 0, size);
     return c;
   }
-  return THxMEM_alloc(size);
+  return ARESxMEM_alloc(size);
 }
 
-static inline void THxMEM_cell_free(void *p, size_t size) {
+static inline void ARESxMEM_cell_free(void *p, size_t size) {
   size_t k = size >> 3;
   if (!p) return;
-  if (k == 0 || k >= THX_CELL_CLASSES || g_ncells[k] >= THX_CELL_KEEP) {
-    THxMEM_free(p);
+  if (k == 0 || k >= ARX_CELL_CLASSES || g_ncells[k] >= ARX_CELL_KEEP) {
+    ARESxMEM_free(p);
     return;
   }
-#ifndef THRAX_THREADS
-  if (g_live == 0) thrax_fault("THxMEM_free: more frees than allocations");
+#ifndef ARES_THREADS
+  if (g_live == 0) ares_fault("ARESxMEM_free: more frees than allocations");
 #endif
   --g_live;
   FreeCell *c = p;
@@ -439,8 +439,8 @@ static inline void THxMEM_cell_free(void *p, size_t size) {
 }
 
 /* Hand this thread's recycled blocks back to malloc (they are not live). */
-static void THxMEM_cells_release(void) {
-  for (size_t k = 0; k < THX_CELL_CLASSES; k++) {
+static void ARESxMEM_cells_release(void) {
+  for (size_t k = 0; k < ARX_CELL_CLASSES; k++) {
     while (g_cells[k]) {
       FreeCell *c = g_cells[k];
       g_cells[k] = c->next;
@@ -452,37 +452,37 @@ static void THxMEM_cells_release(void) {
 
 /* The temp pool: every fresh value is registered here holding the pool's
  * initial reference; the driver drains to a mark after each block bounce. */
-static THX_TLS Value **g_pool = NULL;
-static THX_TLS size_t g_pn = 0, g_pcap = 0;
+static ARX_TLS Value **g_pool = NULL;
+static ARX_TLS size_t g_pn = 0, g_pcap = 0;
 
-static inline void THxMEM_release(Value *v);
+static inline void ARESxMEM_release(Value *v);
 
 /* Hand one reference on `v` to the pool, which releases it at the next drain. */
 static void pool_adopt(Value *v) {
   if (g_pn == g_pcap) {
     g_pcap = g_pcap ? g_pcap * 2 : 256;
     g_pool = realloc(g_pool, g_pcap * sizeof(Value *));
-    if (!g_pool) thrax_fault("temp pool allocation failed");
+    if (!g_pool) ares_fault("temp pool allocation failed");
   }
   g_pool[g_pn++] = v;
 }
 
 static Value *alloc_value(Tag t) {
-  Value *v = THxMEM_cell(sizeof(Value));
+  Value *v = ARESxMEM_cell(sizeof(Value));
   v->tag = t;
   v->rc = 1; /* the pool's reference */
   pool_adopt(v);
   return v;
 }
 
-static size_t THxMEM_pool_mark(void) { return g_pn; }
+static size_t ARESxMEM_pool_mark(void) { return g_pn; }
 
-static void THxMEM_pool_drain(size_t mark) {
-  if (mark > g_pn) thrax_fault("pool_drain: mark above pool top");
-  while (g_pn > mark) THxMEM_release(g_pool[--g_pn]);
+static void ARESxMEM_pool_drain(size_t mark) {
+  if (mark > g_pn) ares_fault("pool_drain: mark above pool top");
+  while (g_pn > mark) ARESxMEM_release(g_pool[--g_pn]);
 }
 
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
 /* A shared count changes under other threads, so even the sign test reads it
  * atomically; relaxed is a plain load. */
 static inline int rc_load(Value *v) { return __atomic_load_n(&v->rc, __ATOMIC_RELAXED); }
@@ -496,7 +496,7 @@ __attribute__((noinline)) static void retain_slow(Value *v) {
   uint8_t sh = sh_load(v);
   if (sh == SH_IMMORTAL) return;
   if (sh == SH_LOCAL || __atomic_fetch_sub(&v->rc, 1, __ATOMIC_RELAXED) >= 0)
-    thrax_fault("retain: retaining a freed value");
+    ares_fault("retain: retaining a freed value");
 }
 
 /* Whether this release dropped the last reference. */
@@ -504,31 +504,31 @@ __attribute__((noinline)) static int release_slow(Value *v) {
   uint8_t sh = sh_load(v);
   if (sh == SH_IMMORTAL) return 0;
   int old = sh == SH_LOCAL ? 0 : __atomic_fetch_add(&v->rc, 1, __ATOMIC_ACQ_REL);
-  if (old >= 0) thrax_fault("release: releasing a freed value");
+  if (old >= 0) ares_fault("release: releasing a freed value");
   return old == -1;
 }
 #endif
 
-static inline void THxMEM_retain(Value *v) {
+static inline void ARESxMEM_retain(Value *v) {
   if (!v) return;
-  THX_RC_COUNT(g_rc_retains);
-#ifdef THRAX_THREADS
+  ARX_RC_COUNT(g_rc_retains);
+#ifdef ARES_THREADS
   int rc = rc_load(v);
   if (__builtin_expect(rc > 0, 1))
     v->rc = rc + 1;
   else
     retain_slow(v);
 #else
-  if (v->rc == 0) thrax_fault("retain: retaining a freed value");
+  if (v->rc == 0) ares_fault("retain: retaining a freed value");
   ++v->rc;
 #endif
 }
 
 /* The acquire load pairs with the releasing decrement of every other owner, so
  * an in-place update after this test sees their last writes. */
-static int THxMEM_unique(Value *v) {
+static int ARESxMEM_unique(Value *v) {
   if (!v) return 0;
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   int rc = rc_load(v);
   if (rc > 0) return rc == 1;
   return rc < 0 && sh_load(v) != SH_IMMORTAL && __atomic_load_n(&v->rc, __ATOMIC_ACQUIRE) == -1;
@@ -540,7 +540,7 @@ static int THxMEM_unique(Value *v) {
 /* Whether `v` is held once, by this thread alone. A value other threads can
  * reach is never reused: its children would have to stay marked shared. */
 static inline int unique_local(Value *v) {
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   return rc_load(v) == 1;
 #else
   return v->rc == 1;
@@ -548,15 +548,15 @@ static inline int unique_local(Value *v) {
 }
 
 /* Dead-value worklist: destruction never recurses on the C stack. */
-static THX_TLS Value **g_dead = NULL;
-static THX_TLS size_t g_dn = 0, g_dcap = 0;
-static THX_TLS int g_draining = 0;
+static ARX_TLS Value **g_dead = NULL;
+static ARX_TLS size_t g_dn = 0, g_dcap = 0;
+static ARX_TLS int g_draining = 0;
 
 static void dead_push(Value *v) {
   if (g_dn == g_dcap) {
     g_dcap = g_dcap ? g_dcap * 2 : 64;
     g_dead = realloc(g_dead, g_dcap * sizeof(Value *));
-    if (!g_dead) thrax_fault("dead worklist allocation failed");
+    if (!g_dead) ares_fault("dead worklist allocation failed");
   }
   g_dead[g_dn++] = v;
 }
@@ -565,10 +565,10 @@ static void release_dead(Value *v);
 
 /* Inline, since a frame's release releases every slot, most of them empty or
  * still referenced elsewhere; only a value that dies leaves the fast path. */
-static inline void THxMEM_release(Value *v) {
+static inline void ARESxMEM_release(Value *v) {
   if (!v) return;
-  THX_RC_COUNT(g_rc_releases);
-#ifdef THRAX_THREADS
+  ARX_RC_COUNT(g_rc_releases);
+#ifdef ARES_THREADS
   int rc = rc_load(v);
   if (__builtin_expect(rc > 1, 1)) {
     v->rc = rc - 1;
@@ -579,7 +579,7 @@ static inline void THxMEM_release(Value *v) {
   else if (!release_slow(v))
     return;
 #else
-  if (v->rc == 0) thrax_fault("release: releasing a freed value");
+  if (v->rc == 0) ares_fault("release: releasing a freed value");
   if (--v->rc > 0) return;
 #endif
   release_dead(v);
@@ -592,14 +592,14 @@ static void release_dead(Value *v) {
   g_draining = 1;
   while (g_dn > 0) {
     Value *d = g_dead[--g_dn];
-    THxVALUE_destroy(d); /* re-enters THxMEM_release: enqueues only */
-    THxMEM_cell_free(d, sizeof(Value));
+    ARESxVALUE_destroy(d); /* re-enters ARESxMEM_release: enqueues only */
+    ARESxMEM_cell_free(d, sizeof(Value));
   }
   g_draining = 0;
 }
 
-static size_t THxMEM_live(void) {
-#ifdef THRAX_THREADS
+static size_t ARESxMEM_live(void) {
+#ifdef ARES_THREADS
   return (size_t)(g_live + __atomic_load_n(&g_live_folded, __ATOMIC_ACQUIRE));
 #else
   return (size_t)g_live;
@@ -609,74 +609,74 @@ static size_t THxMEM_live(void) {
 /* -- constructors -------------------------------------------------------- */
 
 /* Shared constants: unit, the booleans and the small integers are one static
- * cell each, never counted down to zero and never freed. With THRAX_THREADS
+ * cell each, never counted down to zero and never freed. With ARES_THREADS
  * they are immortal (`rc == 0`, the counting slow path ignores them, and
  * `mark_level` stops at them); without, their count starts out of reach of
  * zero. A cell that is patched in place (a let box, a forced thunk) must never
  * be one of these, which is what `fresh_box` is for. */
-#ifdef THRAX_THREADS
-#define THX_CONST_RC 0
+#ifdef ARES_THREADS
+#define ARX_CONST_RC 0
 #else
-#define THX_CONST_RC (1 << 30)
+#define ARX_CONST_RC (1 << 30)
 #endif
-#define THX_CONST(t, init) {(uint8_t)(t), SH_IMMORTAL, THX_CONST_RC, {init}}
-#define THX_SMALL_MIN (-128)
-#define THX_SMALL_MAX 1023
-#define THX_SI(n) THX_CONST(T_INT, .i = (n))
-#define THX_SI4(n) THX_SI(n), THX_SI((n) + 1), THX_SI((n) + 2), THX_SI((n) + 3)
-#define THX_SI16(n) THX_SI4(n), THX_SI4((n) + 4), THX_SI4((n) + 8), THX_SI4((n) + 12)
-#define THX_SI64(n) THX_SI16(n), THX_SI16((n) + 16), THX_SI16((n) + 32), THX_SI16((n) + 48)
-#define THX_SI256(n) THX_SI64(n), THX_SI64((n) + 64), THX_SI64((n) + 128), THX_SI64((n) + 192)
-static Value g_small_ints[THX_SMALL_MAX - THX_SMALL_MIN + 1] = {
-    THX_SI64(-128), THX_SI64(-64), THX_SI256(0), THX_SI256(256), THX_SI256(512), THX_SI256(768)};
-static Value g_unit = THX_CONST(T_UNIT, .i = 0);
-static Value g_false = THX_CONST(T_BOOL, .b = false);
-static Value g_true = THX_CONST(T_BOOL, .b = true);
-_Static_assert(sizeof(g_small_ints) / sizeof(Value) == THX_SMALL_MAX - THX_SMALL_MIN + 1,
+#define ARX_CONST(t, init) {(uint8_t)(t), SH_IMMORTAL, ARX_CONST_RC, {init}}
+#define ARX_SMALL_MIN (-128)
+#define ARX_SMALL_MAX 1023
+#define ARX_SI(n) ARX_CONST(T_INT, .i = (n))
+#define ARX_SI4(n) ARX_SI(n), ARX_SI((n) + 1), ARX_SI((n) + 2), ARX_SI((n) + 3)
+#define ARX_SI16(n) ARX_SI4(n), ARX_SI4((n) + 4), ARX_SI4((n) + 8), ARX_SI4((n) + 12)
+#define ARX_SI64(n) ARX_SI16(n), ARX_SI16((n) + 16), ARX_SI16((n) + 32), ARX_SI16((n) + 48)
+#define ARX_SI256(n) ARX_SI64(n), ARX_SI64((n) + 64), ARX_SI64((n) + 128), ARX_SI64((n) + 192)
+static Value g_small_ints[ARX_SMALL_MAX - ARX_SMALL_MIN + 1] = {
+    ARX_SI64(-128), ARX_SI64(-64), ARX_SI256(0), ARX_SI256(256), ARX_SI256(512), ARX_SI256(768)};
+static Value g_unit = ARX_CONST(T_UNIT, .i = 0);
+static Value g_false = ARX_CONST(T_BOOL, .b = false);
+static Value g_true = ARX_CONST(T_BOOL, .b = true);
+_Static_assert(sizeof(g_small_ints) / sizeof(Value) == ARX_SMALL_MAX - ARX_SMALL_MIN + 1,
                "small integer table size");
 _Static_assert(sizeof(Value) % 8 == 0, "a value cell is a recyclable size");
-#undef THX_SI256
-#undef THX_SI64
-#undef THX_SI16
-#undef THX_SI4
-#undef THX_SI
+#undef ARX_SI256
+#undef ARX_SI64
+#undef ARX_SI16
+#undef ARX_SI4
+#undef ARX_SI
 
-Value *THxRT_int(long long n) {
-  if (n >= THX_SMALL_MIN && n <= THX_SMALL_MAX) return &g_small_ints[n - THX_SMALL_MIN];
+Value *ARESxRT_int(long long n) {
+  if (n >= ARX_SMALL_MIN && n <= ARX_SMALL_MAX) return &g_small_ints[n - ARX_SMALL_MIN];
   Value *v = alloc_value(T_INT);
   v->u.i = (int64_t)n;
   return v;
 }
-Value *THxRT_real(double r) {
+Value *ARESxRT_real(double r) {
   Value *v = alloc_value(T_REAL);
   v->u.r = r;
   return v;
 }
 /* An @Float32 value: the exact f32 is held in the double slot (every float is
  * representable as a double), so reads are lossless and display rounds to f32. */
-Value *THxRT_real32(float r) {
+Value *ARESxRT_real32(float r) {
   Value *v = alloc_value(T_REAL32);
   v->u.r = (double)r;
   return v;
 }
-Value *THxRT_bool(int b) { return b ? &g_true : &g_false; }
-Value *THxRT_unit(void) { return &g_unit; }
+Value *ARESxRT_bool(int b) { return b ? &g_true : &g_false; }
+Value *ARESxRT_unit(void) { return &g_unit; }
 /* A placeholder a let's value is later patched into. */
 static Value *fresh_box(void) { return alloc_value(T_UNIT); }
 
 /* Byte vectors carry a trailing NUL that is not counted in `len`, so
- * THxVALUE_str is a valid C string for the FFI seam (matching the C++
+ * ARESxVALUE_str is a valid C string for the FFI seam (matching the C++
  * runtime). `len` is still the byte length; the NUL is slack. */
-Value *THxRT_str(const char *data, size_t len) {
+Value *ARESxRT_str(const char *data, size_t len) {
   Value *v = alloc_value(T_STR);
-  v->u.str.data = THxMEM_alloc(len + 1);
+  v->u.str.data = ARESxMEM_alloc(len + 1);
   memcpy(v->u.str.data, data, len);
   v->u.str.data[len] = 0;
   v->u.str.len = len;
   v->u.str.cap = len;
   return v;
 }
-/* Take ownership of an already-THxMEM_alloc'd buffer. */
+/* Take ownership of an already-ARESxMEM_alloc'd buffer. */
 static Value *mk_str_owned(uint8_t *data, size_t len) {
   Value *v = alloc_value(T_STR);
   v->u.str.data = data;
@@ -685,12 +685,12 @@ static Value *mk_str_owned(uint8_t *data, size_t len) {
   return v;
 }
 
-Value *THxRT_tuple(Value **items, size_t len) {
+Value *ARESxRT_tuple(Value **items, size_t len) {
   Value *v = alloc_value(T_TUPLE);
-  v->u.seq.items = len ? THxMEM_cell(len * sizeof(Value *)) : NULL;
+  v->u.seq.items = len ? ARESxMEM_cell(len * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < len; i++) {
     v->u.seq.items[i] = items[i];
-    THxMEM_retain(items[i]);
+    ARESxMEM_retain(items[i]);
   }
   v->u.seq.len = len;
   v->u.seq.cap = len;
@@ -698,58 +698,58 @@ Value *THxRT_tuple(Value **items, size_t len) {
 }
 static Value *mk_vec(Value **items, size_t len) {
   Value *v = alloc_value(T_VEC);
-  v->u.seq.items = len ? THxMEM_alloc(len * sizeof(Value *)) : NULL;
+  v->u.seq.items = len ? ARESxMEM_alloc(len * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < len; i++) {
     v->u.seq.items[i] = items[i];
-    THxMEM_retain(items[i]);
+    ARESxMEM_retain(items[i]);
   }
   v->u.seq.len = len;
   v->u.seq.cap = len;
   return v;
 }
-Value *THxRT_struct(const char *name, size_t len, const char **fnames,
+Value *ARESxRT_struct(const char *name, size_t len, const char **fnames,
                     Value **vals) {
   Value *v = alloc_value(T_STRUCT);
   v->u.strct.name = name;
-  v->u.strct.fields = len ? THxMEM_cell(len * sizeof(Field)) : NULL;
+  v->u.strct.fields = len ? ARESxMEM_cell(len * sizeof(Field)) : NULL;
   for (size_t i = 0; i < len; i++) {
     v->u.strct.fields[i].name = fnames[i];
     v->u.strct.fields[i].val = vals[i];
-    THxMEM_retain(vals[i]);
+    ARESxMEM_retain(vals[i]);
   }
   v->u.strct.len = len;
   return v;
 }
-Value *THxRT_variant(const char *ty, const char *tag, size_t len,
+Value *ARESxRT_variant(const char *ty, const char *tag, size_t len,
                      Value **fields) {
   Value *v = alloc_value(T_VARIANT);
   v->u.variant.ty = ty;
   v->u.variant.tag = tag;
-  v->u.variant.fields = len ? THxMEM_cell(len * sizeof(Value *)) : NULL;
+  v->u.variant.fields = len ? ARESxMEM_cell(len * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < len; i++) {
     v->u.variant.fields[i] = fields[i];
-    THxMEM_retain(fields[i]);
+    ARESxMEM_retain(fields[i]);
   }
   v->u.variant.len = len;
   return v;
 }
-Value *THxRT_closure(int code, Value **captures, size_t n) {
+Value *ARESxRT_closure(int code, Value **captures, size_t n) {
   Value *v = alloc_value(T_CLOS);
   v->u.clos.code = code;
-  v->u.clos.env = n ? THxMEM_cell(n * sizeof(Value *)) : NULL;
+  v->u.clos.env = n ? ARESxMEM_cell(n * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < n; i++) {
     v->u.clos.env[i] = captures[i];
-    THxMEM_retain(captures[i]);
+    ARESxMEM_retain(captures[i]);
   }
   v->u.clos.nenv = n;
   return v;
 }
 /* Suspend a lazy slot. `f` is the nullary closure lowering built around the
- * slot's expression; THxVALUE_force runs it. */
-Value *THxRT_thunk(Value *f) {
+ * slot's expression; ARESxVALUE_force runs it. */
+Value *ARESxRT_thunk(Value *f) {
   Value *v = alloc_value(T_THUNK);
   v->u.thunk = f;
-  THxMEM_retain(f);
+  ARESxMEM_retain(f);
   return v;
 }
 /* Field names and constructor tags are mostly the generated program's string
@@ -758,7 +758,7 @@ Value *THxRT_thunk(Value *f) {
 static inline int same_name(const char *a, const char *b) {
   return a == b || strcmp(a, b) == 0;
 }
-Value *THxRT_builtin(int id, size_t arity) {
+Value *ARESxRT_builtin(int id, size_t arity) {
   Value *v = alloc_value(T_BUILTIN);
   v->u.builtin.id = id;
   v->u.builtin.arity = arity;
@@ -766,7 +766,7 @@ Value *THxRT_builtin(int id, size_t arity) {
   v->u.builtin.nargs = 0;
   return v;
 }
-Value *THxRT_extern(int idx, size_t arity) {
+Value *ARESxRT_extern(int idx, size_t arity) {
   Value *v = alloc_value(T_EXTERN);
   v->u.ext.idx = idx;
   v->u.ext.arity = arity;
@@ -775,16 +775,16 @@ Value *THxRT_extern(int idx, size_t arity) {
   return v;
 }
 
-Value *THxVALUE_force(Value *v);
+Value *ARESxVALUE_force(Value *v);
 
 /* A struct built from a base (record update): base's fields seeded, then the
  * listed overrides. An empty `name` keeps the base's type name. */
-Value *THxRT_struct_update(Value *base, const char *name, size_t nextra,
+Value *ARESxRT_struct_update(Value *base, const char *name, size_t nextra,
                            const char **fnames, Value **vals) {
-  base = THxVALUE_force(base); /* a base read from a lazy slot */
-  if (base->tag != T_STRUCT) thrax_fault("record update of a non-struct value");
+  base = ARESxVALUE_force(base); /* a base read from a lazy slot */
+  if (base->tag != T_STRUCT) ares_fault("record update of a non-struct value");
   size_t cap = base->u.strct.len + nextra;
-  Field *fields = THxMEM_alloc((cap ? cap : 1) * sizeof(Field));
+  Field *fields = ARESxMEM_alloc((cap ? cap : 1) * sizeof(Field));
   size_t len = base->u.strct.len;
   memcpy(fields, base->u.strct.fields, len * sizeof(Field));
   for (size_t i = 0; i < nextra; i++) {
@@ -806,44 +806,44 @@ Value *THxRT_struct_update(Value *base, const char *name, size_t nextra,
   v->u.strct.fields = fields;
   v->u.strct.len = len;
   for (size_t i = 0; i < len; i++) {
-    THxMEM_retain(fields[i].val); /* the fresh struct owns every field */
+    ARESxMEM_retain(fields[i].val); /* the fresh struct owns every field */
   }
   return v;
 }
 
 /* -- checked accessors (the only sanctioned way to read a value) --------- */
 
-long long THxVALUE_as_int(Value *v) {
-  if (v->tag != T_INT) thrax_fault("expected an integer");
+long long ARESxVALUE_as_int(Value *v) {
+  if (v->tag != T_INT) ares_fault("expected an integer");
   return (long long)v->u.i;
 }
-double THxVALUE_as_num(Value *v) {
+double ARESxVALUE_as_num(Value *v) {
   if (v->tag == T_INT) return (double)v->u.i;
   if (v->tag == T_REAL || v->tag == T_REAL32) return v->u.r;
-  thrax_fault("expected a number");
+  ares_fault("expected a number");
 }
-static inline int THxVALUE_as_bool(Value *v) {
-  if (v->tag != T_BOOL) thrax_fault("expected a boolean");
+static inline int ARESxVALUE_as_bool(Value *v) {
+  if (v->tag != T_BOOL) ares_fault("expected a boolean");
   return v->u.b ? 1 : 0;
 }
-static inline Value *THxVALUE_local(Value **locals, size_t n, size_t i) {
-  if (i >= n) thrax_fault("local slot out of range");
-  if (!locals[i]) thrax_fault("read of an empty local slot");
+static inline Value *ARESxVALUE_local(Value **locals, size_t n, size_t i) {
+  if (i >= n) ares_fault("local slot out of range");
+  if (!locals[i]) ares_fault("read of an empty local slot");
   return locals[i];
 }
-static inline Value *THxVALUE_env(Value **env, size_t n, size_t i) {
-  if (i >= n) thrax_fault("env field out of range");
-  if (!env[i]) thrax_fault("read of an empty env field");
+static inline Value *ARESxVALUE_env(Value **env, size_t n, size_t i) {
+  if (i >= n) ares_fault("env field out of range");
+  if (!env[i]) ares_fault("read of an empty env field");
   return env[i];
 }
 /* A local's last use: its reference moves to the temp pool, so the value lives
  * out this bounce while the slot no longer counts as an owner. */
-static inline Value *THxVALUE_take(Frame *fr, size_t i) {
-  Value *v = THxVALUE_local(fr->locals, fr->nlocals, i);
+static inline Value *ARESxVALUE_take(Frame *fr, size_t i) {
+  Value *v = ARESxVALUE_local(fr->locals, fr->nlocals, i);
   fr->locals[i] = NULL;
   if (frame_lent(fr, i)) {
     fr->lent &= ~(1u << i);
-    THxMEM_retain(v);
+    ARESxMEM_retain(v);
   }
   pool_adopt(v);
   return v;
@@ -852,8 +852,8 @@ static inline Value *THxVALUE_take(Frame *fr, size_t i) {
  * is the closure's sole owner and the closure cannot reach itself (a recursive
  * closure's weak self edge would let the body enter it again, and the next
  * activation would find the field gone); otherwise it is read as a borrow. */
-Value *THxVALUE_take_env(Frame *fr, size_t i) {
-  Value *v = THxVALUE_env(fr->env, fr->nenv, i);
+Value *ARESxVALUE_take_env(Frame *fr, size_t i) {
+  Value *v = ARESxVALUE_env(fr->env, fr->nenv, i);
   Value *clos = fr->clos;
   if (!clos) {
     /* A direct function's frame (only those have an env and no closure): the
@@ -862,7 +862,7 @@ Value *THxVALUE_take_env(Frame *fr, size_t i) {
     pool_adopt(v);
     return v;
   }
-  if (!THxMEM_unique(clos)) return v;
+  if (!ARESxMEM_unique(clos)) return v;
   for (size_t j = 0; j < fr->nenv; j++)
     if (fr->env[j] == clos) return v;
   fr->env[i] = NULL;
@@ -873,33 +873,33 @@ Value *THxVALUE_take_env(Frame *fr, size_t i) {
  * Note [Direct functions]). A local's last use gives the slot's reference
  * away (a new one, if the slot was lent one), a captured field's gives its
  * row's (in a direct frame) or a new one, and any other atom lends a new one.
- * Unlike `THxVALUE_take`, nothing goes to the pool: a value moved into a call
+ * Unlike `ARESxVALUE_take`, nothing goes to the pool: a value moved into a call
  * stays uniquely held there, so the callee can update it in place. */
-static inline Value *THxVALUE_give(Frame *fr, size_t i) {
-  Value *v = THxVALUE_local(fr->locals, fr->nlocals, i);
+static inline Value *ARESxVALUE_give(Frame *fr, size_t i) {
+  Value *v = ARESxVALUE_local(fr->locals, fr->nlocals, i);
   fr->locals[i] = NULL;
   if (frame_lent(fr, i)) {
     fr->lent &= ~(1u << i);
-    THxMEM_retain(v);
+    ARESxMEM_retain(v);
   }
   return v;
 }
-static inline Value *THxVALUE_give_env(Frame *fr, size_t i) {
+static inline Value *ARESxVALUE_give_env(Frame *fr, size_t i) {
   if (!fr->clos) {
-    Value *v = THxVALUE_env(fr->env, fr->nenv, i);
+    Value *v = ARESxVALUE_env(fr->env, fr->nenv, i);
     fr->env[i] = NULL;
     return v;
   }
-  Value *v = THxVALUE_take_env(fr, i);
-  THxMEM_retain(v);
+  Value *v = ARESxVALUE_take_env(fr, i);
+  ARESxMEM_retain(v);
   return v;
 }
-static inline Value *THxD_lend(Value *v) {
-  THxMEM_retain(v);
+static inline Value *ARESxD_lend(Value *v) {
+  ARESxMEM_retain(v);
   return v;
 }
-char *THxVALUE_str(Value *v) {
-  if (v->tag != T_STR) thrax_fault("expected a byte vector");
+char *ARESxVALUE_str(Value *v) {
+  if (v->tag != T_STR) ares_fault("expected a byte vector");
   return (char *)v->u.str.data;
 }
 /* Field names are string literals of one translation unit, so a lookup
@@ -913,25 +913,25 @@ static Value *struct_field(Value *v, const char *name) {
       return v->u.strct.fields[i].val;
   return NULL;
 }
-static void THxVALUE_patch_box(Value *box, Value *v);
-Value *THxK_call(Value *f, Value *arg);
+static void ARESxVALUE_patch_box(Value *box, Value *v);
+Value *ARESxK_call(Value *f, Value *arg);
 
 /* Run an unforced lazy slot and patch the cell with the result, so the work
  * happens once however many times the value is looked at: every holder of the
  * cell sees the forced value. Nesting collapses here, not at each use. */
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
 static Value *force_shared(Value *v);
 #endif
-static Value *THxK_call_owned(Value *f, Value *arg);
+static Value *ARESxK_call_owned(Value *f, Value *arg);
 static int steal_payload(Value *box, Value *v);
-Value *THxVALUE_force(Value *v) {
-#ifdef THRAX_THREADS
+Value *ARESxVALUE_force(Value *v) {
+#ifdef ARES_THREADS
   if (v && __builtin_expect(rc_load(v) <= 0, 0)) return force_shared(v);
 #endif
   while (v && v->tag == T_THUNK) {
     Value *f = v->u.thunk;
     Value *forced;
-#ifndef THRAX_THREADS
+#ifndef ARES_THREADS
     if (unique_local(f)) {
       /* The cell is the closure's only owner, and patching it below would
        * drop the closure anyway, so the call takes it over: the activation
@@ -940,56 +940,56 @@ Value *THxVALUE_force(Value *v) {
        * cell is a black hole, so a value that needs itself faults. */
       v->tag = T_BLACKHOLE;
       v->u.thunk = NULL;
-      Value *u = THxRT_unit();
-      THxMEM_retain(u);
-      forced = THxK_call_owned(f, u); /* owned */
-      if (forced == v) thrax_fault("a lazy value depends on itself");
+      Value *u = ARESxRT_unit();
+      ARESxMEM_retain(u);
+      forced = ARESxK_call_owned(f, u); /* owned */
+      if (forced == v) ares_fault("a lazy value depends on itself");
     } else
 #endif
     {
       /* Hold the closure across the call: patching the cell below destroys
        * the thunk payload, which is what otherwise owns it. */
-      THxMEM_retain(f);
-      forced = THxK_call(f, THxRT_unit()); /* owned */
-      THxMEM_release(f);
+      ARESxMEM_retain(f);
+      forced = ARESxK_call(f, ARESxRT_unit()); /* owned */
+      ARESxMEM_release(f);
       if (forced == v) break;
     }
     if (!steal_payload(v, forced)) {
-      THxVALUE_patch_box(v, forced); /* deep-copies, so the result is ours to drop */
-      THxMEM_release(forced);
+      ARESxVALUE_patch_box(v, forced); /* deep-copies, so the result is ours to drop */
+      ARESxMEM_release(forced);
     }
   }
-#ifndef THRAX_THREADS
-  if (v && v->tag == T_BLACKHOLE) thrax_fault("a lazy value depends on itself");
+#ifndef ARES_THREADS
+  if (v && v->tag == T_BLACKHOLE) ares_fault("a lazy value depends on itself");
 #endif
   return v;
 }
 
 /* `record.field`: a struct field by name, or a tuple element by index. */
-Value *THxVALUE_field(Value *v, const char *name) {
-  v = THxVALUE_force(v);
+Value *ARESxVALUE_field(Value *v, const char *name) {
+  v = ARESxVALUE_force(v);
   if (v->tag == T_STRUCT) {
     Value *f = struct_field(v, name);
     if (f) return f;
-    thrax_fault("no such field");
+    ares_fault("no such field");
   }
   if (v->tag == T_TUPLE) {
     char *end;
     long idx = strtol(name, &end, 10);
     if (*end == '\0' && idx >= 0 && (size_t)idx < v->u.seq.len)
       return v->u.seq.items[idx];
-    thrax_fault("no such tuple index");
+    ares_fault("no such tuple index");
   }
-  thrax_fault("field access on a non-record");
+  ares_fault("field access on a non-record");
 }
 
-/* `THxVALUE_field` at one access site, which remembers in `hint` where it last
+/* `ARESxVALUE_field` at one access site, which remembers in `hint` where it last
  * found the field, so a site that sees one struct layout reads it at once.
  * Only a value this thread holds alone, or an immortal one (published whole
  * before any thread reads it, and never patched after), takes the fast path:
  * another shared cell may be a thunk some thread is patching in place. */
-static inline Value *THxVALUE_field_ic(Value *v, const char *name, unsigned *hint) {
-#ifdef THRAX_THREADS
+static inline Value *ARESxVALUE_field_ic(Value *v, const char *name, unsigned *hint) {
+#ifdef ARES_THREADS
   if ((rc_load(v) > 0 || sh_load(v) == SH_IMMORTAL) && v->tag == T_STRUCT) {
 #else
   if (v->tag == T_STRUCT) {
@@ -1002,71 +1002,71 @@ static inline Value *THxVALUE_field_ic(Value *v, const char *name, unsigned *hin
         return v->u.strct.fields[i].val;
       }
   }
-  return THxVALUE_field(v, name);
+  return ARESxVALUE_field(v, name);
 }
-const char *THxVALUE_ctor(Value *v) {
-  if (v->tag != T_VARIANT) thrax_fault("expected a variant");
+const char *ARESxVALUE_ctor(Value *v) {
+  if (v->tag != T_VARIANT) ares_fault("expected a variant");
   return v->u.variant.tag;
 }
-static inline int THxVALUE_ctor_is(Value *v, const char *tag) {
-  return same_name(THxVALUE_ctor(v), tag);
+static inline int ARESxVALUE_ctor_is(Value *v, const char *tag) {
+  return same_name(ARESxVALUE_ctor(v), tag);
 }
-Value *THxVALUE_variant_field(Value *v, size_t i) {
-  if (v->tag != T_VARIANT) thrax_fault("expected a variant");
-  if (i >= v->u.variant.len) thrax_fault("variant field out of range");
+Value *ARESxVALUE_variant_field(Value *v, size_t i) {
+  if (v->tag != T_VARIANT) ares_fault("expected a variant");
+  if (i >= v->u.variant.len) ares_fault("variant field out of range");
   return v->u.variant.fields[i];
 }
 
 /* -- coercions (faults on the wrong kind, like the interpreter) ---------- */
 
 static int64_t as_i64(Value *v) {
-  if (v->tag != T_INT) thrax_fault("expected an integer");
+  if (v->tag != T_INT) ares_fault("expected an integer");
   return v->u.i;
 }
 static double as_f64(Value *v) {
   if (v->tag == T_INT) return (double)v->u.i;
   if (v->tag == T_REAL || v->tag == T_REAL32) return v->u.r;
-  thrax_fault("expected a number");
+  ares_fault("expected a number");
 }
 /* An operand rounded to single precision, for the `@f32*` intrinsics. */
 static float as_f32(Value *v) { return (float)as_f64(v); }
 static size_t as_index(Value *v) {
-  if (v->tag != T_INT) thrax_fault("expected an integer index");
-  if (v->u.i < 0) thrax_fault("negative index");
+  if (v->tag != T_INT) ares_fault("expected an integer index");
+  if (v->u.i < 0) ares_fault("negative index");
   return (size_t)v->u.i;
 }
 static uint8_t as_byte(Value *v) {
   if (v->tag != T_INT || v->u.i < 0 || v->u.i > 255)
-    thrax_fault("expected a byte value (0..255)");
+    ares_fault("expected a byte value (0..255)");
   return (uint8_t)v->u.i;
 }
 static Value *as_str(Value *v) {
-  if (v->tag != T_STR) thrax_fault("expected a byte vector");
+  if (v->tag != T_STR) ares_fault("expected a byte vector");
   return v;
 }
 
 /* The byte-buffer reads that yield an integer, shared by the boxed builtins and
- * the generated code that keeps integers unboxed (`THxB_ARRAY_LEN`, ...). */
-static inline int64_t THxA_len(Value *s) { return (int64_t)as_str(s)->u.str.len; }
-static inline int64_t THxA_get(Value *s, int64_t i) {
+ * the generated code that keeps integers unboxed (`ARESxB_ARRAY_LEN`, ...). */
+static inline int64_t ARESxA_len(Value *s) { return (int64_t)as_str(s)->u.str.len; }
+static inline int64_t ARESxA_get(Value *s, int64_t i) {
   as_str(s);
-  if (i < 0) thrax_fault("negative index");
-  if ((uint64_t)i >= s->u.str.len) thrax_fault("array index out of bounds");
+  if (i < 0) ares_fault("negative index");
+  if ((uint64_t)i >= s->u.str.len) ares_fault("array index out of bounds");
   return s->u.str.data[i];
 }
-static inline int THxA_match(Value *s, int64_t at, Value *needle) {
+static inline int ARESxA_match(Value *s, int64_t at, Value *needle) {
   as_str(s);
   as_str(needle);
-  if (at < 0) thrax_fault("negative index");
+  if (at < 0) ares_fault("negative index");
   size_t n = needle->u.str.len;
   if ((uint64_t)at > s->u.str.len || s->u.str.len - (size_t)at < n) return 0;
   return memcmp(s->u.str.data + at, needle->u.str.data, n) == 0;
 }
-static inline int64_t THxA_scan(Value *s, int64_t from, Value *mask) {
+static inline int64_t ARESxA_scan(Value *s, int64_t from, Value *mask) {
   as_str(s);
   as_str(mask);
-  if (from < 0) thrax_fault("negative index");
-  if (mask->u.str.len < 256) thrax_fault("`@array_scan` mask must hold 256 bytes");
+  if (from < 0) ares_fault("negative index");
+  if (mask->u.str.len < 256) ares_fault("`@array_scan` mask must hold 256 bytes");
   const uint8_t *data = s->u.str.data, *m = mask->u.str.data;
   size_t i = (size_t)from, len = s->u.str.len;
   while (i < len && !m[data[i]]) i++;
@@ -1125,45 +1125,45 @@ static bool value_eq(Value *x, Value *y) {
  * the type-directed instances guarantee the tags. */
 static Value *arith_intrinsic(int id, Value *x, Value *y) {
   switch (id) {
-  case THxB_IADD: return THxRT_int(x->u.i + y->u.i);
-  case THxB_ISUB: return THxRT_int(x->u.i - y->u.i);
-  case THxB_IMUL: return THxRT_int(x->u.i * y->u.i);
-  case THxB_IDIV:
-    if (y->u.i == 0) thrax_fault("division by zero");
-    return THxRT_int(x->u.i / y->u.i);
-  case THxB_IMOD:
-    if (y->u.i == 0) thrax_fault("division by zero");
-    return THxRT_int(x->u.i % y->u.i);
+  case ARESxB_IADD: return ARESxRT_int(x->u.i + y->u.i);
+  case ARESxB_ISUB: return ARESxRT_int(x->u.i - y->u.i);
+  case ARESxB_IMUL: return ARESxRT_int(x->u.i * y->u.i);
+  case ARESxB_IDIV:
+    if (y->u.i == 0) ares_fault("division by zero");
+    return ARESxRT_int(x->u.i / y->u.i);
+  case ARESxB_IMOD:
+    if (y->u.i == 0) ares_fault("division by zero");
+    return ARESxRT_int(x->u.i % y->u.i);
   /* `@u*` read the same bits as unsigned: a `Nat` past i64::MAX would divide
    * wrong under signed division. */
-  case THxB_UDIV:
-    if (y->u.i == 0) thrax_fault("division by zero");
-    return THxRT_int((int64_t)((uint64_t)x->u.i / (uint64_t)y->u.i));
-  case THxB_UMOD:
-    if (y->u.i == 0) thrax_fault("division by zero");
-    return THxRT_int((int64_t)((uint64_t)x->u.i % (uint64_t)y->u.i));
+  case ARESxB_UDIV:
+    if (y->u.i == 0) ares_fault("division by zero");
+    return ARESxRT_int((int64_t)((uint64_t)x->u.i / (uint64_t)y->u.i));
+  case ARESxB_UMOD:
+    if (y->u.i == 0) ares_fault("division by zero");
+    return ARESxRT_int((int64_t)((uint64_t)x->u.i % (uint64_t)y->u.i));
   /* `@f32*` rounds each operand and the result to single precision. */
-  case THxB_F32ADD: return THxRT_real32(as_f32(x) + as_f32(y));
-  case THxB_F32SUB: return THxRT_real32(as_f32(x) - as_f32(y));
-  case THxB_F32MUL: return THxRT_real32(as_f32(x) * as_f32(y));
-  case THxB_F32DIV: return THxRT_real32(as_f32(x) / as_f32(y));
+  case ARESxB_F32ADD: return ARESxRT_real32(as_f32(x) + as_f32(y));
+  case ARESxB_F32SUB: return ARESxRT_real32(as_f32(x) - as_f32(y));
+  case ARESxB_F32MUL: return ARESxRT_real32(as_f32(x) * as_f32(y));
+  case ARESxB_F32DIV: return ARESxRT_real32(as_f32(x) / as_f32(y));
   /* Rust f32 `%` is truncated toward zero, like C fmodf. */
-  case THxB_F32MOD: {
+  case ARESxB_F32MOD: {
     float a = as_f32(x), b = as_f32(y);
-    return THxRT_real32(a - b * (float)(long long)(a / b));
+    return ARESxRT_real32(a - b * (float)(long long)(a / b));
   }
-  case THxB_F32POW: return THxRT_real32(powf(as_f32(x), as_f32(y)));
-  case THxB_FADD: return THxRT_real(as_f64(x) + as_f64(y));
-  case THxB_FSUB: return THxRT_real(as_f64(x) - as_f64(y));
-  case THxB_FMUL: return THxRT_real(as_f64(x) * as_f64(y));
-  case THxB_FDIV: return THxRT_real(as_f64(x) / as_f64(y));
+  case ARESxB_F32POW: return ARESxRT_real32(powf(as_f32(x), as_f32(y)));
+  case ARESxB_FADD: return ARESxRT_real(as_f64(x) + as_f64(y));
+  case ARESxB_FSUB: return ARESxRT_real(as_f64(x) - as_f64(y));
+  case ARESxB_FMUL: return ARESxRT_real(as_f64(x) * as_f64(y));
+  case ARESxB_FDIV: return ARESxRT_real(as_f64(x) / as_f64(y));
   /* Rust f64 `%` is C fmod (truncated toward zero). */
-  case THxB_FMOD: {
+  case ARESxB_FMOD: {
     double a = as_f64(x), b = as_f64(y);
-    return THxRT_real(a - b * (double)(long long)(a / b));
+    return ARESxRT_real(a - b * (double)(long long)(a / b));
   }
-  case THxB_FPOW: return THxRT_real(pow(as_f64(x), as_f64(y)));
-  default: thrax_fault("not an arithmetic intrinsic");
+  case ARESxB_FPOW: return ARESxRT_real(pow(as_f64(x), as_f64(y)));
+  default: ares_fault("not an arithmetic intrinsic");
   }
 }
 
@@ -1175,16 +1175,16 @@ static Value *arith_intrinsic(int id, Value *x, Value *y) {
 static Value *bit_intrinsic(int id, int64_t x, int64_t y) {
   uint64_t n = (uint64_t)y;
   switch (id) {
-  case THxB_IAND: return THxRT_int(x & y);
-  case THxB_IOR: return THxRT_int(x | y);
-  case THxB_IXOR: return THxRT_int(x ^ y);
-  case THxB_ISHL: return THxRT_int(n >= 64 ? 0 : (int64_t)((uint64_t)x << n));
-  case THxB_USHR: return THxRT_int(n >= 64 ? 0 : (int64_t)((uint64_t)x >> n));
-  case THxB_ISHR: {
+  case ARESxB_IAND: return ARESxRT_int(x & y);
+  case ARESxB_IOR: return ARESxRT_int(x | y);
+  case ARESxB_IXOR: return ARESxRT_int(x ^ y);
+  case ARESxB_ISHL: return ARESxRT_int(n >= 64 ? 0 : (int64_t)((uint64_t)x << n));
+  case ARESxB_USHR: return ARESxRT_int(n >= 64 ? 0 : (int64_t)((uint64_t)x >> n));
+  case ARESxB_ISHR: {
     if (n > 63) n = 63;
-    return THxRT_int(x < 0 ? ~(int64_t)((uint64_t)~x >> n) : (int64_t)((uint64_t)x >> n));
+    return ARESxRT_int(x < 0 ? ~(int64_t)((uint64_t)~x >> n) : (int64_t)((uint64_t)x >> n));
   }
-  default: thrax_fault("not a bitwise intrinsic");
+  default: ares_fault("not a bitwise intrinsic");
   }
 }
 
@@ -1201,16 +1201,16 @@ static int cmp_bytes(Value *a, Value *b) {
  * `Nat` past i64::MAX orders correctly. */
 static Value *compare_intrinsic(int id, Value *x, Value *y) {
   switch (id) {
-  case THxB_IEQ: return THxRT_bool(x->u.i == y->u.i);
-  case THxB_ILT: return THxRT_bool(x->u.i < y->u.i);
-  case THxB_ULT: return THxRT_bool((uint64_t)x->u.i < (uint64_t)y->u.i);
-  case THxB_FEQ: return THxRT_bool(as_f64(x) == as_f64(y));
-  case THxB_FLT: return THxRT_bool(as_f64(x) < as_f64(y));
-  case THxB_SEQ:
-    return THxRT_bool(x->u.str.len == y->u.str.len &&
+  case ARESxB_IEQ: return ARESxRT_bool(x->u.i == y->u.i);
+  case ARESxB_ILT: return ARESxRT_bool(x->u.i < y->u.i);
+  case ARESxB_ULT: return ARESxRT_bool((uint64_t)x->u.i < (uint64_t)y->u.i);
+  case ARESxB_FEQ: return ARESxRT_bool(as_f64(x) == as_f64(y));
+  case ARESxB_FLT: return ARESxRT_bool(as_f64(x) < as_f64(y));
+  case ARESxB_SEQ:
+    return ARESxRT_bool(x->u.str.len == y->u.str.len &&
                       memcmp(x->u.str.data, y->u.str.data, x->u.str.len) == 0);
-  case THxB_SLT: return THxRT_bool(cmp_bytes(x, y) < 0);
-  default: thrax_fault("not a comparison intrinsic");
+  case ARESxB_SLT: return ARESxRT_bool(cmp_bytes(x, y) < 0);
+  default: ares_fault("not a comparison intrinsic");
   }
 }
 
@@ -1223,10 +1223,10 @@ static Value *compare(int op, Value *x, Value *y) {
     ord = a < b ? -1 : (a > b ? 1 : 0);
   }
   switch (op) {
-  case THxB_LT: return THxRT_bool(ord < 0);
-  case THxB_GT: return THxRT_bool(ord > 0);
-  case THxB_LE: return THxRT_bool(ord <= 0);
-  default: return THxRT_bool(ord >= 0);
+  case ARESxB_LT: return ARESxRT_bool(ord < 0);
+  case ARESxB_GT: return ARESxRT_bool(ord > 0);
+  case ARESxB_LE: return ARESxRT_bool(ord <= 0);
+  default: return ARESxRT_bool(ord >= 0);
   }
 }
 
@@ -1234,13 +1234,13 @@ static Value *compare(int op, Value *x, Value *y) {
 static Value *concat(Value *x, Value *y) {
   if (x->tag == T_STR && y->tag == T_STR) {
     size_t len = x->u.str.len + y->u.str.len;
-    uint8_t *data = THxMEM_alloc(len + 1);
+    uint8_t *data = ARESxMEM_alloc(len + 1);
     memcpy(data, x->u.str.data, x->u.str.len);
     memcpy(data + x->u.str.len, y->u.str.data, y->u.str.len);
     data[len] = 0;
     return mk_str_owned(data, len);
   }
-  thrax_fault("`++` on unsupported operands");
+  ares_fault("`++` on unsupported operands");
 }
 
 /* -- strided tensors (mirrors the interpreter's data.rs) ----------------- */
@@ -1254,14 +1254,14 @@ static Value *concat(Value *x, Value *y) {
 
 static Value *mk_tensor(Value *buf, size_t off, const size_t *shape,
                         const size_t *strides, size_t rank) {
-  size_t *dims = THxMEM_alloc((rank ? 2 * rank : 1) * sizeof(size_t));
+  size_t *dims = ARESxMEM_alloc((rank ? 2 * rank : 1) * sizeof(size_t));
   if (rank) {
     memcpy(dims, shape, rank * sizeof(size_t));
     memcpy(dims + rank, strides, rank * sizeof(size_t));
   }
   Value *v = alloc_value(T_TENSOR);
   v->u.tensor.buf = buf;
-  THxMEM_retain(buf);
+  ARESxMEM_retain(buf);
   v->u.tensor.off = off;
   v->u.tensor.rank = rank;
   v->u.tensor.dims = dims;
@@ -1269,7 +1269,7 @@ static Value *mk_tensor(Value *buf, size_t off, const size_t *shape,
 }
 
 static Value *as_tensor(Value *v) {
-  if (v->tag != T_TENSOR) thrax_fault("expected a tensor");
+  if (v->tag != T_TENSOR) ares_fault("expected a tensor");
   return v;
 }
 
@@ -1290,7 +1290,7 @@ static size_t tensor_total(Value *t) {
 
 static Value *tensor_cell(Value *t, size_t flat) {
   Value *buf = t->u.tensor.buf;
-  if (flat >= buf->u.seq.len) thrax_fault("tensor index out of bounds");
+  if (flat >= buf->u.seq.len) ares_fault("tensor index out of bounds");
   return buf->u.seq.items[flat];
 }
 
@@ -1363,7 +1363,7 @@ static Value *tensor_stack(Value **elems, size_t n) {
     Value *e = elems[i];
     if (e->tag != T_TENSOR || e->u.tensor.rank != sub_rank ||
         memcmp(T_SHAPE(e), T_SHAPE(e0), sub_rank * sizeof(size_t)) != 0)
-      thrax_fault("stacking tensors of unequal shape");
+      ares_fault("stacking tensors of unequal shape");
     tensor_gather(e, items + i * sub_total);
   }
   size_t *shape = xmalloc(rank * sizeof(size_t));
@@ -1394,10 +1394,10 @@ static bool tensor_eq(Value *x, Value *y) {
   return eq;
 }
 
-#ifdef THRAX_WITH_COMPILER
+#ifdef ARES_WITH_COMPILER
 /*------------------------------------------------------------------------------
- *\THE COMPILER BRIDGE: `@lex`, `@parse*` and `@eval` call into libthrax
- * (thrax.h, emitted above). Defined only for a program that uses them, so every
+ *\THE COMPILER BRIDGE: `@lex`, `@parse*` and `@eval` call into libares
+ * (ares.h, emitted above). Defined only for a program that uses them, so every
  * other program links without the library.
  *-----------------------------------------------------------------------------*/
 
@@ -1406,7 +1406,7 @@ static bool tensor_eq(Value *x, Value *y) {
 static const char **g_names = NULL;
 static size_t g_nn = 0, g_ncap = 0;
 
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
 static pthread_mutex_t g_names_mu = PTHREAD_MUTEX_INITIALIZER;
 static const char *intern_name_locked(const char *s);
 static const char *intern_name(const char *s) {
@@ -1424,7 +1424,7 @@ static const char *intern_name(const char *s) {
   if (g_nn == g_ncap) {
     g_ncap = g_ncap ? g_ncap * 2 : 16;
     g_names = realloc(g_names, g_ncap * sizeof(char *));
-    if (!g_names) thrax_fault("name table allocation failed");
+    if (!g_names) ares_fault("name table allocation failed");
   }
   size_t len = strlen(s);
   char *copy = xmalloc(len + 1);
@@ -1438,43 +1438,43 @@ static Value *tensor_from_struct(Value *v) {
   if (strcmp(v->u.strct.name, "@tensor") != 0) return v;
   Value *buf = struct_field(v, "buf"), *sh = struct_field(v, "shape");
   if (!buf || !sh || buf->tag != T_VEC || sh->tag != T_VEC)
-    thrax_fault("malformed tensor constant");
+    ares_fault("malformed tensor constant");
   size_t rank = sh->u.seq.len;
   size_t *dims = xmalloc((rank ? 2 * rank : 1) * sizeof(size_t));
   for (size_t k = 0; k < rank; k++) dims[k] = as_index(sh->u.seq.items[k]);
   if (row_major(dims, rank, dims + rank) != buf->u.seq.len)
-    thrax_fault("malformed tensor constant");
+    ares_fault("malformed tensor constant");
   Value *t = mk_tensor(buf, 0, dims, dims + rank, rank);
   free(dims);
   return t;
 }
 
-static Value *from_thrax(const thrax_value *v) {
+static Value *from_ares(const ares_value *v) {
   switch (v->kind) {
-    case THRAX_UNIT: return THxRT_unit();
-    case THRAX_INT: return THxRT_int(v->int_);
-    case THRAX_FLOAT64: return THxRT_real(v->real);
-    case THRAX_FLOAT32: return THxRT_real32((float)v->real);
-    case THRAX_BOOL: return THxRT_bool((int)v->int_);
-    case THRAX_STR: return THxRT_str((const char *)v->bytes, v->len);
-    case THRAX_TUPLE:
-    case THRAX_VEC:
-    case THRAX_STRUCT:
-    case THRAX_VARIANT: break;
+    case ARES_UNIT: return ARESxRT_unit();
+    case ARES_INT: return ARESxRT_int(v->int_);
+    case ARES_FLOAT64: return ARESxRT_real(v->real);
+    case ARES_FLOAT32: return ARESxRT_real32((float)v->real);
+    case ARES_BOOL: return ARESxRT_bool((int)v->int_);
+    case ARES_STR: return ARESxRT_str((const char *)v->bytes, v->len);
+    case ARES_TUPLE:
+    case ARES_VEC:
+    case ARES_STRUCT:
+    case ARES_VARIANT: break;
   }
   Value **items = xmalloc(v->len * sizeof(Value *));
-  for (size_t i = 0; i < v->len; i++) items[i] = from_thrax(&v->items[i]);
+  for (size_t i = 0; i < v->len; i++) items[i] = from_ares(&v->items[i]);
   Value *r;
-  if (v->kind == THRAX_TUPLE) {
-    r = THxRT_tuple(items, v->len);
-  } else if (v->kind == THRAX_VEC) {
+  if (v->kind == ARES_TUPLE) {
+    r = ARESxRT_tuple(items, v->len);
+  } else if (v->kind == ARES_VEC) {
     r = mk_vec(items, v->len);
-  } else if (v->kind == THRAX_VARIANT) {
-    r = THxRT_variant(intern_name(v->name), intern_name(v->tag), v->len, items);
+  } else if (v->kind == ARES_VARIANT) {
+    r = ARESxRT_variant(intern_name(v->name), intern_name(v->tag), v->len, items);
   } else {
     const char **keys = xmalloc(v->len * sizeof(char *));
     for (size_t i = 0; i < v->len; i++) keys[i] = intern_name(v->keys[i]);
-    r = THxRT_struct(intern_name(v->name), v->len, keys, items);
+    r = ARESxRT_struct(intern_name(v->name), v->len, keys, items);
     free(keys);
     r = tensor_from_struct(r);
   }
@@ -1483,73 +1483,73 @@ static Value *from_thrax(const thrax_value *v) {
 }
 
 _Noreturn static void compiler_fault(const char *builtin, char *err) {
-  fprintf(stderr, "thrax: runtime fault in %s:\n%s\n", builtin,
+  fprintf(stderr, "ares: runtime fault in %s:\n%s\n", builtin,
           err ? err : "(no message)");
-  thrax_string_free(err);
+  ares_string_free(err);
   exit(1);
 }
 
 static Value *code_value(const char *src, size_t len) {
   const char *key = "src";
-  Value *text = THxRT_str(src, len);
-  return THxRT_struct("@Code", 1, &key, &text);
+  Value *text = ARESxRT_str(src, len);
+  return ARESxRT_struct("@Code", 1, &key, &text);
 }
 
 static Value *token_text(Value *tok) {
-  tok = THxVALUE_force(tok);
-  if (tok->tag != T_VARIANT || tok->u.variant.len != 1) thrax_fault("expected a Token");
-  Value *f = THxVALUE_force(tok->u.variant.fields[0]);
-  if (f->tag != T_STR) thrax_fault("malformed Token");
+  tok = ARESxVALUE_force(tok);
+  if (tok->tag != T_VARIANT || tok->u.variant.len != 1) ares_fault("expected a Token");
+  Value *f = ARESxVALUE_force(tok->u.variant.fields[0]);
+  if (f->tag != T_STR) ares_fault("malformed Token");
   return f;
 }
 
 /* Run a compiler builtin, or return NULL when `name` is not one. */
 static Value *compiler_builtin(int id, Value **a) {
-  const char *name = THxB_names[id];
+  const char *name = ARESxB_names[id];
   char *err = NULL;
   switch (id) {
-  case THxB_TOKEN_KIND: {
-    Value *tok = THxVALUE_force(a[0]);
-    if (tok->tag != T_VARIANT) thrax_fault("expected a Token");
-    return THxRT_str(tok->u.variant.tag, strlen(tok->u.variant.tag));
+  case ARESxB_TOKEN_KIND: {
+    Value *tok = ARESxVALUE_force(a[0]);
+    if (tok->tag != T_VARIANT) ares_fault("expected a Token");
+    return ARESxRT_str(tok->u.variant.tag, strlen(tok->u.variant.tag));
   }
-  case THxB_TOKEN_TEXT: return token_text(a[0]);
-  case THxB_UNPARSE: {
-    Value *code = THxVALUE_force(a[0]);
+  case ARESxB_TOKEN_TEXT: return token_text(a[0]);
+  case ARESxB_UNPARSE: {
+    Value *code = ARESxVALUE_force(a[0]);
     if (code->tag != T_STRUCT || strcmp(code->u.strct.name, "@Code") != 0)
-      thrax_fault("@unparse expects an @Code");
+      ares_fault("@unparse expects an @Code");
     return struct_field(code, "src");
   }
-  case THxB_LEX: case THxB_FORMAT: case THxB_EVAL: {
-    int eval = id == THxB_EVAL;
-    Value *arg = THxVALUE_force(a[0]);
+  case ARESxB_LEX: case ARESxB_FORMAT: case ARESxB_EVAL: {
+    int eval = id == ARESxB_EVAL;
+    Value *arg = ARESxVALUE_force(a[0]);
     if (eval) {
       if (arg->tag != T_STRUCT || strcmp(arg->u.strct.name, "@Code") != 0)
-        thrax_fault("@eval expects an @Code");
+        ares_fault("@eval expects an @Code");
       arg = struct_field(arg, "src");
     }
-    if (!arg || arg->tag != T_STR) thrax_fault("expected a string");
-    thrax_value *v = id == THxB_LEX ? thrax_lex(arg->u.str.data, arg->u.str.len, &err)
-                   : id == THxB_FORMAT ? thrax_format(arg->u.str.data, arg->u.str.len, &err)
-                   : thrax_eval(arg->u.str.data, arg->u.str.len, &err);
+    if (!arg || arg->tag != T_STR) ares_fault("expected a string");
+    ares_value *v = id == ARESxB_LEX ? ares_lex(arg->u.str.data, arg->u.str.len, &err)
+                   : id == ARESxB_FORMAT ? ares_format(arg->u.str.data, arg->u.str.len, &err)
+                   : ares_eval(arg->u.str.data, arg->u.str.len, &err);
     if (!v) compiler_fault(name, err);
-    Value *r = from_thrax(v);
-    thrax_value_free(v);
+    Value *r = from_ares(v);
+    ares_value_free(v);
     return r;
   }
-  case THxB_PARSE_STR: case THxB_PARSE_ITEMS: case THxB_PARSE_TYPE: case THxB_PARSE_ROW: {
-    Value *s = THxVALUE_force(a[0]);
-    if (s->tag != T_STR) thrax_fault("expected a string");
-    int kind = id == THxB_PARSE_ITEMS ? 1 : id == THxB_PARSE_TYPE ? 2 : id == THxB_PARSE_ROW ? 3 : 0;
-    if (thrax_parse(s->u.str.data, s->u.str.len, kind, &err) != 0)
+  case ARESxB_PARSE_STR: case ARESxB_PARSE_ITEMS: case ARESxB_PARSE_TYPE: case ARESxB_PARSE_ROW: {
+    Value *s = ARESxVALUE_force(a[0]);
+    if (s->tag != T_STR) ares_fault("expected a string");
+    int kind = id == ARESxB_PARSE_ITEMS ? 1 : id == ARESxB_PARSE_TYPE ? 2 : id == ARESxB_PARSE_ROW ? 3 : 0;
+    if (ares_parse(s->u.str.data, s->u.str.len, kind, &err) != 0)
       compiler_fault(name, err);
     return code_value((const char *)s->u.str.data, s->u.str.len);
   }
-  case THxB_PARSE: {
+  case ARESxB_PARSE: {
     /* `@Code` is text-backed: the lexemes rejoined with a space, as the
      * interpreter's `@parse` does. */
-    Value *toks = THxVALUE_force(a[0]);
-    if (toks->tag != T_VEC) thrax_fault("expected a vector");
+    Value *toks = ARESxVALUE_force(a[0]);
+    if (toks->tag != T_VEC) ares_fault("expected a vector");
     size_t len = 0;
     for (size_t i = 0; i < toks->u.seq.len; i++)
       len += token_text(toks->u.seq.items[i])->u.str.len + 1;
@@ -1561,7 +1561,7 @@ static Value *compiler_builtin(int id, Value **a) {
       memcpy(buf + at, t->u.str.data, t->u.str.len);
       at += t->u.str.len;
     }
-    if (thrax_parse((const uint8_t *)buf, at, 0, &err) != 0)
+    if (ares_parse((const uint8_t *)buf, at, 0, &err) != 0)
       compiler_fault(name, err);
     Value *r = code_value(buf, at);
     free(buf);
@@ -1576,26 +1576,26 @@ static Value *compiler_builtin(int id, Value **a) {
  * `f {}` and returns its future; `@await` blocks until the result is in and
  * returns it (borrowed: the future owns it). Without threads a task waits in a
  * queue until something needs it, as in the interpreter (see `run_next_task`). */
-static Value *THxPAR_spawn(Value *f);
-static Value *THxPAR_await(Value *fut);
-static Value *THxPAR_spawn_io(Value *f);
+static Value *ARESxPAR_spawn(Value *f);
+static Value *ARESxPAR_await(Value *fut);
+static Value *ARESxPAR_spawn_io(Value *f);
 
 static void chan_release(Chan *c);
 static void tvar_release(TVar *tv);
 static void stm_free_log(void);
-static Value *THxCHAN_new(void);
-static Value *THxCHAN_send(Value *ch, Value *v);
-static Value *THxCHAN_recv(Value *ch);
-static Value *THxTVAR_new(Value *v);
-static Value *THxTVAR_read(Value *tv);
-static Value *THxSTM_begin(void);
-static Value *THxSTM_read(Value *tv);
-static Value *THxSTM_write(Value *tv, Value *v);
-static Value *THxSTM_commit(void);
-static Value *THxSTM_wait(void);
-static Value *THxSTM_save(void);
-static Value *THxSTM_rollback(Value *mark);
-#ifdef THRAX_THREADS
+static Value *ARESxCHAN_new(void);
+static Value *ARESxCHAN_send(Value *ch, Value *v);
+static Value *ARESxCHAN_recv(Value *ch);
+static Value *ARESxTVAR_new(Value *v);
+static Value *ARESxTVAR_read(Value *tv);
+static Value *ARESxSTM_begin(void);
+static Value *ARESxSTM_read(Value *tv);
+static Value *ARESxSTM_write(Value *tv, Value *v);
+static Value *ARESxSTM_commit(void);
+static Value *ARESxSTM_wait(void);
+static Value *ARESxSTM_save(void);
+static Value *ARESxSTM_rollback(Value *mark);
+#ifdef ARES_THREADS
 static void mark_shared(Value *v);
 #endif
 
@@ -1607,21 +1607,21 @@ static void mark_shared(Value *v);
  * in place grows the block geometrically, so building by pushes is linear. */
 static Value *vec_update(int id, Value **a, int owned) {
   Value *v = a[0];
-  if (v->tag != T_VEC) thrax_fault("expected a vector");
+  if (v->tag != T_VEC) ares_fault("expected a vector");
   size_t len = v->u.seq.len;
-  int push = id == THxB_VEC_PUSH;
+  int push = id == ARESxB_VEC_PUSH;
   size_t at = push ? len : as_index(a[1]);
-  if (at >= len && !push) thrax_fault("vec index out of bounds");
+  if (at >= len && !push) ares_fault("vec index out of bounds");
   Value *x = a[push ? 1 : 2];
-  if (owned && THxMEM_unique(v)) {
-#ifdef THRAX_THREADS
+  if (owned && ARESxMEM_unique(v)) {
+#ifdef ARES_THREADS
     if (sh_load(v) != SH_LOCAL) mark_shared(x);
 #endif
-    THxMEM_retain(x);
+    ARESxMEM_retain(x);
     if (push) {
       if (len == v->u.seq.cap) {
         size_t cap = len < 4 ? 4 : len * 2;
-        v->u.seq.items = THxMEM_realloc(v->u.seq.items, cap * sizeof(Value *));
+        v->u.seq.items = ARESxMEM_realloc(v->u.seq.items, cap * sizeof(Value *));
         v->u.seq.cap = cap;
       }
       v->u.seq.items[len] = x;
@@ -1629,140 +1629,140 @@ static Value *vec_update(int id, Value **a, int owned) {
     } else {
       Value *old = v->u.seq.items[at];
       v->u.seq.items[at] = x;
-      THxMEM_release(old);
+      ARESxMEM_release(old);
     }
     return v;
   }
   size_t n = push ? len + 1 : len;
   Value *r = alloc_value(T_VEC);
-  r->u.seq.items = n ? THxMEM_alloc(n * sizeof(Value *)) : NULL;
+  r->u.seq.items = n ? ARESxMEM_alloc(n * sizeof(Value *)) : NULL;
   for (size_t i = 0; i < len; i++) r->u.seq.items[i] = v->u.seq.items[i];
   r->u.seq.items[at] = x;
-  for (size_t i = 0; i < n; i++) THxMEM_retain(r->u.seq.items[i]);
+  for (size_t i = 0; i < n; i++) ARESxMEM_retain(r->u.seq.items[i]);
   r->u.seq.len = n;
   r->u.seq.cap = n;
   return r;
 }
 
-static int is_vec_update(int id) { return id == THxB_VEC_PUSH || id == THxB_VEC_SET; }
+static int is_vec_update(int id) { return id == ARESxB_VEC_PUSH || id == ARESxB_VEC_SET; }
 
 static Value *run_builtin(int id, Value **a) {
   switch (id) {
-  case THxB_IADD: case THxB_ISUB: case THxB_IMUL: case THxB_IDIV:
-  case THxB_IMOD: case THxB_UDIV: case THxB_UMOD:
-  case THxB_FADD: case THxB_FSUB: case THxB_FMUL: case THxB_FDIV:
-  case THxB_FMOD: case THxB_FPOW:
-  case THxB_F32ADD: case THxB_F32SUB: case THxB_F32MUL: case THxB_F32DIV:
-  case THxB_F32MOD: case THxB_F32POW:
+  case ARESxB_IADD: case ARESxB_ISUB: case ARESxB_IMUL: case ARESxB_IDIV:
+  case ARESxB_IMOD: case ARESxB_UDIV: case ARESxB_UMOD:
+  case ARESxB_FADD: case ARESxB_FSUB: case ARESxB_FMUL: case ARESxB_FDIV:
+  case ARESxB_FMOD: case ARESxB_FPOW:
+  case ARESxB_F32ADD: case ARESxB_F32SUB: case ARESxB_F32MUL: case ARESxB_F32DIV:
+  case ARESxB_F32MOD: case ARESxB_F32POW:
     return arith_intrinsic(id, a[0], a[1]);
-  case THxB_IEQ: case THxB_ILT: case THxB_ULT: case THxB_FEQ:
-  case THxB_FLT: case THxB_SEQ: case THxB_SLT:
+  case ARESxB_IEQ: case ARESxB_ILT: case ARESxB_ULT: case ARESxB_FEQ:
+  case ARESxB_FLT: case ARESxB_SEQ: case ARESxB_SLT:
     return compare_intrinsic(id, a[0], a[1]);
-  case THxB_IAND: case THxB_IOR: case THxB_IXOR:
-  case THxB_ISHL: case THxB_ISHR: case THxB_USHR:
+  case ARESxB_IAND: case ARESxB_IOR: case ARESxB_IXOR:
+  case ARESxB_ISHL: case ARESxB_ISHR: case ARESxB_USHR:
     return bit_intrinsic(id, as_i64(a[0]), as_i64(a[1]));
-  case THxB_INOT: return THxRT_int(~as_i64(a[0]));
-  case THxB_F64_BITS: {
+  case ARESxB_INOT: return ARESxRT_int(~as_i64(a[0]));
+  case ARESxB_F64_BITS: {
     double d = as_f64(a[0]);
     uint64_t u;
     memcpy(&u, &d, sizeof u);
-    return THxRT_int((int64_t)u);
+    return ARESxRT_int((int64_t)u);
   }
-  case THxB_BITS_F64: {
+  case ARESxB_BITS_F64: {
     uint64_t u = (uint64_t)as_i64(a[0]);
     double d;
     memcpy(&d, &u, sizeof d);
-    return THxRT_real(d);
+    return ARESxRT_real(d);
   }
-  case THxB_F32_BITS: {
+  case ARESxB_F32_BITS: {
     float f = as_f32(a[0]);
     uint32_t u;
     memcpy(&u, &f, sizeof u);
-    return THxRT_int((int64_t)u);
+    return ARESxRT_int((int64_t)u);
   }
-  case THxB_BITS_F32: {
+  case ARESxB_BITS_F32: {
     uint32_t u = (uint32_t)as_i64(a[0]);
     float f;
     memcpy(&f, &u, sizeof f);
-    return THxRT_real32(f);
+    return ARESxRT_real32(f);
   }
-  case THxB_SWRAP: case THxB_UWRAP: {
+  case ARESxB_SWRAP: case ARESxB_UWRAP: {
     int64_t bits = a[0]->u.i, x = a[1]->u.i;
-    if (bits < 1 || bits >= 64) return THxRT_int(x);
+    if (bits < 1 || bits >= 64) return ARESxRT_int(x);
     unsigned shift = (unsigned)(64 - bits);
-    if (id == THxB_SWRAP) return THxRT_int((int64_t)((uint64_t)x << shift) >> shift);
-    return THxRT_int((int64_t)(((uint64_t)x << shift) >> shift));
+    if (id == ARESxB_SWRAP) return ARESxRT_int((int64_t)((uint64_t)x << shift) >> shift);
+    return ARESxRT_int((int64_t)(((uint64_t)x << shift) >> shift));
   }
-  case THxB_NEG: {
-    if (a[0]->tag == T_INT) return THxRT_int(-a[0]->u.i);
-    if (a[0]->tag == T_REAL) return THxRT_real(-a[0]->u.r);
-    if (a[0]->tag == T_REAL32) return THxRT_real32(-(float)a[0]->u.r);
-    thrax_fault("`neg` on a non-number");
+  case ARESxB_NEG: {
+    if (a[0]->tag == T_INT) return ARESxRT_int(-a[0]->u.i);
+    if (a[0]->tag == T_REAL) return ARESxRT_real(-a[0]->u.r);
+    if (a[0]->tag == T_REAL32) return ARESxRT_real32(-(float)a[0]->u.r);
+    ares_fault("`neg` on a non-number");
   }
-  case THxB_NOT: {
-    if (a[0]->tag == T_BOOL) return THxRT_bool(!a[0]->u.b);
-    thrax_fault("`not` on a non-boolean");
+  case ARESxB_NOT: {
+    if (a[0]->tag == T_BOOL) return ARESxRT_bool(!a[0]->u.b);
+    ares_fault("`not` on a non-boolean");
   }
-  case THxB_EQ: return THxRT_bool(value_eq(a[0], a[1]));
-  case THxB_LT: case THxB_GT: case THxB_LE: case THxB_GE:
+  case ARESxB_EQ: return ARESxRT_bool(value_eq(a[0], a[1]));
+  case ARESxB_LT: case ARESxB_GT: case ARESxB_LE: case ARESxB_GE:
     return compare(id, a[0], a[1]);
-  case THxB_CONCAT: return concat(a[0], a[1]);
-  case THxB_ACAT: return concat(a[0], a[1]);
+  case ARESxB_CONCAT: return concat(a[0], a[1]);
+  case ARESxB_ACAT: return concat(a[0], a[1]);
 
-  case THxB_ARRAY_ALLOC: {
+  case ARESxB_ARRAY_ALLOC: {
     size_t len = as_index(a[0]);
-    uint8_t *data = THxMEM_alloc(len + 1);
+    uint8_t *data = ARESxMEM_alloc(len + 1);
     memset(data, 0, len + 1);
     return mk_str_owned(data, len);
   }
-  case THxB_ARRAY_LEN: return THxRT_int(THxA_len(a[0]));
-  case THxB_ARRAY_GET: return THxRT_int(THxA_get(a[0], (int64_t)as_index(a[1])));
-  case THxB_ARRAY_PUSH: {
+  case ARESxB_ARRAY_LEN: return ARESxRT_int(ARESxA_len(a[0]));
+  case ARESxB_ARRAY_GET: return ARESxRT_int(ARESxA_get(a[0], (int64_t)as_index(a[1])));
+  case ARESxB_ARRAY_PUSH: {
     Value *s = as_str(a[0]);
     size_t len = s->u.str.len + 1;
-    uint8_t *data = THxMEM_alloc(len + 1);
+    uint8_t *data = ARESxMEM_alloc(len + 1);
     memcpy(data, s->u.str.data, s->u.str.len);
     data[s->u.str.len] = as_byte(a[1]);
     data[len] = 0;
     return mk_str_owned(data, len);
   }
-  case THxB_ARRAY_SET: {
+  case ARESxB_ARRAY_SET: {
     Value *s = as_str(a[0]);
     size_t i = as_index(a[1]);
-    if (i >= s->u.str.len) thrax_fault("array index out of bounds");
-    uint8_t *data = THxMEM_alloc(s->u.str.len + 1);
+    if (i >= s->u.str.len) ares_fault("array index out of bounds");
+    uint8_t *data = ARESxMEM_alloc(s->u.str.len + 1);
     memcpy(data, s->u.str.data, s->u.str.len);
     data[i] = as_byte(a[2]);
     data[s->u.str.len] = 0;
     return mk_str_owned(data, s->u.str.len);
   }
-  case THxB_ARRAY_SLICE: {
+  case ARESxB_ARRAY_SLICE: {
     Value *s = as_str(a[0]);
     size_t beg = as_index(a[1]);
     size_t end = as_index(a[2]);
     if (beg > s->u.str.len) beg = s->u.str.len;
     if (end < beg) end = beg;
     if (end > s->u.str.len) end = s->u.str.len;
-    return THxRT_str((const char *)s->u.str.data + beg, end - beg);
+    return ARESxRT_str((const char *)s->u.str.data + beg, end - beg);
   }
-  case THxB_ARRAY_SCAN: return THxRT_int(THxA_scan(a[0], (int64_t)as_index(a[1]), a[2]));
-  case THxB_ARRAY_MATCH: return THxRT_bool(THxA_match(a[0], (int64_t)as_index(a[1]), a[2]));
-  case THxB_PTR_BYTES: {
+  case ARESxB_ARRAY_SCAN: return ARESxRT_int(ARESxA_scan(a[0], (int64_t)as_index(a[1]), a[2]));
+  case ARESxB_ARRAY_MATCH: return ARESxRT_bool(ARESxA_match(a[0], (int64_t)as_index(a[1]), a[2]));
+  case ARESxB_PTR_BYTES: {
     size_t n = as_index(a[1]);
-    if (n == 0) return THxRT_str("", 0);
+    if (n == 0) return ARESxRT_str("", 0);
     const char *p = (const char *)(intptr_t)as_i64(a[0]);
-    if (!p) thrax_fault("`@ptr_bytes` from a null pointer");
-    return THxRT_str(p, n);
+    if (!p) ares_fault("`@ptr_bytes` from a null pointer");
+    return ARESxRT_str(p, n);
   }
 
-  case THxB_RECORD_WITHOUT: {
+  case ARESxB_RECORD_WITHOUT: {
     Value *rec = a[0];
-    if (rec->tag != T_STRUCT) thrax_fault("`record_without` on a non-record");
+    if (rec->tag != T_STRUCT) ares_fault("`record_without` on a non-record");
     Value *lbl = as_str(a[1]);
     size_t llen = lbl->u.str.len;
     const char *ldata = (const char *)lbl->u.str.data;
     size_t n0 = rec->u.strct.len;
-    Field *fields = THxMEM_alloc((n0 ? n0 : 1) * sizeof(Field));
+    Field *fields = ARESxMEM_alloc((n0 ? n0 : 1) * sizeof(Field));
     size_t len = 0;
     int dropped = 0;
     for (size_t i = 0; i < n0; i++) {
@@ -1778,12 +1778,12 @@ static Value *run_builtin(int id, Value **a) {
     v->u.strct.fields = fields;
     v->u.strct.len = len;
     for (size_t i = 0; i < len; i++) {
-      THxMEM_retain(fields[i].val); /* the fresh struct owns every field */
+      ARESxMEM_retain(fields[i].val); /* the fresh struct owns every field */
     }
     return v;
   }
-  case THxB_VEC_NEW: return mk_vec(NULL, 0);
-  case THxB_VEC_FILL: {
+  case ARESxB_VEC_NEW: return mk_vec(NULL, 0);
+  case ARESxB_VEC_FILL: {
     size_t len = as_index(a[0]);
     Value **items = len ? xmalloc(len * sizeof(Value *)) : NULL;
     for (size_t i = 0; i < len; i++) items[i] = a[1];
@@ -1791,19 +1791,19 @@ static Value *run_builtin(int id, Value **a) {
     free(items);
     return v;
   }
-  case THxB_VEC_LEN: {
-    if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
-    return THxRT_int((int64_t)a[0]->u.seq.len);
+  case ARESxB_VEC_LEN: {
+    if (a[0]->tag != T_VEC) ares_fault("expected a vector");
+    return ARESxRT_int((int64_t)a[0]->u.seq.len);
   }
-  case THxB_TENSOR_LENGTH: {
+  case ARESxB_TENSOR_LENGTH: {
     Value *t = as_tensor(a[0]);
-    return THxRT_int(t->u.tensor.rank > 0 ? (int64_t)T_SHAPE(t)[0] : 0);
+    return ARESxRT_int(t->u.tensor.rank > 0 ? (int64_t)T_SHAPE(t)[0] : 0);
   }
-  case THxB_TENSOR_STACK: {
-    if (a[0]->tag != T_VEC) thrax_fault("@tensor_stack expects a vector");
+  case ARESxB_TENSOR_STACK: {
+    if (a[0]->tag != T_VEC) ares_fault("@tensor_stack expects a vector");
     return tensor_stack(a[0]->u.seq.items, a[0]->u.seq.len);
   }
-  case THxB_TENSOR_TRANSPOSE: {
+  case ARESxB_TENSOR_TRANSPOSE: {
     Value *t = as_tensor(a[0]);
     size_t rank = t->u.tensor.rank;
     size_t *d = xmalloc((rank ? 2 * rank : 1) * sizeof(size_t));
@@ -1815,18 +1815,18 @@ static Value *run_builtin(int id, Value **a) {
     free(d);
     return r;
   }
-  case THxB_TENSOR_SLICE:
-  case THxB_TENSOR_SLICE_AXIS: {
+  case ARESxB_TENSOR_SLICE:
+  case ARESxB_TENSOR_SLICE_AXIS: {
     Value *t = as_tensor(a[0]);
     size_t rank = t->u.tensor.rank;
     size_t axis = 0;
     Value **range = a + 1;
-    if (id == THxB_TENSOR_SLICE_AXIS) {
+    if (id == ARESxB_TENSOR_SLICE_AXIS) {
       axis = as_index(a[1]);
-      if (axis >= rank) thrax_fault("slice axis out of range");
+      if (axis >= rank) ares_fault("slice axis out of range");
       range = a + 2;
     } else if (rank == 0) {
-      thrax_fault("slice of a rank-0 tensor");
+      ares_fault("slice of a rank-0 tensor");
     }
     size_t n = T_SHAPE(t)[axis];
     size_t lo = as_index(range[0]);
@@ -1842,14 +1842,14 @@ static Value *run_builtin(int id, Value **a) {
     free(shape);
     return r;
   }
-  case THxB_TENSOR_INDEX_AXIS: {
+  case ARESxB_TENSOR_INDEX_AXIS: {
     Value *t = as_tensor(a[0]);
     size_t rank = t->u.tensor.rank;
     size_t axis = as_index(a[1]);
-    if (axis >= rank) thrax_fault("index axis out of range");
+    if (axis >= rank) ares_fault("index axis out of range");
     size_t n = T_SHAPE(t)[axis];
-    if (n == 0) thrax_fault("index into an empty axis");
-    size_t base = t->u.tensor.off + wrap_index(THxVALUE_as_int(a[2]), n) * T_STRIDES(t)[axis];
+    if (n == 0) ares_fault("index into an empty axis");
+    size_t base = t->u.tensor.off + wrap_index(ARESxVALUE_as_int(a[2]), n) * T_STRIDES(t)[axis];
     if (rank == 1) return tensor_cell(t, base); /* borrowed; do_ret retains it */
     size_t *d = xmalloc(2 * (rank - 1) * sizeof(size_t));
     for (size_t k = 0, j = 0; k < rank; k++) { /* drop `axis` */
@@ -1862,31 +1862,31 @@ static Value *run_builtin(int id, Value **a) {
     free(d);
     return r;
   }
-  case THxB_DELAY: return THxRT_thunk(a[0]);
-  case THxB_PAR: return THxPAR_spawn(a[0]);
-  case THxB_SPAWN: return THxPAR_spawn_io(a[0]);
-  case THxB_AWAIT: return THxPAR_await(a[0]);
-  case THxB_CHAN_NEW: return THxCHAN_new();
-  case THxB_CHAN_SEND: return THxCHAN_send(a[0], a[1]);
-  case THxB_CHAN_RECV: return THxCHAN_recv(a[0]);
-  case THxB_TVAR_NEW: return THxTVAR_new(a[0]);
-  case THxB_TVAR_READ: return THxTVAR_read(a[0]);
-  case THxB_STM_BEGIN: return THxSTM_begin();
-  case THxB_STM_READ: return THxSTM_read(a[0]);
-  case THxB_STM_WRITE: return THxSTM_write(a[0], a[1]);
-  case THxB_STM_COMMIT: return THxSTM_commit();
-  case THxB_STM_WAIT: return THxSTM_wait();
-  case THxB_STM_SAVE: return THxSTM_save();
-  case THxB_STM_ROLLBACK: return THxSTM_rollback(a[0]);
-  case THxB_VEC_GET: {
-    if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
+  case ARESxB_DELAY: return ARESxRT_thunk(a[0]);
+  case ARESxB_PAR: return ARESxPAR_spawn(a[0]);
+  case ARESxB_SPAWN: return ARESxPAR_spawn_io(a[0]);
+  case ARESxB_AWAIT: return ARESxPAR_await(a[0]);
+  case ARESxB_CHAN_NEW: return ARESxCHAN_new();
+  case ARESxB_CHAN_SEND: return ARESxCHAN_send(a[0], a[1]);
+  case ARESxB_CHAN_RECV: return ARESxCHAN_recv(a[0]);
+  case ARESxB_TVAR_NEW: return ARESxTVAR_new(a[0]);
+  case ARESxB_TVAR_READ: return ARESxTVAR_read(a[0]);
+  case ARESxB_STM_BEGIN: return ARESxSTM_begin();
+  case ARESxB_STM_READ: return ARESxSTM_read(a[0]);
+  case ARESxB_STM_WRITE: return ARESxSTM_write(a[0], a[1]);
+  case ARESxB_STM_COMMIT: return ARESxSTM_commit();
+  case ARESxB_STM_WAIT: return ARESxSTM_wait();
+  case ARESxB_STM_SAVE: return ARESxSTM_save();
+  case ARESxB_STM_ROLLBACK: return ARESxSTM_rollback(a[0]);
+  case ARESxB_VEC_GET: {
+    if (a[0]->tag != T_VEC) ares_fault("expected a vector");
     size_t i = as_index(a[1]);
-    if (i >= a[0]->u.seq.len) thrax_fault("vec index out of bounds");
+    if (i >= a[0]->u.seq.len) ares_fault("vec index out of bounds");
     return a[0]->u.seq.items[i]; /* borrowed; the caller (do_ret) retains it */
   }
-  case THxB_VEC_PUSH: return vec_update(id, a, 0);
-  case THxB_VEC_SLICE: {
-    if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
+  case ARESxB_VEC_PUSH: return vec_update(id, a, 0);
+  case ARESxB_VEC_SLICE: {
+    if (a[0]->tag != T_VEC) ares_fault("expected a vector");
     size_t n = a[0]->u.seq.len;
     size_t lo = as_index(a[1]);
     size_t hi = as_index(a[2]);
@@ -1895,13 +1895,13 @@ static Value *run_builtin(int id, Value **a) {
     if (hi > n) hi = n;
     return mk_vec(a[0]->u.seq.items + lo, hi - lo); /* mk_vec retains each */
   }
-  case THxB_TENSOR_CONCAT: {
+  case ARESxB_TENSOR_CONCAT: {
     Value *x = as_tensor(a[0]), *y = as_tensor(a[1]);
     size_t rank = x->u.tensor.rank;
-    if (rank != y->u.tensor.rank) thrax_fault("concat: rank mismatch");
-    if (rank == 0) thrax_fault("concat of rank-0 tensors");
+    if (rank != y->u.tensor.rank) ares_fault("concat: rank mismatch");
+    if (rank == 0) ares_fault("concat of rank-0 tensors");
     for (size_t k = 1; k < rank; k++)
-      if (T_SHAPE(x)[k] != T_SHAPE(y)[k]) thrax_fault("concat: trailing shape mismatch");
+      if (T_SHAPE(x)[k] != T_SHAPE(y)[k]) ares_fault("concat: trailing shape mismatch");
     size_t nx = tensor_total(x), ny = tensor_total(y);
     Value **items = xmalloc((nx + ny ? nx + ny : 1) * sizeof(Value *));
     tensor_gather(x, items);
@@ -1914,41 +1914,41 @@ static Value *run_builtin(int id, Value **a) {
     free(items);
     return r;
   }
-  case THxB_TENSOR_INDEX: {
+  case ARESxB_TENSOR_INDEX: {
     Value *t = as_tensor(a[0]);
     if (t->u.tensor.rank == 0 || T_SHAPE(t)[0] == 0)
-      thrax_fault("index into an empty tensor");
-    size_t i = wrap_index(THxVALUE_as_int(a[1]), T_SHAPE(t)[0]);
+      ares_fault("index into an empty tensor");
+    size_t i = wrap_index(ARESxVALUE_as_int(a[1]), T_SHAPE(t)[0]);
     /* a scalar is borrowed (do_ret retains it); a row is a fresh view */
     return tensor_sub(t, t->u.tensor.off + i * T_STRIDES(t)[0], 1);
   }
-  case THxB_VEC_SET: return vec_update(id, a, 0);
+  case ARESxB_VEC_SET: return vec_update(id, a, 0);
 
   default: break;
   }
-#ifdef THRAX_WITH_COMPILER
+#ifdef ARES_WITH_COMPILER
   Value *r = compiler_builtin(id, a);
   if (r) return r;
 #endif
-  thrax_fault("unknown built-in");
+  ares_fault("unknown built-in");
 }
 
 /* -- TARGET reflection --------------------------------------------------- */
 
-Value *THxRT_target(const char *name) {
+Value *ARESxRT_target(const char *name) {
   if (strcmp(name, "int_bits") == 0 || strcmp(name, "ptr_bits") == 0)
-    return THxRT_int((int64_t)THRAX_INT_BITS);
-  if (strcmp(name, "int_max") == 0) return THxRT_int(THRAX_INT_MAX);
-  if (strcmp(name, "int_min") == 0) return THxRT_int(THRAX_INT_MIN);
-  if (strcmp(name, "arch") == 0) return THxRT_str(THRAX_ARCH, strlen(THRAX_ARCH));
-  if (strcmp(name, "os") == 0) return THxRT_str(THRAX_OS, strlen(THRAX_OS));
+    return ARESxRT_int((int64_t)ARES_INT_BITS);
+  if (strcmp(name, "int_max") == 0) return ARESxRT_int(ARES_INT_MAX);
+  if (strcmp(name, "int_min") == 0) return ARESxRT_int(ARES_INT_MIN);
+  if (strcmp(name, "arch") == 0) return ARESxRT_str(ARES_ARCH, strlen(ARES_ARCH));
+  if (strcmp(name, "os") == 0) return ARESxRT_str(ARES_OS, strlen(ARES_OS));
   if (strcmp(name, "name") == 0)
-    return THxRT_str(THRAX_ARCH "-" THRAX_OS, strlen(THRAX_ARCH "-" THRAX_OS));
-  thrax_fault("unknown TARGET field");
+    return ARESxRT_str(ARES_ARCH "-" ARES_OS, strlen(ARES_ARCH "-" ARES_OS));
+  ares_fault("unknown TARGET field");
 }
 
 /* An effect operation value (canonical effect + op names). */
-Value *THxK_op(const char *effect, const char *op) {
+Value *ARESxK_op(const char *effect, const char *op) {
   Value *v = alloc_value(T_OP);
   v->u.op.effect = effect;
   v->u.op.op = op;
@@ -1956,13 +1956,13 @@ Value *THxK_op(const char *effect, const char *op) {
 }
 
 /*------------------------------------------------------------------------------
- *\VALUE LIFETIME (port of THxVALUE.c: destroy / patch_box)
+ *\VALUE LIFETIME (port of ARESxVALUE.c: destroy / patch_box)
  *-----------------------------------------------------------------------------*/
 
-static void THxK_resump_addref(Resump *seg);
-static void THxK_resump_release(Resump *seg);
+static void ARESxK_resump_addref(Resump *seg);
+static void ARESxK_resump_release(Resump *seg);
 static void task_destroy(Task *t);
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
 static void mark_shared(Value *v);
 static void mark_immortal(Value *v);
 #endif
@@ -1972,12 +1972,12 @@ static void mark_immortal(Value *v);
 static void release_children(Value *v, Value **f, size_t n) {
   if (!f) return;
   for (size_t i = 0; i < n; i++)
-    if (f[i] != v) THxMEM_release(f[i]);
-  THxMEM_cell_free(f, n * sizeof(Value *));
+    if (f[i] != v) ARESxMEM_release(f[i]);
+  ARESxMEM_cell_free(f, n * sizeof(Value *));
 }
 
 /* Free v's owned payload: release children, free raw blocks. Shared by
- * THxVALUE_destroy (rc reached zero) and THxVALUE_patch_box (overwriting a
+ * ARESxVALUE_destroy (rc reached zero) and ARESxVALUE_patch_box (overwriting a
  * box's previous contents). */
 static void payload_destroy(Value *v) {
   switch (v->tag) {
@@ -1987,23 +1987,23 @@ static void payload_destroy(Value *v) {
     case T_BOOL:
     case T_UNIT:
     case T_OP: return;
-    case T_STR: THxMEM_free(v->u.str.data); return;
+    case T_STR: ARESxMEM_free(v->u.str.data); return;
     case T_TUPLE: release_children(v, v->u.seq.items, v->u.seq.len); return;
     case T_VEC:
       for (size_t i = 0; i < v->u.seq.len; i++)
-        if (v->u.seq.items[i] != v) THxMEM_release(v->u.seq.items[i]);
-      THxMEM_free(v->u.seq.items);
+        if (v->u.seq.items[i] != v) ARESxMEM_release(v->u.seq.items[i]);
+      ARESxMEM_free(v->u.seq.items);
       return;
     case T_TENSOR:
-      THxMEM_release(v->u.tensor.buf);
-      THxMEM_free(v->u.tensor.dims);
+      ARESxMEM_release(v->u.tensor.buf);
+      ARESxMEM_free(v->u.tensor.dims);
       return;
     case T_STRUCT: {
       Field *fs = v->u.strct.fields;
       if (fs) {
         for (size_t i = 0; i < v->u.strct.len; i++)
-          if (fs[i].val != v) THxMEM_release(fs[i].val);
-        THxMEM_cell_free(fs, v->u.strct.len * sizeof(Field));
+          if (fs[i].val != v) ARESxMEM_release(fs[i].val);
+        ARESxMEM_cell_free(fs, v->u.strct.len * sizeof(Field));
       }
       return;
     }
@@ -2011,26 +2011,26 @@ static void payload_destroy(Value *v) {
     case T_CLOS: release_children(v, v->u.clos.env, v->u.clos.nenv); return;
     case T_BUILTIN: release_children(v, v->u.builtin.args, v->u.builtin.nargs); return;
     case T_EXTERN: release_children(v, v->u.ext.args, v->u.ext.nargs); return;
-    case T_RESUMP: THxK_resump_release(v->u.resump); return;
+    case T_RESUMP: ARESxK_resump_release(v->u.resump); return;
     case T_THUNK:
-    case T_BLACKHOLE: THxMEM_release(v->u.thunk); return;
+    case T_BLACKHOLE: ARESxMEM_release(v->u.thunk); return;
     case T_FUTURE: task_destroy(v->u.future); return;
     case T_CHAN: chan_release(v->u.chan); return;
     case T_TVAR: tvar_release(v->u.tvar); return;
   }
-  thrax_fault("payload_destroy: unhandled tag");
+  ares_fault("payload_destroy: unhandled tag");
 }
 
-static void THxVALUE_destroy(Value *v) { payload_destroy(v); }
+static void ARESxVALUE_destroy(Value *v) { payload_destroy(v); }
 
 /* A fresh array holding f[0..n), each child retained except the weak self edge
  * (child == self). NULL when n == 0. */
 static Value **copy_children(Value *self, Value **f, size_t n) {
   if (n == 0) return NULL;
-  Value **c = THxMEM_cell(n * sizeof(Value *));
+  Value **c = ARESxMEM_cell(n * sizeof(Value *));
   for (size_t i = 0; i < n; i++) {
     c[i] = f[i];
-    if (c[i] != self) THxMEM_retain(c[i]);
+    if (c[i] != self) ARESxMEM_retain(c[i]);
   }
   return c;
 }
@@ -2053,7 +2053,7 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
     case T_OP: break;
     case T_STR: {
       size_t len = dst->u.str.len;
-      uint8_t *b = THxMEM_alloc(len + 1);
+      uint8_t *b = ARESxMEM_alloc(len + 1);
       if (len) memcpy(b, v->u.str.data, len);
       b[len] = 0;
       dst->u.str.data = b;
@@ -2067,10 +2067,10 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
       break;
     case T_TENSOR: {
       size_t n = 2 * dst->u.tensor.rank;
-      size_t *d = THxMEM_alloc((n ? n : 1) * sizeof(size_t));
+      size_t *d = ARESxMEM_alloc((n ? n : 1) * sizeof(size_t));
       if (n) memcpy(d, v->u.tensor.dims, n * sizeof(size_t));
       dst->u.tensor.dims = d;
-      THxMEM_retain(dst->u.tensor.buf);
+      ARESxMEM_retain(dst->u.tensor.buf);
       break;
     }
     case T_STRUCT: {
@@ -2079,11 +2079,11 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
         dst->u.strct.fields = NULL;
         break;
       }
-      Field *fs = THxMEM_cell(n * sizeof(Field));
+      Field *fs = ARESxMEM_cell(n * sizeof(Field));
       for (size_t i = 0; i < n; i++) {
         fs[i].name = v->u.strct.fields[i].name;
         fs[i].val = v->u.strct.fields[i].val;
-        if (fs[i].val != self) THxMEM_retain(fs[i].val);
+        if (fs[i].val != self) ARESxMEM_retain(fs[i].val);
       }
       dst->u.strct.fields = fs;
       break;
@@ -2102,15 +2102,15 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
     case T_EXTERN:
       dst->u.ext.args = copy_children(self, v->u.ext.args, dst->u.ext.nargs);
       break;
-    case T_RESUMP: THxK_resump_addref(dst->u.resump); break;
+    case T_RESUMP: ARESxK_resump_addref(dst->u.resump); break;
     case T_THUNK:
     case T_BLACKHOLE:
-      if (dst->u.thunk != self) THxMEM_retain(dst->u.thunk);
+      if (dst->u.thunk != self) ARESxMEM_retain(dst->u.thunk);
       break;
     case T_FUTURE:
       /* The handle is one task; a copy is another owner of the same task, so
        * both cells observe one result. */
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
       __atomic_fetch_add(&dst->u.future->rc, 1, __ATOMIC_RELAXED);
 #else
       dst->u.future->rc++;
@@ -2123,7 +2123,7 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
 
 static int is_constant(Value *v) {
   return v == &g_unit || v == &g_true || v == &g_false ||
-         (v >= g_small_ints && v < g_small_ints + (THX_SMALL_MAX - THX_SMALL_MIN + 1));
+         (v >= g_small_ints && v < g_small_ints + (ARX_SMALL_MAX - ARX_SMALL_MIN + 1));
 }
 
 /* Whether `c` is one of `v`'s children. */
@@ -2154,10 +2154,10 @@ static int has_child(Value *v, Value *c) {
 /* Patch `box` with `v` by moving `v`'s payload in, when the caller's is the
  * only reference to `v` (which it gives up) and neither cell is a child of
  * `v`: a self edge would change meaning in the move. Returns 0, changing
- * nothing, otherwise. Saves the copy `THxVALUE_patch_box` makes. */
+ * nothing, otherwise. Saves the copy `ARESxVALUE_patch_box` makes. */
 static int steal_payload(Value *box, Value *v) {
   if (box == v || is_constant(box) || !unique_local(v)) return 0;
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   if (sh_load(box) != SH_LOCAL) return 0;
 #endif
   if (v->tag == T_RESUMP || has_child(v, v) || has_child(v, box)) return 0;
@@ -2165,18 +2165,18 @@ static int steal_payload(Value *box, Value *v) {
   box->tag = v->tag;
   box->u = v->u;
   v->tag = T_UNIT;
-  THxMEM_release(v);
+  ARESxMEM_release(v);
   return 1;
 }
 
 /* Back-patch a let box: make `box` a copy of `v` (see `copy_payload`),
  * preserving box's own count and shared mark. A box other threads can reach
  * must not take in a thread-local value, so `v` is marked first. */
-static void THxVALUE_patch_box(Value *box, Value *v) {
+static void ARESxVALUE_patch_box(Value *box, Value *v) {
   if (box == v) return;
-  if (is_constant(box)) thrax_fault("patch_box: patching a shared constant");
+  if (is_constant(box)) ares_fault("patch_box: patching a shared constant");
   payload_destroy(box); /* a box is normally T_UNIT: a no-op */
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   uint8_t sh = sh_load(box);
   if (sh == SH_IMMORTAL)
     mark_immortal(v);
@@ -2187,19 +2187,19 @@ static void THxVALUE_patch_box(Value *box, Value *v) {
 }
 
 /*------------------------------------------------------------------------------
- *\THE REIFIED-K (CEK) DRIVER (port of THxK.c)
+ *\THE REIFIED-K (CEK) DRIVER (port of ARESxK.c)
  *-----------------------------------------------------------------------------*/
 
 /* The single, shared continuation stack; re-entrant runs share it via a base
- * marker (THxK_run_code / THxK_call record the current height). */
-static THX_TLS KFrame *g_kont = NULL;
-static THX_TLS size_t g_kn = 0, g_kcap = 0;
+ * marker (ARESxK_run_code / ARESxK_call record the current height). */
+static ARX_TLS KFrame *g_kont = NULL;
+static ARX_TLS size_t g_kn = 0, g_kcap = 0;
 
 static void kont_push(KFrame f) {
   if (g_kn == g_kcap) {
     g_kcap = g_kcap ? g_kcap * 2 : 64;
     g_kont = realloc(g_kont, g_kcap * sizeof(KFrame));
-    if (!g_kont) thrax_fault("continuation stack allocation failed");
+    if (!g_kont) ares_fault("continuation stack allocation failed");
   }
   g_kont[g_kn++] = f;
 }
@@ -2212,13 +2212,13 @@ static inline size_t frame_size(size_t nlocals) {
 }
 
 static Frame *frame_new(size_t nlocals, Value *clos) {
-  Frame *f = THxMEM_cell(frame_size(nlocals));
+  Frame *f = ARESxMEM_cell(frame_size(nlocals));
   f->rc = 1;
   f->lent = 0;
   f->dirty = 0;
   f->clos = clos;
   if (clos) {
-    THxMEM_retain(clos);
+    ARESxMEM_retain(clos);
     f->env = clos->u.clos.env;
     f->nenv = clos->u.clos.nenv;
   } else {
@@ -2236,12 +2236,12 @@ static void frame_retain(Frame *f) {
 
 static void frame_release(Frame *f) {
   if (!f) return;
-  if (f->rc == 0) thrax_fault("frame_release: releasing a freed frame");
+  if (f->rc == 0) ares_fault("frame_release: releasing a freed frame");
   if (--f->rc > 0) return;
   for (size_t i = 0; i < f->nlocals; i++)
-    if (!frame_lent(f, i)) THxMEM_release(f->locals[i]);
-  THxMEM_release(f->clos);
-  THxMEM_cell_free(f, frame_size(f->nlocals));
+    if (!frame_lent(f, i)) ARESxMEM_release(f->locals[i]);
+  ARESxMEM_release(f->clos);
+  ARESxMEM_cell_free(f, frame_size(f->nlocals));
 }
 
 /* -- kont-frame + segment lifetime --------------------------------------- */
@@ -2252,44 +2252,44 @@ static void kframe_release(KFrame *kf) {
     case K_RET: frame_release(kf->u.ret.frame); return;
     case K_PROMPT:
       for (size_t j = 0; j < kf->u.prompt.n; j++)
-        THxMEM_release(kf->u.prompt.clauses[j]);
-      THxMEM_free((void *)kf->u.prompt.effs);
-      THxMEM_free((void *)kf->u.prompt.ops);
-      THxMEM_free((void *)kf->u.prompt.uses);
-      THxMEM_free(kf->u.prompt.clauses);
-      THxMEM_release(kf->u.prompt.els);
+        ARESxMEM_release(kf->u.prompt.clauses[j]);
+      ARESxMEM_free((void *)kf->u.prompt.effs);
+      ARESxMEM_free((void *)kf->u.prompt.ops);
+      ARESxMEM_free((void *)kf->u.prompt.uses);
+      ARESxMEM_free(kf->u.prompt.clauses);
+      ARESxMEM_release(kf->u.prompt.els);
       return;
-    case K_DEFER: THxMEM_release(kf->u.defer.cleanup); return;
-    case K_THUNKRET: THxMEM_release(kf->u.thunkret.saved); return;
+    case K_DEFER: ARESxMEM_release(kf->u.defer.cleanup); return;
+    case K_THUNKRET: ARESxMEM_release(kf->u.thunkret.saved); return;
     case K_AFTERCLAUSE:
       RES_DEC(&kf->u.afterclause.res->nbound);
-      THxK_resump_release(kf->u.afterclause.res);
+      ARESxK_resump_release(kf->u.afterclause.res);
       return;
     case K_CLEANUPS:
       for (size_t j = 0; j < kf->u.cleanups.n; j++)
-        THxMEM_release(kf->u.cleanups.cleanups[j]);
-      THxMEM_free(kf->u.cleanups.cleanups);
+        ARESxMEM_release(kf->u.cleanups.cleanups[j]);
+      ARESxMEM_free(kf->u.cleanups.cleanups);
       return;
   }
-  thrax_fault("kframe_release: unhandled continuation frame");
+  ares_fault("kframe_release: unhandled continuation frame");
 }
 
-static void THxK_resump_addref(Resump *seg) {
+static void ARESxK_resump_addref(Resump *seg) {
   if (seg) RES_INC(&seg->rc);
 }
 
-static void THxK_resump_release(Resump *seg) {
+static void ARESxK_resump_release(Resump *seg) {
   if (!seg) return;
   unsigned left = RES_DEC(&seg->rc);
-  if (left == (unsigned)-1) thrax_fault("resump_release: releasing a freed slice");
+  if (left == (unsigned)-1) ares_fault("resump_release: releasing a freed slice");
   if (left > 0) return;
   /* The frames are still here unless a resume moved them out (which leaves
    * `seg` NULL), so a slice resumed by copying releases them however often it
    * ran. */
   if (seg->seg)
     for (size_t i = 0; i < seg->n; i++) kframe_release(&seg->seg[i]);
-  THxMEM_free(seg->seg);
-  THxMEM_free(seg);
+  ARESxMEM_free(seg->seg);
+  ARESxMEM_free(seg);
 }
 
 /* -- slice copying (a resume that may not be the last) ------------------- */
@@ -2297,11 +2297,11 @@ static void THxK_resump_release(Resump *seg) {
 /* A fresh activation holding the same values as `f`. The locals are retained,
  * not copied: a value is immutable, so only the slot array has to be private. */
 static Frame *frame_clone(Frame *f) {
-  Frame *c = THxMEM_cell(frame_size(f->nlocals));
+  Frame *c = ARESxMEM_cell(frame_size(f->nlocals));
   c->rc = 1;
   c->dirty = f->dirty;
   c->clos = f->clos;
-  THxMEM_retain(c->clos);
+  ARESxMEM_retain(c->clos);
   c->env = f->env;
   c->nenv = f->nenv;
   c->nlocals = f->nlocals;
@@ -2309,7 +2309,7 @@ static Frame *frame_clone(Frame *f) {
   c->locals = f->nlocals ? (Value **)(c + 1) : NULL;
   for (size_t i = 0; i < f->nlocals; i++) {
     c->locals[i] = f->locals[i];
-    if (!frame_lent(f, i)) THxMEM_retain(c->locals[i]);
+    if (!frame_lent(f, i)) ARESxMEM_retain(c->locals[i]);
   }
   return c;
 }
@@ -2366,8 +2366,8 @@ static void segment_copy(Resump *src, KFrame *out) {
          * side still reads the original's (it captured that very value). */
         if (c->locals[kf.u.ret.slot]) {
           Value *box = fresh_box();
-          THxMEM_retain(box);
-          THxMEM_release(c->locals[kf.u.ret.slot]);
+          ARESxMEM_retain(box);
+          ARESxMEM_release(c->locals[kf.u.ret.slot]);
           c->locals[kf.u.ret.slot] = box;
         }
         kf.u.ret.frame = c;
@@ -2375,36 +2375,36 @@ static void segment_copy(Resump *src, KFrame *out) {
       }
       case K_PROMPT: {
         size_t n = kf.u.prompt.n;
-        const char **effs = THxMEM_alloc((n ? n : 1) * sizeof(char *));
-        const char **ops = THxMEM_alloc((n ? n : 1) * sizeof(char *));
-        int *uses = THxMEM_alloc((n ? n : 1) * sizeof(int));
-        Value **cls = THxMEM_alloc((n ? n : 1) * sizeof(Value *));
+        const char **effs = ARESxMEM_alloc((n ? n : 1) * sizeof(char *));
+        const char **ops = ARESxMEM_alloc((n ? n : 1) * sizeof(char *));
+        int *uses = ARESxMEM_alloc((n ? n : 1) * sizeof(int));
+        Value **cls = ARESxMEM_alloc((n ? n : 1) * sizeof(Value *));
         for (size_t j = 0; j < n; j++) {
           effs[j] = kf.u.prompt.effs[j];
           ops[j] = kf.u.prompt.ops[j];
           uses[j] = kf.u.prompt.uses[j];
           cls[j] = kf.u.prompt.clauses[j];
-          THxMEM_retain(cls[j]);
+          ARESxMEM_retain(cls[j]);
         }
         kf.u.prompt.effs = effs;
         kf.u.prompt.ops = ops;
         kf.u.prompt.uses = uses;
         kf.u.prompt.clauses = cls;
-        THxMEM_retain(kf.u.prompt.els);
+        ARESxMEM_retain(kf.u.prompt.els);
         break;
       }
-      case K_DEFER: THxMEM_retain(kf.u.defer.cleanup); break;
-      case K_THUNKRET: THxMEM_retain(kf.u.thunkret.saved); break;
+      case K_DEFER: ARESxMEM_retain(kf.u.defer.cleanup); break;
+      case K_THUNKRET: ARESxMEM_retain(kf.u.thunkret.saved); break;
       case K_AFTERCLAUSE:
-        THxK_resump_addref(kf.u.afterclause.res);
+        ARESxK_resump_addref(kf.u.afterclause.res);
         RES_INC(&kf.u.afterclause.res->nbound);
         break;
       case K_CLEANUPS: {
         size_t n = kf.u.cleanups.n;
-        Value **cl = THxMEM_alloc((n ? n : 1) * sizeof(Value *));
+        Value **cl = ARESxMEM_alloc((n ? n : 1) * sizeof(Value *));
         for (size_t j = 0; j < n; j++) {
           cl[j] = kf.u.cleanups.cleanups[j];
-          THxMEM_retain(cl[j]);
+          ARESxMEM_retain(cl[j]);
         }
         kf.u.cleanups.cleanups = cl;
         break;
@@ -2420,12 +2420,12 @@ static void segment_copy(Resump *src, KFrame *out) {
 static KFrame segment_cleanups(KFrame *seg, size_t n) {
   KFrame kf;
   kf.tag = K_CLEANUPS;
-  kf.u.cleanups.cleanups = THxMEM_alloc((n ? n : 1) * sizeof(Value *));
+  kf.u.cleanups.cleanups = ARESxMEM_alloc((n ? n : 1) * sizeof(Value *));
   kf.u.cleanups.n = 0;
   for (size_t i = 0; i < n; i++)
     if (seg[i].tag == K_DEFER) {
       Value *c = seg[i].u.defer.cleanup;
-      THxMEM_retain(c);
+      ARESxMEM_retain(c);
       kf.u.cleanups.cleanups[kf.u.cleanups.n++] = c;
     }
   return kf;
@@ -2434,20 +2434,20 @@ static KFrame segment_cleanups(KFrame *seg, size_t n) {
 /* -- next-action registers ----------------------------------------------- */
 
 typedef enum { ACT_NONE, ACT_RET, ACT_APPLY, ACT_JUMP } Act;
-static THX_TLS Act g_act;
-static THX_TLS Value *g_v, *g_fn, *g_arg;
-/* Whether the pending application lends `g_arg` (see `THxK_apply_lent`). */
-static THX_TLS int g_lend;
-static THX_TLS BlockFn g_blk;
-static THX_TLS Value *g_result;
+static ARX_TLS Act g_act;
+static ARX_TLS Value *g_v, *g_fn, *g_arg;
+/* Whether the pending application lends `g_arg` (see `ARESxK_apply_lent`). */
+static ARX_TLS int g_lend;
+static ARX_TLS BlockFn g_blk;
+static ARX_TLS Value *g_result;
 
 /* -- block terminators --------------------------------------------------- */
 
-void THxK_ret(Value *v) {
+void ARESxK_ret(Value *v) {
   g_act = ACT_RET;
   g_v = v;
 }
-void THxK_tailcall(Value *fn, Value *arg) {
+void ARESxK_tailcall(Value *fn, Value *arg) {
   g_act = ACT_APPLY;
   g_fn = fn;
   g_arg = arg;
@@ -2455,19 +2455,19 @@ void THxK_tailcall(Value *fn, Value *arg) {
 }
 /* A tail call lending `arg`, which outlives the callee (a global's cached
  * value). */
-void THxK_tailcall_lent(Value *fn, Value *arg) {
-  THxK_tailcall(fn, arg);
+void ARESxK_tailcall_lent(Value *fn, Value *arg) {
+  ARESxK_tailcall(fn, arg);
   g_lend = 1;
 }
 /* A tail call passing on local `slot`: lent again when this activation was lent
  * it (its lender outlives the callee too), else its reference moves over. */
-void THxK_tailcall_pass(Frame *fr, Value *fn, size_t slot) {
+void ARESxK_tailcall_pass(Frame *fr, Value *fn, size_t slot) {
   if (frame_lent(fr, slot))
-    THxK_tailcall_lent(fn, THxVALUE_local(fr->locals, fr->nlocals, slot));
+    ARESxK_tailcall_lent(fn, ARESxVALUE_local(fr->locals, fr->nlocals, slot));
   else
-    THxK_tailcall(fn, THxVALUE_take(fr, slot));
+    ARESxK_tailcall(fn, ARESxVALUE_take(fr, slot));
 }
-void THxK_apply(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
+void ARESxK_apply(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
   KFrame kf;
   kf.tag = K_RET;
   kf.u.ret.frame = fr;
@@ -2484,15 +2484,15 @@ void THxK_apply(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
  * keeps it alive until the callee returns, so a callee that borrows its
  * parameter binds it without counting. See the frontend's Note [Borrowed
  * parameters]. */
-void THxK_apply_lent(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
-  THxK_apply(fr, fn, arg, cont, slot);
+void ARESxK_apply_lent(Frame *fr, Value *fn, Value *arg, BlockFn cont, size_t slot) {
+  ARESxK_apply(fr, fn, arg, cont, slot);
   g_lend = 1;
 }
-void THxK_jump(BlockFn cont) {
+void ARESxK_jump(BlockFn cont) {
   g_act = ACT_JUMP;
   g_blk = cont;
 }
-void THxK_handle(Frame *fr, BlockFn cont, size_t slot, const char **effs,
+void ARESxK_handle(Frame *fr, BlockFn cont, size_t slot, const char **effs,
                  const char **ops, const int *uses, Value **clauses,
                  size_t nclauses, Value *els, BlockFn body) {
   if (cont) {
@@ -2506,16 +2506,16 @@ void THxK_handle(Frame *fr, BlockFn cont, size_t slot, const char **effs,
   }
   /* The generated clause tables are C compound literals with block lifetime;
    * copy them into runtime-lifetime memory the prompt owns. */
-  const char **effs2 = THxMEM_alloc((nclauses ? nclauses : 1) * sizeof(char *));
-  const char **ops2 = THxMEM_alloc((nclauses ? nclauses : 1) * sizeof(char *));
-  int *uses2 = THxMEM_alloc((nclauses ? nclauses : 1) * sizeof(int));
-  Value **claus2 = THxMEM_alloc((nclauses ? nclauses : 1) * sizeof(Value *));
+  const char **effs2 = ARESxMEM_alloc((nclauses ? nclauses : 1) * sizeof(char *));
+  const char **ops2 = ARESxMEM_alloc((nclauses ? nclauses : 1) * sizeof(char *));
+  int *uses2 = ARESxMEM_alloc((nclauses ? nclauses : 1) * sizeof(int));
+  Value **claus2 = ARESxMEM_alloc((nclauses ? nclauses : 1) * sizeof(Value *));
   for (size_t i = 0; i < nclauses; i++) {
     effs2[i] = effs[i];
     ops2[i] = ops[i];
     uses2[i] = uses[i];
     claus2[i] = clauses[i];
-    THxMEM_retain(claus2[i]);
+    ARESxMEM_retain(claus2[i]);
   }
   KFrame kp;
   kp.tag = K_PROMPT;
@@ -2525,14 +2525,14 @@ void THxK_handle(Frame *fr, BlockFn cont, size_t slot, const char **effs,
   kp.u.prompt.clauses = claus2;
   kp.u.prompt.n = nclauses;
   kp.u.prompt.els = els;
-  THxMEM_retain(els);
+  ARESxMEM_retain(els);
   kont_push(kp);
   g_act = ACT_JUMP;
   g_blk = body;
 }
 /* `defer cleanup do body`: push a KRet for the eventual value (unless in tail
  * position), a K_DEFER marker holding the 0-arg cleanup thunk, then run body. */
-void THxK_defer_run(Frame *fr, BlockFn cont, size_t slot, Value *cleanup,
+void ARESxK_defer_run(Frame *fr, BlockFn cont, size_t slot, Value *cleanup,
                     BlockFn body) {
   if (cont) {
     KFrame kr;
@@ -2546,7 +2546,7 @@ void THxK_defer_run(Frame *fr, BlockFn cont, size_t slot, Value *cleanup,
   KFrame kd;
   kd.tag = K_DEFER;
   kd.u.defer.cleanup = cleanup;
-  THxMEM_retain(cleanup); /* the kont stores it */
+  ARESxMEM_retain(cleanup); /* the kont stores it */
   kont_push(kd);
   g_act = ACT_JUMP;
   g_blk = body;
@@ -2554,46 +2554,46 @@ void THxK_defer_run(Frame *fr, BlockFn cont, size_t slot, Value *cleanup,
 
 /* -- let-box helpers ----------------------------------------------------- */
 
-static inline void THxK_setlocal(Frame *fr, size_t slot, Value *v) {
-  if (slot >= fr->nlocals) thrax_fault("setlocal: slot out of range");
-  THxMEM_retain(v); /* retain-before-release: v may be the slot's old value */
+static inline void ARESxK_setlocal(Frame *fr, size_t slot, Value *v) {
+  if (slot >= fr->nlocals) ares_fault("setlocal: slot out of range");
+  ARESxMEM_retain(v); /* retain-before-release: v may be the slot's old value */
   if (frame_lent(fr, slot))
     fr->lent &= ~(1u << slot);
   else
-    THxMEM_release(fr->locals[slot]);
+    ARESxMEM_release(fr->locals[slot]);
   fr->locals[slot] = v;
   frame_dirty(fr, slot);
 }
-static inline void THxK_drop(Frame *fr, size_t slot) {
-  if (slot >= fr->nlocals) thrax_fault("drop: slot out of range");
+static inline void ARESxK_drop(Frame *fr, size_t slot) {
+  if (slot >= fr->nlocals) ares_fault("drop: slot out of range");
   if (frame_lent(fr, slot))
     fr->lent &= ~(1u << slot);
   else
-    THxMEM_release(fr->locals[slot]);
+    ARESxMEM_release(fr->locals[slot]);
   fr->locals[slot] = NULL;
 }
-void THxK_setbox(Frame *fr, size_t slot) {
-  THxK_setlocal(fr, slot, fresh_box());
+void ARESxK_setbox(Frame *fr, size_t slot) {
+  ARESxK_setlocal(fr, slot, fresh_box());
 }
 /* A slot with no box is a non-recursive `let`'s: the value moves in. */
-static inline void THxK_backpatch(Frame *fr, size_t slot, Value *v) {
-  if (slot >= fr->nlocals) thrax_fault("backpatch: slot out of range");
+static inline void ARESxK_backpatch(Frame *fr, size_t slot, Value *v) {
+  if (slot >= fr->nlocals) ares_fault("backpatch: slot out of range");
   Value *box = fr->locals[slot];
   if (!box) {
-    THxK_setlocal(fr, slot, v);
+    ARESxK_setlocal(fr, slot, v);
     return;
   }
-  THxVALUE_patch_box(box, v);
+  ARESxVALUE_patch_box(box, v);
 }
 
 /* `let slot = from` at `from`'s last use: the reference moves between the
  * slots. Into a recursive let's box it is patched as any value is. */
-void THxK_move(Frame *fr, size_t slot, size_t from) {
-  if (slot >= fr->nlocals) thrax_fault("move: slot out of range");
-  Value *v = THxVALUE_local(fr->locals, fr->nlocals, from);
+void ARESxK_move(Frame *fr, size_t slot, size_t from) {
+  if (slot >= fr->nlocals) ares_fault("move: slot out of range");
+  Value *v = ARESxVALUE_local(fr->locals, fr->nlocals, from);
   if (fr->locals[slot]) {
-    THxVALUE_patch_box(fr->locals[slot], v);
-    THxK_drop(fr, from);
+    ARESxVALUE_patch_box(fr->locals[slot], v);
+    ARESxK_drop(fr, from);
     return;
   }
   fr->locals[slot] = v;
@@ -2607,11 +2607,11 @@ void THxK_move(Frame *fr, size_t slot, size_t from) {
 /* Release the reuse token in local `token` (if any) and store `v` there. */
 static void set_token(Frame *fr, long token, Value *v) {
   if (token < 0) {
-    THxMEM_release(v);
+    ARESxMEM_release(v);
     return;
   }
-  if ((size_t)token >= fr->nlocals) thrax_fault("reuse token out of range");
-  THxMEM_release(fr->locals[token]);
+  if ((size_t)token >= fr->nlocals) ares_fault("reuse token out of range");
+  ARESxMEM_release(fr->locals[token]);
   fr->locals[token] = v;
   frame_dirty(fr, (size_t)token);
 }
@@ -2621,10 +2621,10 @@ static void set_token(Frame *fr, long token, Value *v) {
  * a count changing, the rest are released, and the emptied cell is freed or
  * parked in local `token` (-1: none). Otherwise the binders share the fields,
  * the slot's reference is released, and the token is left empty. */
-void THxK_unpack(Frame *fr, Value *v, size_t slot, long token, size_t base,
+void ARESxK_unpack(Frame *fr, Value *v, size_t slot, long token, size_t base,
                  const unsigned char *bind, size_t n) {
-  if (slot >= fr->nlocals || base + n > fr->nlocals) thrax_fault("unpack: slot out of range");
-  if (v->tag != T_VARIANT || v->u.variant.len != n) thrax_fault("unpack: shape mismatch");
+  if (slot >= fr->nlocals || base + n > fr->nlocals) ares_fault("unpack: slot out of range");
+  if (v->tag != T_VARIANT || v->u.variant.len != n) ares_fault("unpack: shape mismatch");
   Value **f = v->u.variant.fields;
   int own = fr->locals[slot] == v && unique_local(v);
   for (size_t i = 0; own && i < n; i++)
@@ -2633,11 +2633,11 @@ void THxK_unpack(Frame *fr, Value *v, size_t slot, long token, size_t base,
     fr->locals[slot] = NULL;
     for (size_t i = 0; i < n; i++) {
       if (bind[i]) {
-        THxMEM_release(fr->locals[base + i]);
+        ARESxMEM_release(fr->locals[base + i]);
         fr->locals[base + i] = f[i];
         frame_dirty(fr, base + i);
       } else {
-        THxMEM_release(f[i]);
+        ARESxMEM_release(f[i]);
       }
       f[i] = NULL;
     }
@@ -2645,8 +2645,8 @@ void THxK_unpack(Frame *fr, Value *v, size_t slot, long token, size_t base,
     return;
   }
   for (size_t i = 0; i < n; i++)
-    if (bind[i]) THxK_setlocal(fr, base + i, f[i]);
-  THxK_drop(fr, slot);
+    if (bind[i]) ARESxK_setlocal(fr, base + i, f[i]);
+  ARESxK_drop(fr, slot);
   set_token(fr, token, NULL);
 }
 
@@ -2654,24 +2654,24 @@ void THxK_unpack(Frame *fr, Value *v, size_t slot, long token, size_t base,
  * nobody else does (a copied activation of a resumption shares it); a fresh
  * one otherwise. Either way the token is used up, and the pool holds the
  * result's reference as for any fresh value. */
-Value *THxRT_variant_at(Frame *fr, size_t token, const char *ty, const char *tag,
+Value *ARESxRT_variant_at(Frame *fr, size_t token, const char *ty, const char *tag,
                         size_t len, Value **fields) {
-  if (token >= fr->nlocals) thrax_fault("reuse token out of range");
+  if (token >= fr->nlocals) ares_fault("reuse token out of range");
   Value *v = fr->locals[token];
   fr->locals[token] = NULL;
   if (!v || v->tag != T_VARIANT || v->u.variant.len != len || !unique_local(v)) {
-    THxMEM_release(v);
-    return THxRT_variant(ty, tag, len, fields);
+    ARESxMEM_release(v);
+    return ARESxRT_variant(ty, tag, len, fields);
   }
-#ifdef THRAX_ALLOC_STATS
+#ifdef ARES_ALLOC_STATS
   __atomic_fetch_add(&g_reuses_total, 1, __ATOMIC_RELAXED);
 #endif
   v->u.variant.ty = ty;
   v->u.variant.tag = tag;
   for (size_t i = 0; i < len; i++) {
-    if (v->u.variant.fields[i]) thrax_fault("reuse of a cell with live fields");
+    if (v->u.variant.fields[i]) ares_fault("reuse of a cell with live fields");
     v->u.variant.fields[i] = fields[i];
-    THxMEM_retain(fields[i]);
+    ARESxMEM_retain(fields[i]);
   }
   pool_adopt(v);
   return v;
@@ -2681,46 +2681,46 @@ Value *THxRT_variant_at(Frame *fr, size_t token, const char *ty, const char *tag
 
 /* A value a direct function returns is owned; the pool takes that reference,
  * so to its caller it is a temporary like any fresh value. */
-static inline Value *THxK_own(Value *v) {
+static inline Value *ARESxK_own(Value *v) {
   pool_adopt(v);
   return v;
 }
 
 /* The integer intrinsics on C scalars, for generated code that keeps integers
  * unboxed; the boxed versions are in `arith_intrinsic`. */
-static inline int64_t THxI(Value *v) { return v->u.i; }
-static inline int64_t THxI_div(int64_t a, int64_t b) {
-  if (b == 0) thrax_fault("division by zero");
+static inline int64_t ARESxI(Value *v) { return v->u.i; }
+static inline int64_t ARESxI_div(int64_t a, int64_t b) {
+  if (b == 0) ares_fault("division by zero");
   return a / b;
 }
-static inline int64_t THxI_mod(int64_t a, int64_t b) {
-  if (b == 0) thrax_fault("division by zero");
+static inline int64_t ARESxI_mod(int64_t a, int64_t b) {
+  if (b == 0) ares_fault("division by zero");
   return a % b;
 }
-static inline int64_t THxI_udiv(int64_t a, int64_t b) {
-  if (b == 0) thrax_fault("division by zero");
+static inline int64_t ARESxI_udiv(int64_t a, int64_t b) {
+  if (b == 0) ares_fault("division by zero");
   return (int64_t)((uint64_t)a / (uint64_t)b);
 }
-static inline int64_t THxI_umod(int64_t a, int64_t b) {
-  if (b == 0) thrax_fault("division by zero");
+static inline int64_t ARESxI_umod(int64_t a, int64_t b) {
+  if (b == 0) ares_fault("division by zero");
   return (int64_t)((uint64_t)a % (uint64_t)b);
 }
 
-/* Whether a direct call may still use the C stack: within THX_DIRECT_STACK
+/* Whether a direct call may still use the C stack: within ARX_DIRECT_STACK
  * bytes of where this thread first asked. Past it, calls go through the
  * machine, whose continuation lives on the heap. */
-static THX_TLS uintptr_t g_dbase = 0;
-static inline int THxD_room(void) {
+static ARX_TLS uintptr_t g_dbase = 0;
+static inline int ARESxD_room(void) {
   uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
   if (!g_dbase) g_dbase = sp;
-  return sp >= g_dbase || g_dbase - sp < THX_DIRECT_STACK;
+  return sp >= g_dbase || g_dbase - sp < ARX_DIRECT_STACK;
 }
 
 /* A direct function's activation: a Frame on the C stack over the slot array
  * `locals` and the environment `env`, both C arrays of the function. The env
  * is the parameter row itself, which owns a reference on each boxed
- * parameter, so `THxVALUE_take_env` moves a parameter out on its last use. */
-static inline void THxD_frame(Frame *fr, Value **locals, size_t nlocals, Value **env, size_t nenv) {
+ * parameter, so `ARESxVALUE_take_env` moves a parameter out on its last use. */
+static inline void ARESxD_frame(Frame *fr, Value **locals, size_t nlocals, Value **env, size_t nenv) {
   fr->rc = 1;
   fr->lent = 0;
   fr->dirty = 0;
@@ -2735,7 +2735,7 @@ static inline void THxD_frame(Frame *fr, Value **locals, size_t nlocals, Value *
 /* Hand the last parameter's reference from the row `params` to slot 0, where
  * the body finds it; the row keeps none, so a move out of the slot leaves the
  * value uniquely held. */
-static inline void THxD_param0(Frame *fr, Value **params, size_t last) {
+static inline void ARESxD_param0(Frame *fr, Value **params, size_t last) {
   fr->locals[0] = params[last];
   params[last] = NULL;
   frame_dirty(fr, 0);
@@ -2743,32 +2743,32 @@ static inline void THxD_param0(Frame *fr, Value **params, size_t last) {
 
 /* Release a direct activation: its slots, its arguments `params`, and the
  * temporaries it made since `mark`. */
-static void THxD_reset(Frame *fr, Value **params, size_t nparams, size_t mark) {
+static void ARESxD_reset(Frame *fr, Value **params, size_t nparams, size_t mark) {
   if (fr->nlocals <= 64)
-    for (uint64_t d = fr->dirty; d; d &= d - 1) THxMEM_release(fr->locals[__builtin_ctzll(d)]);
+    for (uint64_t d = fr->dirty; d; d &= d - 1) ARESxMEM_release(fr->locals[__builtin_ctzll(d)]);
   else
-    for (size_t i = 0; i < fr->nlocals; i++) THxMEM_release(fr->locals[i]);
-  for (size_t i = 0; i < nparams; i++) THxMEM_release(params[i]);
-  THxMEM_pool_drain(mark);
+    for (size_t i = 0; i < fr->nlocals; i++) ARESxMEM_release(fr->locals[i]);
+  for (size_t i = 0; i < nparams; i++) ARESxMEM_release(params[i]);
+  ARESxMEM_pool_drain(mark);
 }
 
 /* Return `v` from a direct activation, as an owned reference. */
-static Value *THxD_leave(Frame *fr, Value **params, size_t nparams, size_t mark, Value *v) {
-  THxMEM_retain(v);
-  THxD_reset(fr, params, nparams, mark);
+static Value *ARESxD_leave(Frame *fr, Value **params, size_t nparams, size_t mark, Value *v) {
+  ARESxMEM_retain(v);
+  ARESxD_reset(fr, params, nparams, mark);
   return v;
 }
 
 /* Return the integer `r` from a direct activation with an unboxed result. */
-static int64_t THxD_leave_i(Frame *fr, Value **params, size_t nparams, size_t mark, int64_t r) {
-  THxD_reset(fr, params, nparams, mark);
+static int64_t ARESxD_leave_i(Frame *fr, Value **params, size_t nparams, size_t mark, int64_t r) {
+  ARESxD_reset(fr, params, nparams, mark);
   return r;
 }
 
 /* The integer an owned boxed result holds, releasing the box. */
-static inline int64_t THxI_own(Value *v) {
+static inline int64_t ARESxI_own(Value *v) {
   int64_t r = v->u.i;
-  THxMEM_release(v);
+  ARESxMEM_release(v);
   return r;
 }
 
@@ -2780,25 +2780,25 @@ static inline int64_t THxI_own(Value *v) {
  * cleanup), 1 (value clause / a call), 2 (handler clause). */
 static void enter_clo(BlockFn *cur, Frame **fr, Value **in, Value *clo,
                       Value **args, size_t nargs, int lent) {
-  if (clo->tag != T_CLOS) thrax_fault("entering a non-closure");
+  if (clo->tag != T_CLOS) ares_fault("entering a non-closure");
   size_t code = (size_t)clo->u.clos.code;
-  if (code >= THxRT_code_count) thrax_fault("code index out of range");
-  Frame *nf = frame_new(THxRT_code_nlocals[code], clo);
+  if (code >= ARESxRT_code_count) ares_fault("code index out of range");
+  Frame *nf = frame_new(ARESxRT_code_nlocals[code], clo);
   for (size_t i = 0; i < nargs; i++) {
     if (lent && i == 0) {
       nf->locals[0] = args[0];
       nf->lent = 1;
     } else {
-      THxK_setlocal(nf, i, args[i]);
+      ARESxK_setlocal(nf, i, args[i]);
     }
   }
   frame_release(*fr);
-  *cur = THxRT_code_table[code];
+  *cur = ARESxRT_code_table[code];
   *fr = nf;
   *in = nargs ? args[0] : NULL;
 }
 
-static Value *unit(void) { return THxRT_unit(); }
+static Value *unit(void) { return ARESxRT_unit(); }
 
 /* Hand a finished value to the continuation stack (the interpreter's `ret`).
  * Returns 1 to continue the driver loop, 0 when the run's base is reached.
@@ -2809,7 +2809,7 @@ static Value *unit(void) { return THxRT_unit(); }
  * still held must not look like a live owner to the clause boundary below. An
  * activation that continues afterwards is held by its own K_RET. */
 static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
-  THxMEM_retain(v); /* the in-flight reference */
+  ARESxMEM_retain(v); /* the in-flight reference */
   frame_release(*fr);
   *fr = NULL;
   for (;;) {
@@ -2828,15 +2828,15 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
           *slot = v; /* no box: the slot adopts the in-flight reference */
           return 1;
         }
-        THxVALUE_patch_box(*slot, v);
-        THxMEM_release(v); /* delivered: the box owns copies of v's children */
+        ARESxVALUE_patch_box(*slot, v);
+        ARESxMEM_release(v); /* delivered: the box owns copies of v's children */
         return 1;
       }
       case K_PROMPT: {
         /* body finished normally -> run the value clause on the result */
         enter_clo(cur, fr, in, kf.u.prompt.els, &v, 1, 0);
         kframe_release(&kf); /* els survives via the new frame's clos ref */
-        THxMEM_release(v);   /* delivered: retained in the clause's slot 0 */
+        ARESxMEM_release(v);   /* delivered: retained in the clause's slot 0 */
         return 1;
       }
       case K_DEFER: {
@@ -2851,7 +2851,7 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
         return 1;
       }
       case K_THUNKRET:
-        THxMEM_release(v);
+        ARESxMEM_release(v);
         v = kf.u.thunkret.saved; /* adopt the kont's reference as in-flight */
         continue;
       case K_AFTERCLAUSE: {
@@ -2874,12 +2874,12 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
             KFrame kd;
             kd.tag = K_DEFER;
             kd.u.defer.cleanup = res->seg[i].u.defer.cleanup;
-            THxMEM_retain(kd.u.defer.cleanup); /* the kont stores it */
+            ARESxMEM_retain(kd.u.defer.cleanup); /* the kont stores it */
             kont_push(kd);
           }
         kframe_release(&kf); /* the last owner: frees the discarded segment */
         v = unit();          /* start unwinding the freshly pushed KDefers */
-        THxMEM_retain(v);    /* the new in-flight reference */
+        ARESxMEM_retain(v);    /* the new in-flight reference */
         continue;
       }
       case K_CLEANUPS: {
@@ -2894,16 +2894,16 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
           KFrame kd;
           kd.tag = K_DEFER;
           kd.u.defer.cleanup = kf.u.cleanups.cleanups[i];
-          THxMEM_retain(kd.u.defer.cleanup);
+          ARESxMEM_retain(kd.u.defer.cleanup);
           kont_push(kd);
         }
         kframe_release(&kf);
         v = unit();
-        THxMEM_retain(v);
+        ARESxMEM_retain(v);
         continue;
       }
     }
-    thrax_fault("do_ret: unhandled continuation frame");
+    ares_fault("do_ret: unhandled continuation frame");
   }
 }
 
@@ -2914,11 +2914,11 @@ static Value *builtin_push(Value *f, Value *arg) {
   nb->u.builtin.id = f->u.builtin.id;
   nb->u.builtin.arity = f->u.builtin.arity;
   nb->u.builtin.nargs = n + 1;
-  Value **args = THxMEM_cell((n + 1) * sizeof(Value *));
+  Value **args = ARESxMEM_cell((n + 1) * sizeof(Value *));
   for (size_t i = 0; i < n; i++) args[i] = f->u.builtin.args[i];
   args[n] = arg;
   for (size_t i = 0; i <= n; i++)
-    THxMEM_retain(args[i]); /* the new callee owns its operand row */
+    ARESxMEM_retain(args[i]); /* the new callee owns its operand row */
   nb->u.builtin.args = args;
   return nb;
 }
@@ -2930,10 +2930,10 @@ static Value *extern_push(Value *f, Value *arg) {
   ne->u.ext.idx = f->u.ext.idx;
   ne->u.ext.arity = f->u.ext.arity;
   ne->u.ext.nargs = n + 1;
-  Value **args = THxMEM_cell((n + 1) * sizeof(Value *));
+  Value **args = ARESxMEM_cell((n + 1) * sizeof(Value *));
   for (size_t i = 0; i < n; i++) args[i] = f->u.ext.args[i];
   args[n] = arg;
-  for (size_t i = 0; i <= n; i++) THxMEM_retain(args[i]);
+  for (size_t i = 0; i <= n; i++) ARESxMEM_retain(args[i]);
   ne->u.ext.args = args;
   return ne;
 }
@@ -2943,21 +2943,21 @@ static Value *extern_push(Value *f, Value *arg) {
  * across the frame switch (either may live in the dying activation): `owned`
  * means the caller handed its own references over, otherwise they are taken
  * here. Only an owned callee can be judged uniquely held. */
-Value *THxK_call(Value *f, Value *arg); /* synchronous closure application */
+Value *ARESxK_call(Value *f, Value *arg); /* synchronous closure application */
 
 /* `generate template f`: build a tensor the same size as `template`, element i =
  * f(i). Higher-order, so it lives here (not in leaf `run_builtin`) and applies the
- * closure via THxK_call. Mirrors the interpreter's generate. */
+ * closure via ARESxK_call. Mirrors the interpreter's generate. */
 static Value *rt_generate(Value *tmpl, Value *f) {
   Value *t = as_tensor(tmpl);
   size_t len = t->u.tensor.rank > 0 ? T_SHAPE(t)[0] : 0;
   Value **items = xmalloc((len ? len : 1) * sizeof(Value *));
   for (size_t i = 0; i < len; i++) {
-    Value *iv = THxRT_int((int64_t)i);
-    items[i] = THxK_call(f, iv); /* owned */
+    Value *iv = ARESxRT_int((int64_t)i);
+    items[i] = ARESxK_call(f, iv); /* owned */
   }
   Value *v = tensor_stack(items, len); /* retains each item's contents */
-  for (size_t i = 0; i < len; i++) THxMEM_release(items[i]); /* drop generate's ref */
+  for (size_t i = 0; i < len; i++) ARESxMEM_release(items[i]); /* drop generate's ref */
   free(items);
   return v;
 }
@@ -2967,14 +2967,14 @@ static Value *rt_generate(Value *tmpl, Value *f) {
  * the only reference the push grows `s` in place, doubling its capacity, and
  * returns `s` itself, which the consumer retains like any prim result. A buffer
  * built by pushing is then linear instead of quadratic. */
-Value *THxK_array_push_owned(Value *s, Value *b) {
-  if (s->tag != T_STR || !THxMEM_unique(s)) return run_builtin(THxB_ARRAY_PUSH, (Value *[]){s, b});
+Value *ARESxK_array_push_owned(Value *s, Value *b) {
+  if (s->tag != T_STR || !ARESxMEM_unique(s)) return run_builtin(ARESxB_ARRAY_PUSH, (Value *[]){s, b});
   uint8_t byte = as_byte(b);
   size_t len = s->u.str.len;
   if (len == s->u.str.cap) {
     size_t cap = len < 8 ? 16 : 2 * len;
     uint8_t *data = realloc(s->u.str.data, cap + 1);
-    if (!data) thrax_fault("out of memory");
+    if (!data) ares_fault("out of memory");
     s->u.str.data = data;
     s->u.str.cap = cap;
   }
@@ -2986,7 +2986,7 @@ Value *THxK_array_push_owned(Value *s, Value *b) {
 
 /* -- tensor kernels ---------------------------------------------------- */
 /* `@tensor_dot add mul zero x y` and `@tensor_matmul add mul zero a b`. Each
- * computes exactly what the element-wise Thrax definition would: a dot is
+ * computes exactly what the element-wise Ares definition would: a dot is
  * `add (... (add zero (mul x0 y0)) ...) (mul xn yn)` over the length of `x`,
  * with `y` indexed modulo its own length. When `add`/`mul` are the bare
  * intrinsics (CORE's numeric instances eta-reduce to them) and the elements are
@@ -3000,9 +3000,9 @@ static int dot_kind(Value *add, Value *mul, Value *zero) {
       mul->u.builtin.nargs)
     return DOT_GENERIC;
   int ia = add->u.builtin.id, im = mul->u.builtin.id;
-  if (ia == THxB_IADD && im == THxB_IMUL && zero->tag == T_INT) return DOT_INT;
-  if (ia == THxB_FADD && im == THxB_FMUL && zero->tag == T_REAL) return DOT_F64;
-  if (ia == THxB_F32ADD && im == THxB_F32MUL && zero->tag == T_REAL32) return DOT_F32;
+  if (ia == ARESxB_IADD && im == ARESxB_IMUL && zero->tag == T_INT) return DOT_INT;
+  if (ia == ARESxB_FADD && im == ARESxB_FMUL && zero->tag == T_REAL) return DOT_F64;
+  if (ia == ARESxB_F32ADD && im == ARESxB_F32MUL && zero->tag == T_REAL32) return DOT_F32;
   return DOT_GENERIC;
 }
 
@@ -3018,9 +3018,9 @@ static Value *lane_at(const Lane *l, size_t i) {
 }
 
 static Value *apply2(Value *f, Value *x, Value *y) {
-  Value *g = THxK_call(f, x); /* owned */
-  Value *r = THxK_call(g, y);
-  THxMEM_release(g);
+  Value *g = ARESxK_call(f, x); /* owned */
+  Value *r = ARESxK_call(g, y);
+  ARESxMEM_release(g);
   return r;
 }
 
@@ -3045,7 +3045,7 @@ static int dot_scalar(int kind, Value *zero, const Lane *x, const Lane *y,
     size_t ylast = y->len < n ? y->len - 1 : n - 1;
     if (x->base + (n - 1) * x->step >= x->t->u.tensor.buf->u.seq.len ||
         y->base + ylast * y->step >= y->t->u.tensor.buf->u.seq.len)
-      thrax_fault("tensor index out of bounds");
+      ares_fault("tensor index out of bounds");
   }
   int wrap = y->len < n;
   switch (kind) {
@@ -3057,7 +3057,7 @@ static int dot_scalar(int kind, Value *zero, const Lane *x, const Lane *y,
       if (p->tag != T_INT || q->tag != T_INT) return 0;
       acc += (uint64_t)p->u.i * (uint64_t)q->u.i;
     }
-    *out = THxRT_int((int64_t)acc);
+    *out = ARESxRT_int((int64_t)acc);
     return 1;
   }
   case DOT_F64: {
@@ -3070,7 +3070,7 @@ static int dot_scalar(int kind, Value *zero, const Lane *x, const Lane *y,
       double prod = as_f64(p) * as_f64(q);
       acc = acc + prod;
     }
-    *out = THxRT_real(acc);
+    *out = ARESxRT_real(acc);
     return 1;
   }
   case DOT_F32: {
@@ -3084,7 +3084,7 @@ static int dot_scalar(int kind, Value *zero, const Lane *x, const Lane *y,
       float prod = as_f32(p) * as_f32(q);
       acc = acc + prod;
     }
-    *out = THxRT_real32(acc);
+    *out = ARESxRT_real32(acc);
     return 1;
   }
   }
@@ -3098,19 +3098,19 @@ static int dot_scalar(int kind, Value *zero, const Lane *x, const Lane *y,
 /* One dot product, owned. */
 static Value *dot_lanes(int kind, Value *add, Value *mul, Value *zero,
                         const Lane *x, const Lane *y) {
-  if (x->len > 0 && y->len == 0) thrax_fault("index into an empty tensor");
+  if (x->len > 0 && y->len == 0) ares_fault("index into an empty tensor");
   Value *r;
   if (kind != DOT_GENERIC && dot_scalar(kind, zero, x, y, &r)) {
-    THxMEM_retain(r);
+    ARESxMEM_retain(r);
     return r;
   }
   Value *acc = zero;
-  THxMEM_retain(acc);
+  ARESxMEM_retain(acc);
   for (size_t i = 0; i < x->len; i++) {
     Value *m = apply2(mul, lane_at(x, i), lane_at(y, i));
     Value *s = apply2(add, acc, m);
-    THxMEM_release(m);
-    THxMEM_release(acc);
+    ARESxMEM_release(m);
+    ARESxMEM_release(acc);
     acc = s;
   }
   return acc;
@@ -3136,11 +3136,11 @@ static Value *rt_dot(Value **a) {
 /* `c[i][j] = dot a[i] (column j of b)` over `a : [m][k]` and `b : [k][n]`. */
 static Value *rt_matmul(Value **a) {
   Value *x = as_tensor(a[3]), *y = as_tensor(a[4]);
-  if (x->u.tensor.rank < 2 || y->u.tensor.rank < 2) thrax_fault("matmul of a non-matrix");
+  if (x->u.tensor.rank < 2 || y->u.tensor.rank < 2) ares_fault("matmul of a non-matrix");
   size_t m = T_SHAPE(x)[0], n = T_SHAPE(y)[1];
   if (m == 0) return tensor_stack(NULL, 0);
   int kind = dot_kind(a[0], a[1], a[2]);
-  size_t mark = THxMEM_pool_mark();
+  size_t mark = ARESxMEM_pool_mark();
   Value **cells = xmalloc((m * n ? m * n : 1) * sizeof(Value *));
   Lane row = {x, 0, T_STRIDES(x)[1], T_SHAPE(x)[1], 2};
   Lane col = {y, 0, T_STRIDES(y)[0], T_SHAPE(y)[0], 2};
@@ -3153,7 +3153,7 @@ static Value *rt_matmul(Value **a) {
       cells[i * n + j] = c;
       if (c->tag == T_TENSOR) scalar = 0;
     }
-    THxMEM_pool_drain(mark); /* every cell is held by its own reference */
+    ARESxMEM_pool_drain(mark); /* every cell is held by its own reference */
   }
   Value *r;
   if (scalar) {
@@ -3163,41 +3163,41 @@ static Value *rt_matmul(Value **a) {
     Value **rows = xmalloc(m * sizeof(Value *));
     for (size_t i = 0; i < m; i++) {
       rows[i] = tensor_stack(cells + i * n, n);
-      THxMEM_retain(rows[i]);
+      ARESxMEM_retain(rows[i]);
     }
     r = tensor_stack(rows, m);
-    for (size_t i = 0; i < m; i++) THxMEM_release(rows[i]);
+    for (size_t i = 0; i < m; i++) ARESxMEM_release(rows[i]);
     free(rows);
   }
-  for (size_t i = 0; i < m * n; i++) THxMEM_release(cells[i]);
+  for (size_t i = 0; i < m * n; i++) ARESxMEM_release(cells[i]);
   free(cells);
   return r;
 }
 
 /* A built-in applied to all `n` of its operands at once, which are borrowed.
  * The result is fresh or one of the operands' children, as through do_apply. */
-Value *THxK_prim(int id, Value **a) {
+Value *ARESxK_prim(int id, Value **a) {
   switch (id) {
-  case THxB_TENSOR_CREATE: return rt_generate(a[0], a[1]);
-  case THxB_TENSOR_DOT: return rt_dot(a);
-  case THxB_TENSOR_MATMUL: return rt_matmul(a);
+  case ARESxB_TENSOR_CREATE: return rt_generate(a[0], a[1]);
+  case ARESxB_TENSOR_DOT: return rt_dot(a);
+  case ARESxB_TENSOR_MATMUL: return rt_matmul(a);
   default: return run_builtin(id, a);
   }
 }
-/* THxK_prim for `@vec_push` / `@vec_set`. `owned` says the caller moved its
+/* ARESxK_prim for `@vec_push` / `@vec_set`. `owned` says the caller moved its
  * first operand out of a slot or captured field (the temp pool now holds that
  * reference), rather than borrowing one that may still be read. */
-Value *THxK_vec_update(int id, Value **a, int owned) {
-  if (!is_vec_update(id)) thrax_fault("vec_update: not a vector update");
+Value *ARESxK_vec_update(int id, Value **a, int owned) {
+  if (!is_vec_update(id)) ares_fault("vec_update: not a vector update");
   return vec_update(id, a, owned);
 }
 
 static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
                     size_t base, int owned, int lent) {
-  if (!fn) thrax_fault("apply: null callee");
+  if (!fn) ares_fault("apply: null callee");
   if (!owned) {
-    THxMEM_retain(fn);
-    THxMEM_retain(arg);
+    ARESxMEM_retain(fn);
+    ARESxMEM_retain(arg);
   }
   int r = 0;
   switch (fn->tag) {
@@ -3213,14 +3213,14 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
          * child do_ret then retains). A partial application this call solely
          * owns gives up its row, so its vector may be updated in place; one
          * still held elsewhere (`let f = @vec_push v in (f 1, f 2)`) may not. */
-        Value **args = THxMEM_cell((nn + 1) * sizeof(Value *));
+        Value **args = ARESxMEM_cell((nn + 1) * sizeof(Value *));
         for (size_t i = 0; i < nn; i++) args[i] = fn->u.builtin.args[i];
         args[nn] = arg;
         int id = fn->u.builtin.id;
-        Value *res = nn > 0 && owned && is_vec_update(id) && THxMEM_unique(fn)
+        Value *res = nn > 0 && owned && is_vec_update(id) && ARESxMEM_unique(fn)
                          ? vec_update(id, args, 1)
-                         : THxK_prim(id, args);
-        THxMEM_cell_free(args, (nn + 1) * sizeof(Value *));
+                         : ARESxK_prim(id, args);
+        ARESxMEM_cell_free(args, (nn + 1) * sizeof(Value *));
         r = do_ret(cur, fr, in, res, base);
       } else {
         r = do_ret(cur, fr, in, builtin_push(fn, arg), base);
@@ -3230,13 +3230,13 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
     case T_EXTERN: {
       size_t nn = fn->u.ext.nargs;
       if (nn + 1 == fn->u.ext.arity) {
-        if ((size_t)fn->u.ext.idx >= THxRT_extern_count)
-          thrax_fault("extern index out of range");
-        Value **args = THxMEM_cell((nn + 1) * sizeof(Value *));
+        if ((size_t)fn->u.ext.idx >= ARESxRT_extern_count)
+          ares_fault("extern index out of range");
+        Value **args = ARESxMEM_cell((nn + 1) * sizeof(Value *));
         for (size_t i = 0; i < nn; i++) args[i] = fn->u.ext.args[i];
         args[nn] = arg;
-        Value *res = THxRT_extern_table[fn->u.ext.idx](args);
-        THxMEM_cell_free(args, (nn + 1) * sizeof(Value *));
+        Value *res = ARESxRT_extern_table[fn->u.ext.idx](args);
+        ARESxMEM_cell_free(args, (nn + 1) * sizeof(Value *));
         r = do_ret(cur, fr, in, res, base);
       } else {
         r = do_ret(cur, fr, in, extern_push(fn, arg), base);
@@ -3267,7 +3267,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
         }
         if (clause) break;
       }
-      if (!clause) thrax_fault("unhandled effect operation");
+      if (!clause) ares_fault("unhandled effect operation");
 
       size_t n = g_kn - p;
       Value *kval;
@@ -3277,7 +3277,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
          * capturing a slice only to discover at the boundary that it was
          * abandoned. The prompt being released owns the clause closure, so hold
          * a reference across it. */
-        THxMEM_retain(clause);
+        ARESxMEM_retain(clause);
         KFrame cl = segment_cleanups(&g_kont[p], n);
         for (size_t i = 0; i < n; i++) kframe_release(&g_kont[p + i]);
         g_kn = p;
@@ -3289,10 +3289,10 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       } else {
         /* The slice's kont frames MOVE into the segment (their owned references
          * move with them; no counts change). */
-        Resump *seg = THxMEM_alloc(sizeof(Resump));
+        Resump *seg = ARESxMEM_alloc(sizeof(Resump));
         seg->rc = 2; /* the kval below, and the clause boundary */
         seg->nbound = 1;
-        seg->seg = THxMEM_alloc((n ? n : 1) * sizeof(KFrame));
+        seg->seg = ARESxMEM_alloc((n ? n : 1) * sizeof(KFrame));
         memcpy(seg->seg, &g_kont[p], n * sizeof(KFrame));
         seg->n = n;
         seg->used = 0;
@@ -3311,7 +3311,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       args[0] = arg;
       args[1] = kval;
       enter_clo(cur, fr, in, clause, args, 2, 0);
-      if (uses == RESUME_NEVER) THxMEM_release(clause); /* the frame holds it now */
+      if (uses == RESUME_NEVER) ARESxMEM_release(clause); /* the frame holds it now */
       r = 1;
       break;
     }
@@ -3322,12 +3322,12 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
        * as a husk for its boundary; otherwise splice a private copy, leaving
        * the slice resumable by its other owners. */
       Resump *seg = fn->u.resump;
-      if (!seg->seg) thrax_fault("resumed a continuation that was moved out");
+      if (!seg->seg) ares_fault("resumed a continuation that was moved out");
       RES_SET(&seg->used, 1);
       if (owned && !RES_GET(&seg->shared) && fn->rc == 1 &&
           RES_GET(&seg->rc) == RES_GET(&seg->nbound) + 1) {
         for (size_t i = 0; i < seg->n; i++) kont_push(seg->seg[i]);
-        THxMEM_free(seg->seg);
+        ARESxMEM_free(seg->seg);
         seg->seg = NULL;
         seg->n = 0;
       } else {
@@ -3340,16 +3340,16 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       break;
     }
     default:
-      thrax_fault("apply: callee is not a function");
+      ares_fault("apply: callee is not a function");
   }
-  THxMEM_release(fn);
-  if (!lent) THxMEM_release(arg);
+  ARESxMEM_release(fn);
+  if (!lent) ARESxMEM_release(arg);
   return r;
 }
 
 static Value *run_loop(BlockFn cur, Frame *fr, Value *in, size_t base) {
   for (;;) {
-    size_t pm = THxMEM_pool_mark(); /* this bounce's temporaries */
+    size_t pm = ARESxMEM_pool_mark(); /* this bounce's temporaries */
     g_act = ACT_NONE;
     cur(fr, in);
     int cont = 1;
@@ -3359,41 +3359,41 @@ static Value *run_loop(BlockFn cur, Frame *fr, Value *in, size_t base) {
     switch (g_act) {
       case ACT_JUMP: cur = g_blk; break;
       case ACT_RET:
-        THxMEM_retain(g_v);
-        THxMEM_pool_drain(pm);
+        ARESxMEM_retain(g_v);
+        ARESxMEM_pool_drain(pm);
         cont = do_ret(&cur, &fr, &in, g_v, base);
-        THxMEM_release(g_v);
+        ARESxMEM_release(g_v);
         break;
       case ACT_APPLY: {
         /* A lent argument outlives the callee, so it needs no in-flight
          * reference across the switch; one the callee does not borrow is
          * counted as usual. */
         int lent = g_lend && g_fn && g_fn->tag == T_CLOS &&
-                   (size_t)g_fn->u.clos.code < THxRT_code_count &&
-                   (THxRT_code_borrowed[g_fn->u.clos.code] & 1);
-        THxMEM_retain(g_fn);
-        if (!lent) THxMEM_retain(g_arg);
-        THxMEM_pool_drain(pm);
+                   (size_t)g_fn->u.clos.code < ARESxRT_code_count &&
+                   (ARESxRT_code_borrowed[g_fn->u.clos.code] & 1);
+        ARESxMEM_retain(g_fn);
+        if (!lent) ARESxMEM_retain(g_arg);
+        ARESxMEM_pool_drain(pm);
         cont = do_apply(&cur, &fr, &in, g_fn, g_arg, base, 1, lent);
         break;
       }
-      case ACT_NONE: thrax_fault("block set no terminator");
+      case ACT_NONE: ares_fault("block set no terminator");
     }
     /* Everything this bounce constructed and did not store dies here; what was
      * stored (slot, kont, box children, g_result) took its own reference. */
-    THxMEM_pool_drain(pm);
+    ARESxMEM_pool_drain(pm);
     if (!cont) return g_result;
   }
 }
 
-Value *THxK_run_code(size_t code) {
-  if (code >= THxRT_code_count) thrax_fault("run_code: code out of range");
+Value *ARESxK_run_code(size_t code) {
+  if (code >= ARESxRT_code_count) ares_fault("run_code: code out of range");
   size_t base = g_kn;
-  Frame *fr = frame_new(THxRT_code_nlocals[code], NULL);
-  return run_loop(THxRT_code_table[code], fr, NULL, base);
+  Frame *fr = frame_new(ARESxRT_code_nlocals[code], NULL);
+  return run_loop(ARESxRT_code_table[code], fr, NULL, base);
 }
 
-Value *THxK_call(Value *f, Value *arg) {
+Value *ARESxK_call(Value *f, Value *arg) {
   size_t base = g_kn;
   BlockFn cur = NULL;
   Frame *fr = NULL;
@@ -3402,9 +3402,9 @@ Value *THxK_call(Value *f, Value *arg) {
   return run_loop(cur, fr, in, base);
 }
 
-/* As THxK_call, but consuming the caller's references to `f` and `arg`, so a
+/* As ARESxK_call, but consuming the caller's references to `f` and `arg`, so a
  * callee nobody else holds is entered uniquely owned. */
-static Value *THxK_call_owned(Value *f, Value *arg) {
+static Value *ARESxK_call_owned(Value *f, Value *arg) {
   size_t base = g_kn;
   BlockFn cur = NULL;
   Frame *fr = NULL;
@@ -3416,7 +3416,7 @@ static Value *THxK_call_owned(Value *f, Value *arg) {
 /* Free the runtime's static scaffolding (the kont stack, temp pool, and dead
  * worklist) at exit. Not value lifetime, so untracked by the leak check; call
  * it after the check for pristine teardown. */
-void THxRT_shutdown(void) {
+void ARESxRT_shutdown(void) {
   free(g_kont);
   g_kont = NULL;
   g_kcap = g_kn = 0;
@@ -3426,11 +3426,11 @@ void THxRT_shutdown(void) {
   free(g_dead);
   g_dead = NULL;
   g_dcap = g_dn = 0;
-  THxMEM_cells_release();
+  ARESxMEM_cells_release();
   stm_free_log();
 }
 
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
 /*------------------------------------------------------------------------------
  *\PARALLEL TASKS: shared marking, blackholed thunks, a work-stealing pool
  *-----------------------------------------------------------------------------*/
@@ -3450,14 +3450,14 @@ static void mark_level(Value *root, uint8_t level) {
   size_t n = 0, cap = 64;
   Value **work = xmalloc(cap * sizeof(Value *));
   work[n++] = root;
-#define THX_MARK_PUSH(c)                                         \
+#define ARX_MARK_PUSH(c)                                         \
   do {                                                           \
     Value *c_ = (c);                                             \
     if (c_ && sh_load(c_) < level) {                             \
       if (n == cap) {                                            \
         cap *= 2;                                                \
         work = realloc(work, cap * sizeof(Value *));             \
-        if (!work) thrax_fault("mark worklist allocation failed"); \
+        if (!work) ares_fault("mark worklist allocation failed"); \
       }                                                          \
       work[n++] = c_;                                            \
     }                                                            \
@@ -3476,36 +3476,36 @@ static void mark_level(Value *root, uint8_t level) {
       if (g_imn == g_imcap) {
         g_imcap = g_imcap ? g_imcap * 2 : 256;
         g_immortal = realloc(g_immortal, g_imcap * sizeof(Value *));
-        if (!g_immortal) thrax_fault("immortal table allocation failed");
+        if (!g_immortal) ares_fault("immortal table allocation failed");
       }
       g_immortal[g_imn++] = v;
     }
     switch (v->tag) {
       case T_TUPLE:
       case T_VEC:
-        for (size_t i = 0; i < v->u.seq.len; i++) THX_MARK_PUSH(v->u.seq.items[i]);
+        for (size_t i = 0; i < v->u.seq.len; i++) ARX_MARK_PUSH(v->u.seq.items[i]);
         break;
-      case T_TENSOR: THX_MARK_PUSH(v->u.tensor.buf); break;
+      case T_TENSOR: ARX_MARK_PUSH(v->u.tensor.buf); break;
       case T_STRUCT:
         for (size_t i = 0; i < v->u.strct.len; i++)
-          THX_MARK_PUSH(v->u.strct.fields[i].val);
+          ARX_MARK_PUSH(v->u.strct.fields[i].val);
         break;
       case T_VARIANT:
         for (size_t i = 0; i < v->u.variant.len; i++)
-          THX_MARK_PUSH(v->u.variant.fields[i]);
+          ARX_MARK_PUSH(v->u.variant.fields[i]);
         break;
       case T_CLOS:
-        for (size_t i = 0; i < v->u.clos.nenv; i++) THX_MARK_PUSH(v->u.clos.env[i]);
+        for (size_t i = 0; i < v->u.clos.nenv; i++) ARX_MARK_PUSH(v->u.clos.env[i]);
         break;
       case T_BUILTIN:
         for (size_t i = 0; i < v->u.builtin.nargs; i++)
-          THX_MARK_PUSH(v->u.builtin.args[i]);
+          ARX_MARK_PUSH(v->u.builtin.args[i]);
         break;
       case T_EXTERN:
-        for (size_t i = 0; i < v->u.ext.nargs; i++) THX_MARK_PUSH(v->u.ext.args[i]);
+        for (size_t i = 0; i < v->u.ext.nargs; i++) ARX_MARK_PUSH(v->u.ext.args[i]);
         break;
       case T_THUNK:
-      case T_BLACKHOLE: THX_MARK_PUSH(v->u.thunk); break;
+      case T_BLACKHOLE: ARX_MARK_PUSH(v->u.thunk); break;
       /* A continuation crosses threads by value: everything its frames hold
        * is marked, and the slice is flagged so a resume copies it rather than
        * moving frames another thread may be reading. A slice that a boundary
@@ -3523,23 +3523,23 @@ static void mark_level(Value *root, uint8_t level) {
             KFrame *kf = &r->seg[i];
             switch (kf->tag) {
               case K_RET:
-                THX_MARK_PUSH(kf->u.ret.frame->clos);
+                ARX_MARK_PUSH(kf->u.ret.frame->clos);
                 for (size_t j = 0; j < kf->u.ret.frame->nlocals; j++)
-                  THX_MARK_PUSH(kf->u.ret.frame->locals[j]);
+                  ARX_MARK_PUSH(kf->u.ret.frame->locals[j]);
                 break;
               case K_PROMPT:
                 for (size_t j = 0; j < kf->u.prompt.n; j++)
-                  THX_MARK_PUSH(kf->u.prompt.clauses[j]);
-                THX_MARK_PUSH(kf->u.prompt.els);
+                  ARX_MARK_PUSH(kf->u.prompt.clauses[j]);
+                ARX_MARK_PUSH(kf->u.prompt.els);
                 break;
-              case K_DEFER: THX_MARK_PUSH(kf->u.defer.cleanup); break;
-              case K_THUNKRET: THX_MARK_PUSH(kf->u.thunkret.saved); break;
+              case K_DEFER: ARX_MARK_PUSH(kf->u.defer.cleanup); break;
+              case K_THUNKRET: ARX_MARK_PUSH(kf->u.thunkret.saved); break;
               case K_CLEANUPS:
                 for (size_t j = 0; j < kf->u.cleanups.n; j++)
-                  THX_MARK_PUSH(kf->u.cleanups.cleanups[j]);
+                  ARX_MARK_PUSH(kf->u.cleanups.cleanups[j]);
                 break;
               case K_AFTERCLAUSE:
-                if (top == 64) thrax_fault("continuations nested too deeply to share");
+                if (top == 64) ares_fault("continuations nested too deeply to share");
                 stack[top++] = kf->u.afterclause.res;
                 break;
             }
@@ -3553,7 +3553,7 @@ static void mark_level(Value *root, uint8_t level) {
     }
   }
   if (level == SH_IMMORTAL) pthread_mutex_unlock(&g_immortal_mu);
-#undef THX_MARK_PUSH
+#undef ARX_MARK_PUSH
   free(work);
 }
 
@@ -3564,9 +3564,9 @@ static void mark_immortal(Value *v) { mark_level(v, SH_IMMORTAL); }
  * workers are joined and every counted value is gone. All payloads are
  * released before any cell is freed, since immortal values point at each
  * other (releasing an immortal child is a no-op, but it reads the child). */
-static void THxPAR_free_immortals(void) {
+static void ARESxPAR_free_immortals(void) {
   for (size_t i = 0; i < g_imn; i++) payload_destroy(g_immortal[i]);
-  for (size_t i = 0; i < g_imn; i++) THxMEM_free(g_immortal[i]);
+  for (size_t i = 0; i < g_imn; i++) ARESxMEM_free(g_immortal[i]);
   free(g_immortal);
   g_immortal = NULL;
   g_imn = g_imcap = 0;
@@ -3599,10 +3599,10 @@ static Value *force_shared(Value *v) {
     if (tag != T_THUNK) return v;
     if (!claim_thunk(v)) continue;
     Value *f = v->u.thunk; /* the cell's reference, dropped once replaced */
-    Value *forced = THxK_call(f, THxRT_unit()); /* owned */
+    Value *forced = ARESxK_call(f, ARESxRT_unit()); /* owned */
     if (forced == v) {
       __atomic_store_n(&v->tag, (uint8_t)T_THUNK, __ATOMIC_RELEASE);
-      THxMEM_release(forced);
+      ARESxMEM_release(forced);
       return v;
     }
     /* An immortal cell's old closure stays in the immortal table, which
@@ -3615,16 +3615,16 @@ static Value *force_shared(Value *v) {
     copy_payload(&tmp, v, forced);
     v->u = tmp.u;
     __atomic_store_n(&v->tag, tmp.tag, __ATOMIC_RELEASE);
-    THxMEM_release(f);
-    THxMEM_release(forced);
+    ARESxMEM_release(f);
+    ARESxMEM_release(forced);
   }
 }
 
 static void task_destroy(Task *t) {
   if (__atomic_sub_fetch(&t->rc, 1, __ATOMIC_ACQ_REL) > 0) return;
-  THxMEM_release(t->fn);
-  THxMEM_release(t->result);
-  THxMEM_free(t);
+  ARESxMEM_release(t->fn);
+  ARESxMEM_release(t->result);
+  ARESxMEM_free(t);
 }
 
 /* One deque per thread, `[0]` for the main thread (and any thread the pool did
@@ -3647,7 +3647,7 @@ static int g_mt_stop = 0;
 static size_t g_queued = 0;
 static pthread_mutex_t g_mt_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_mt_cv = PTHREAD_COND_INITIALIZER;
-static THX_TLS int t_self = 0;
+static ARX_TLS int t_self = 0;
 
 static void mt_wake_all(void) {
   pthread_mutex_lock(&g_mt_mu);
@@ -3700,14 +3700,14 @@ static long long g_io_pending = 0;
 
 static void task_exec(Task *t) {
   Value *fn = t->fn;
-  Value *r = THxK_call(fn, THxRT_unit()); /* owned, now by the task */
+  Value *r = ARESxK_call(fn, ARESxRT_unit()); /* owned, now by the task */
   mark_shared(r);
   t->result = r;
   t->fn = NULL;
   __atomic_store_n(&t->state, TASK_DONE, __ATOMIC_RELEASE);
   if (t->io) __atomic_fetch_sub(&g_io_pending, 1, __ATOMIC_ACQ_REL);
   mt_wake_all();
-  THxMEM_release(fn);
+  ARESxMEM_release(fn);
 }
 
 /* A deque entry: run it unless its awaiter already claimed it, then drop the
@@ -3715,7 +3715,7 @@ static void task_exec(Task *t) {
 static void mt_run_entry(Value *fut) {
   Task *t = fut->u.future;
   if (task_claim(t)) task_exec(t);
-  THxMEM_release(fut);
+  ARESxMEM_release(fut);
 }
 
 static void *worker_main(void *arg) {
@@ -3724,7 +3724,7 @@ static void *worker_main(void *arg) {
     Value *w = mt_find_work();
     if (w) {
       mt_run_entry(w);
-      THxMEM_pool_drain(0);
+      ARESxMEM_pool_drain(0);
       continue;
     }
     pthread_mutex_lock(&g_mt_mu);
@@ -3734,24 +3734,24 @@ static void *worker_main(void *arg) {
     pthread_mutex_unlock(&g_mt_mu);
     if (stop) break;
   }
-  THxRT_shutdown();
+  ARESxRT_shutdown();
   __atomic_fetch_add(&g_live_folded, g_live, __ATOMIC_ACQ_REL);
   return NULL;
 }
 
 /* Provided by the generated program: marks every forced global immortal. */
-static void THxRT_share_globals(void);
+static void ARESxRT_share_globals(void);
 
-/* Start the pool on the first `@par`: `THRAX_THREADS` threads in all (default:
+/* Start the pool on the first `@par`: `ARES_THREADS` threads in all (default:
  * one per online core), the calling thread being one of them. Until then no
  * other thread exists, so marking the globals here cannot race. */
 static void mt_start(void) {
   if (__atomic_load_n(&g_mt_started, __ATOMIC_ACQUIRE)) return;
   pthread_mutex_lock(&g_mt_mu);
   if (!g_mt_started) {
-    const char *env = getenv("THRAX_THREADS");
+    const char *env = getenv("ARES_THREADS");
     int n = env ? atoi(env) : 0;
-    if (n <= 0) n = thx_nprocs();
+    if (n <= 0) n = arx_nprocs();
     if (n <= 0) n = 1;
     g_nthreads = n;
     g_deques = xmalloc((size_t)n * sizeof(Deque));
@@ -3760,11 +3760,11 @@ static void mt_start(void) {
       g_deques[i].buf = NULL;
       g_deques[i].top = g_deques[i].bot = g_deques[i].cap = 0;
     }
-    THxRT_share_globals();
+    ARESxRT_share_globals();
     g_workers = xmalloc((size_t)n * sizeof(pthread_t));
     for (int i = 1; i < n; i++)
       if (pthread_create(&g_workers[i], NULL, worker_main, (void *)(intptr_t)i) != 0)
-        thrax_fault("cannot start a worker thread");
+        ares_fault("cannot start a worker thread");
     __atomic_store_n(&g_mt_started, 1, __ATOMIC_RELEASE);
   }
   pthread_mutex_unlock(&g_mt_mu);
@@ -3772,34 +3772,34 @@ static void mt_start(void) {
 
 static Value *spawn_task(Value *f, int io) {
   mt_start();
-  Task *t = THxMEM_alloc(sizeof(Task));
+  Task *t = ARESxMEM_alloc(sizeof(Task));
   t->rc = 1;
   t->state = TASK_PENDING;
   t->io = io;
   if (io) __atomic_fetch_add(&g_io_pending, 1, __ATOMIC_ACQ_REL);
   mark_shared(f);
-  THxMEM_retain(f);
+  ARESxMEM_retain(f);
   t->fn = f;
   Value *fut = alloc_value(T_FUTURE);
   fut->u.future = t;
   fut->shared = SH_SHARED;
   fut->rc = -fut->rc;
-  THxMEM_retain(fut); /* the deque's reference */
+  ARESxMEM_retain(fut); /* the deque's reference */
   deque_push(&g_deques[t_self], fut);
   __atomic_fetch_add(&g_queued, 1, __ATOMIC_ACQ_REL);
   mt_wake_all();
   return fut;
 }
 
-static Value *THxPAR_spawn(Value *f) { return spawn_task(f, 0); }
-static Value *THxPAR_spawn_io(Value *f) { return spawn_task(f, 1); }
+static Value *ARESxPAR_spawn(Value *f) { return spawn_task(f, 0); }
+static Value *ARESxPAR_spawn_io(Value *f) { return spawn_task(f, 1); }
 
 /* Wait for a future. A task nobody has started yet runs right here; otherwise
  * the waiter helps with queued work until its task is done, so a pool whose
  * every thread awaits cannot deadlock. */
-static Value *THxPAR_await(Value *fut) {
-  fut = THxVALUE_force(fut);
-  if (fut->tag != T_FUTURE) thrax_fault("@await expects a future");
+static Value *ARESxPAR_await(Value *fut) {
+  fut = ARESxVALUE_force(fut);
+  if (fut->tag != T_FUTURE) ares_fault("@await expects a future");
   Task *t = fut->u.future;
   for (;;) {
     int st = __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
@@ -3822,10 +3822,10 @@ static Value *THxPAR_await(Value *fut) {
 }
 
 /* A token unique to the calling thread. */
-static void *THxPAR_self(void) { return (void *)&t_self; }
+static void *ARESxPAR_self(void) { return (void *)&t_self; }
 
 /* One step of waiting on another thread: run a queued task, or yield. */
-static void THxPAR_help(void) {
+static void ARESxPAR_help(void) {
   Value *w = __atomic_load_n(&g_mt_started, __ATOMIC_ACQUIRE) ? mt_find_work() : NULL;
   if (w)
     mt_run_entry(w);
@@ -3835,7 +3835,7 @@ static void THxPAR_help(void) {
 
 /* Stop and join the workers, then drop the tasks nobody ran (pure, so their
  * results were unobservable). Runs on the main thread before the leak check. */
-static void THxPAR_shutdown(void) {
+static void ARESxPAR_shutdown(void) {
   if (!g_mt_started) return;
   pthread_mutex_lock(&g_mt_mu);
   g_mt_stop = 1;
@@ -3844,7 +3844,7 @@ static void THxPAR_shutdown(void) {
   for (int i = 1; i < g_nthreads; i++) pthread_join(g_workers[i], NULL);
   for (int i = 0; i < g_nthreads; i++) {
     Value *w;
-    while ((w = deque_take(&g_deques[i], 1))) THxMEM_release(w);
+    while ((w = deque_take(&g_deques[i], 1))) ARESxMEM_release(w);
     free(g_deques[i].buf);
     pthread_mutex_destroy(&g_deques[i].mu);
   }
@@ -3858,7 +3858,7 @@ static void THxPAR_shutdown(void) {
 }
 /* Wait for every `@spawn` task to finish, helping with queued work: a program
  * ends after the tasks it spawned. */
-static void THxPAR_join_io(void) {
+static void ARESxPAR_join_io(void) {
   while (__atomic_load_n(&g_io_pending, __ATOMIC_ACQUIRE) > 0) {
     Value *w = mt_find_work();
     if (w) {
@@ -3882,26 +3882,26 @@ static size_t g_task_head = 0, g_task_len = 0, g_task_cap = 0;
 
 static void task_destroy(Task *t) {
   if (--t->rc > 0) return;
-  THxMEM_release(t->fn);
-  THxMEM_release(t->result);
-  THxMEM_free(t);
+  ARESxMEM_release(t->fn);
+  ARESxMEM_release(t->result);
+  ARESxMEM_free(t);
 }
 
 static void task_exec(Task *t) {
   Value *fn = t->fn;
   t->state = TASK_RUNNING;
   t->fn = NULL;
-  t->result = THxK_call(fn, THxRT_unit()); /* owned, now by the task */
+  t->result = ARESxK_call(fn, ARESxRT_unit()); /* owned, now by the task */
   t->state = TASK_DONE;
-  THxMEM_release(fn);
+  ARESxMEM_release(fn);
 }
 
 static Value *spawn_task(Value *f) {
-  Task *t = THxMEM_alloc(sizeof(Task));
+  Task *t = ARESxMEM_alloc(sizeof(Task));
   t->rc = 1;
   t->state = TASK_PENDING;
   t->io = 0;
-  THxMEM_retain(f);
+  ARESxMEM_retain(f);
   t->fn = f;
   t->result = NULL;
   Value *fut = alloc_value(T_FUTURE);
@@ -3915,13 +3915,13 @@ static Value *spawn_task(Value *f) {
     g_task_head = 0;
     g_task_cap = ncap;
   }
-  THxMEM_retain(fut); /* the queue's reference */
+  ARESxMEM_retain(fut); /* the queue's reference */
   g_tasks[(g_task_head + g_task_len++) % g_task_cap] = fut;
   return fut;
 }
 
-static Value *THxPAR_spawn(Value *f) { return spawn_task(f); }
-static Value *THxPAR_spawn_io(Value *f) { return spawn_task(f); }
+static Value *ARESxPAR_spawn(Value *f) { return spawn_task(f); }
+static Value *ARESxPAR_spawn_io(Value *f) { return spawn_task(f); }
 
 /* Run the oldest task nobody has started; 0 when there is none. */
 static int run_next_task(void) {
@@ -3932,25 +3932,25 @@ static int run_next_task(void) {
     Task *t = fut->u.future;
     int ran = t->state == TASK_PENDING;
     if (ran) task_exec(t);
-    THxMEM_release(fut);
+    ARESxMEM_release(fut);
     if (ran) return 1;
   }
   return 0;
 }
 
-static Value *THxPAR_await(Value *fut) {
-  fut = THxVALUE_force(fut);
+static Value *ARESxPAR_await(Value *fut) {
+  fut = ARESxVALUE_force(fut);
   if (fut->tag != T_FUTURE) return fut;
   Task *t = fut->u.future;
-  if (t->state == TASK_RUNNING) thrax_fault("a task awaits its own result");
+  if (t->state == TASK_RUNNING) ares_fault("a task awaits its own result");
   if (t->state == TASK_PENDING) task_exec(t);
   return t->result;
 }
 
 /* Drop the tasks nobody ran (the `Show` entry evaluates one global and stops). */
-static void THxPAR_shutdown(void) {
+static void ARESxPAR_shutdown(void) {
   while (g_task_len > 0) {
-    THxMEM_release(g_tasks[g_task_head]);
+    ARESxMEM_release(g_tasks[g_task_head]);
     g_task_head = (g_task_head + 1) % g_task_cap;
     g_task_len--;
   }
@@ -3958,9 +3958,9 @@ static void THxPAR_shutdown(void) {
   g_tasks = NULL;
   g_task_cap = 0;
 }
-static void THxPAR_free_immortals(void) {}
+static void ARESxPAR_free_immortals(void) {}
 /* A program ends after the tasks it spawned. */
-static void THxPAR_join_io(void) {
+static void ARESxPAR_join_io(void) {
   while (run_next_task()) {
   }
 }
@@ -3973,7 +3973,7 @@ static void THxPAR_join_io(void) {
 /* Whether waiting on another thread can make progress: some other task exists
  * that might send, or commit. Without one, the waiter is deadlocked. */
 static int others_may_run(void) {
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   return __atomic_load_n(&g_mt_started, __ATOMIC_ACQUIRE);
 #else
   return 0;
@@ -3982,24 +3982,24 @@ static int others_may_run(void) {
 
 static void chan_release(Chan *c) {
   if (!obj_release(&c->rc)) return;
-  for (size_t i = 0; i < c->len; i++) THxMEM_release(c->buf[(c->head + i) % c->cap]);
+  for (size_t i = 0; i < c->len; i++) ARESxMEM_release(c->buf[(c->head + i) % c->cap]);
   free(c->buf);
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   pthread_mutex_destroy(&c->mu);
 #endif
-  THxMEM_free(c);
+  ARESxMEM_free(c);
 }
 
 static Chan *as_chan(Value *v) {
-  v = THxVALUE_force(v);
-  if (v->tag != T_CHAN) thrax_fault("expected a channel");
+  v = ARESxVALUE_force(v);
+  if (v->tag != T_CHAN) ares_fault("expected a channel");
   return v->u.chan;
 }
 
-static Value *THxCHAN_new(void) {
-  Chan *c = THxMEM_alloc(sizeof(Chan));
+static Value *ARESxCHAN_new(void) {
+  Chan *c = ARESxMEM_alloc(sizeof(Chan));
   c->rc = 1;
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   pthread_mutex_init(&c->mu, NULL);
 #endif
   Value *v = alloc_value(T_CHAN);
@@ -4008,13 +4008,13 @@ static Value *THxCHAN_new(void) {
 }
 
 /* A sent value may be received on any thread, so it is marked shared first. */
-static Value *THxCHAN_send(Value *ch, Value *v) {
+static Value *ARESxCHAN_send(Value *ch, Value *v) {
   Chan *c = as_chan(ch);
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   mark_shared(v);
 #endif
-  THxMEM_retain(v);
-#ifdef THRAX_THREADS
+  ARESxMEM_retain(v);
+#ifdef ARES_THREADS
   pthread_mutex_lock(&c->mu);
 #endif
   if (c->len == c->cap) {
@@ -4027,28 +4027,28 @@ static Value *THxCHAN_send(Value *ch, Value *v) {
     c->cap = ncap;
   }
   c->buf[(c->head + c->len) % c->cap] = v;
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   __atomic_store_n(&c->len, c->len + 1, __ATOMIC_RELEASE);
   pthread_mutex_unlock(&c->mu);
   if (others_may_run()) mt_wake_all();
 #else
   c->len++;
 #endif
-  return THxRT_unit();
+  return ARESxRT_unit();
 }
 
 /* Take the oldest message; while there is none, help with queued tasks (one
  * of them may be the sender), and sleep when there is nothing to help with. */
-static Value *THxCHAN_recv(Value *ch) {
+static Value *ARESxCHAN_recv(Value *ch) {
   Chan *c = as_chan(ch);
   for (;;) {
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
     pthread_mutex_lock(&c->mu);
 #endif
     if (c->len > 0) {
       Value *v = c->buf[c->head];
       c->head = (c->head + 1) % c->cap;
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
       __atomic_store_n(&c->len, c->len - 1, __ATOMIC_RELEASE);
       pthread_mutex_unlock(&c->mu);
 #else
@@ -4057,15 +4057,15 @@ static Value *THxCHAN_recv(Value *ch) {
       pool_adopt(v); /* the channel's reference */
       return v;
     }
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
     pthread_mutex_unlock(&c->mu);
 #endif
-#ifndef THRAX_THREADS
+#ifndef ARES_THREADS
     if (run_next_task()) continue;
 #endif
     if (!others_may_run())
-      thrax_fault("deadlock: receiving from a channel that no task will send to");
-#ifdef THRAX_THREADS
+      ares_fault("deadlock: receiving from a channel that no task will send to");
+#ifdef ARES_THREADS
     Value *w = mt_find_work();
     if (w) {
       mt_run_entry(w);
@@ -4080,7 +4080,7 @@ static Value *THxCHAN_recv(Value *ch) {
   }
 }
 
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
 static pthread_mutex_t g_stm_mu = PTHREAD_MUTEX_INITIALIZER;
 #define STM_LOCK() pthread_mutex_lock(&g_stm_mu)
 #define STM_UNLOCK() pthread_mutex_unlock(&g_stm_mu)
@@ -4091,24 +4091,24 @@ static pthread_mutex_t g_stm_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void tvar_release(TVar *tv) {
   if (!obj_release(&tv->rc)) return;
-  THxMEM_release(tv->val);
-  THxMEM_free(tv);
+  ARESxMEM_release(tv->val);
+  ARESxMEM_free(tv);
 }
 
 static TVar *as_tvar(Value *v) {
-  v = THxVALUE_force(v);
-  if (v->tag != T_TVAR) thrax_fault("expected a transactional variable");
+  v = ARESxVALUE_force(v);
+  if (v->tag != T_TVAR) ares_fault("expected a transactional variable");
   return v->u.tvar;
 }
 
 /* A transactional variable's value may be read on any thread, so whatever
  * goes into one is marked shared first. */
-static Value *THxTVAR_new(Value *v) {
-#ifdef THRAX_THREADS
+static Value *ARESxTVAR_new(Value *v) {
+#ifdef ARES_THREADS
   mark_shared(v);
 #endif
-  THxMEM_retain(v);
-  TVar *tv = THxMEM_alloc(sizeof(TVar));
+  ARESxMEM_retain(v);
+  TVar *tv = ARESxMEM_alloc(sizeof(TVar));
   tv->rc = 1;
   tv->val = v;
   Value *cell = alloc_value(T_TVAR);
@@ -4120,14 +4120,14 @@ static Value *THxTVAR_new(Value *v) {
 static Value *tvar_snapshot(TVar *tv, uint64_t *version) {
   STM_LOCK();
   Value *v = tv->val;
-  THxMEM_retain(v);
+  ARESxMEM_retain(v);
   *version = tv->version;
   STM_UNLOCK();
   pool_adopt(v);
   return v;
 }
 
-static Value *THxTVAR_read(Value *cell) {
+static Value *ARESxTVAR_read(Value *cell) {
   uint64_t version;
   return tvar_snapshot(as_tvar(cell), &version);
 }
@@ -4142,15 +4142,15 @@ typedef struct {
   TVar *tv;
   Value *val;
 } StmWrite;
-static THX_TLS StmRead *g_stm_reads = NULL;
-static THX_TLS size_t g_stm_nr = 0, g_stm_rcap = 0;
-static THX_TLS StmWrite *g_stm_writes = NULL;
-static THX_TLS size_t g_stm_nw = 0, g_stm_wcap = 0;
+static ARX_TLS StmRead *g_stm_reads = NULL;
+static ARX_TLS size_t g_stm_nr = 0, g_stm_rcap = 0;
+static ARX_TLS StmWrite *g_stm_writes = NULL;
+static ARX_TLS size_t g_stm_nw = 0, g_stm_wcap = 0;
 
 static void stm_truncate_writes(size_t n) {
   while (g_stm_nw > n) {
     StmWrite *w = &g_stm_writes[--g_stm_nw];
-    THxMEM_release(w->val);
+    ARESxMEM_release(w->val);
     tvar_release(w->tv);
   }
 }
@@ -4169,14 +4169,14 @@ static void stm_free_log(void) {
   g_stm_rcap = g_stm_wcap = 0;
 }
 
-static Value *THxSTM_begin(void) {
+static Value *ARESxSTM_begin(void) {
   stm_clear();
-  return THxRT_unit();
+  return ARESxRT_unit();
 }
 
 /* The transaction's own latest write, or else the committed value, whose
  * version is logged for validation. */
-static Value *THxSTM_read(Value *cell) {
+static Value *ARESxSTM_read(Value *cell) {
   TVar *tv = as_tvar(cell);
   for (size_t i = g_stm_nw; i > 0; i--)
     if (g_stm_writes[i - 1].tv == tv) return g_stm_writes[i - 1].val; /* borrowed */
@@ -4185,27 +4185,27 @@ static Value *THxSTM_read(Value *cell) {
   if (g_stm_nr == g_stm_rcap) {
     g_stm_rcap = g_stm_rcap ? g_stm_rcap * 2 : 16;
     g_stm_reads = realloc(g_stm_reads, g_stm_rcap * sizeof(StmRead));
-    if (!g_stm_reads) thrax_fault("transaction log allocation failed");
+    if (!g_stm_reads) ares_fault("transaction log allocation failed");
   }
   obj_retain(&tv->rc);
   g_stm_reads[g_stm_nr++] = (StmRead){tv, version};
   return v;
 }
 
-static Value *THxSTM_write(Value *cell, Value *v) {
+static Value *ARESxSTM_write(Value *cell, Value *v) {
   TVar *tv = as_tvar(cell);
-#ifdef THRAX_THREADS
+#ifdef ARES_THREADS
   mark_shared(v);
 #endif
   if (g_stm_nw == g_stm_wcap) {
     g_stm_wcap = g_stm_wcap ? g_stm_wcap * 2 : 16;
     g_stm_writes = realloc(g_stm_writes, g_stm_wcap * sizeof(StmWrite));
-    if (!g_stm_writes) thrax_fault("transaction log allocation failed");
+    if (!g_stm_writes) ares_fault("transaction log allocation failed");
   }
   obj_retain(&tv->rc);
-  THxMEM_retain(v);
+  ARESxMEM_retain(v);
   g_stm_writes[g_stm_nw++] = (StmWrite){tv, v};
-  return THxRT_unit();
+  return ARESxRT_unit();
 }
 
 static int stm_reads_unchanged(void) {
@@ -4216,7 +4216,7 @@ static int stm_reads_unchanged(void) {
 
 /* Publish the writes, all at once, if nothing the transaction read has been
  * written since; the replaced values are released outside the lock. */
-static Value *THxSTM_commit(void) {
+static Value *ARESxSTM_commit(void) {
   STM_LOCK();
   int ok = stm_reads_unchanged();
   if (ok) {
@@ -4230,14 +4230,14 @@ static Value *THxSTM_commit(void) {
   }
   STM_UNLOCK();
   stm_clear();
-  return THxRT_bool(ok);
+  return ARESxRT_bool(ok);
 }
 
 /* `retry`: wait until another thread commits a write to something the
  * transaction read, helping with queued tasks meanwhile. A task run while
  * helping uses this thread's log for its own transactions, so the reads to
  * watch are moved out of it first. */
-static Value *THxSTM_wait(void) {
+static Value *ARESxSTM_wait(void) {
   stm_truncate_writes(0);
   StmRead *reads = g_stm_reads;
   size_t nr = g_stm_nr;
@@ -4250,12 +4250,12 @@ static Value *THxSTM_wait(void) {
       if (reads[i].tv->version != reads[i].version) same = 0;
     STM_UNLOCK();
     if (!same) break;
-#ifndef THRAX_THREADS
+#ifndef ARES_THREADS
     if (run_next_task()) continue;
 #endif
     if (!others_may_run())
-      thrax_fault("deadlock: a transaction retries, and no task will change what it read");
-#ifdef THRAX_THREADS
+      ares_fault("deadlock: a transaction retries, and no task will change what it read");
+#ifdef ARES_THREADS
     Value *w = mt_find_work();
     if (w)
       mt_run_entry(w);
@@ -4265,17 +4265,17 @@ static Value *THxSTM_wait(void) {
   }
   for (size_t i = 0; i < nr; i++) tvar_release(reads[i].tv);
   free(reads);
-  return THxRT_unit();
+  return ARESxRT_unit();
 }
 
-static Value *THxSTM_save(void) { return THxRT_int((long long)g_stm_nw); }
+static Value *ARESxSTM_save(void) { return ARESxRT_int((long long)g_stm_nw); }
 
-static Value *THxSTM_rollback(Value *mark) {
-  Value *m = THxVALUE_force(mark);
+static Value *ARESxSTM_rollback(Value *mark) {
+  Value *m = ARESxVALUE_force(mark);
   if (m->tag != T_INT || m->u.i < 0 || (size_t)m->u.i > g_stm_nw)
-    thrax_fault("expected a transaction mark");
+    ares_fault("expected a transaction mark");
   stm_truncate_writes((size_t)m->u.i);
-  return THxRT_unit();
+  return ARESxRT_unit();
 }
 
 /* -- show (matches interpreter Value::show) ------------------------------ */
@@ -4289,7 +4289,7 @@ static void str_push(Str *s, const char *bytes, size_t n) {
   if (s->len + n + 1 > s->cap) {
     while (s->len + n + 1 > s->cap) s->cap = s->cap ? s->cap * 2 : 64;
     s->buf = realloc(s->buf, s->cap);
-    if (!s->buf) thrax_fault("out of memory");
+    if (!s->buf) ares_fault("out of memory");
   }
   memcpy(s->buf + s->len, bytes, n);
   s->len += n;
@@ -4419,15 +4419,15 @@ static void show_into(Str *s, Value *v) {
     case T_RESUMP: str_puts(s, "<continuation>"); break;
     case T_THUNK:
     case T_BLACKHOLE: str_puts(s, "<unforced>"); break;
-#ifdef THRAX_THREADS
-    case T_FUTURE: show_into(s, THxPAR_await(v)); break;
+#ifdef ARES_THREADS
+    case T_FUTURE: show_into(s, ARESxPAR_await(v)); break;
 #endif
     case T_CHAN: str_puts(s, "<channel>"); break;
     case T_TVAR: str_puts(s, "<tvar>"); break;
   }
 }
 
-static char *thrax_show(Value *v) {
+static char *ares_show(Value *v) {
   Str s = {NULL, 0, 0};
   show_into(&s, v);
   if (!s.buf) {
@@ -4437,6 +4437,6 @@ static char *thrax_show(Value *v) {
   return s.buf;
 }
 
-/* The standard library's scalar conversions (`thx_i2d`, `thx_real_to_str`, ...)
-   live in the single-source `thraxstd.c`, appended after this runtime by the
+/* The standard library's scalar conversions (`arx_i2d`, `arx_real_to_str`, ...)
+   live in the single-source `aresstd.c`, appended after this runtime by the
    emitter (crates/ccg/src/lib.rs) and linked into the interpreter in-process. */

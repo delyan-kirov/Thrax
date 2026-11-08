@@ -54,10 +54,10 @@ typedef struct {
     ffi_type **atypes;
     ffi_type *aggs;
     ffi_type **elems;
-} thx_prep_t;
+} arx_prep_t;
 
-void thx_ffi_prep_free(void *handle) {
-    thx_prep_t *p = handle;
+void arx_ffi_prep_free(void *handle) {
+    arx_prep_t *p = handle;
     if (p) {
         free(p->atypes);
         free(p->aggs);
@@ -72,10 +72,10 @@ void thx_ffi_prep_free(void *handle) {
  *   kinds[i] == K_STRUCT : a struct whose leaf kinds are
  *       leaves[leaf_off[i] .. leaf_off[i] + leaf_len[i]].
  * The return is a scalar `ret_kind`, or (ret_kind == K_STRUCT) a struct built
- * from `ret_leaves[0..ret_nleaves]`. Returns a handle for `thx_ffi_call_prep`
- * (free it with `thx_ffi_prep_free`), or NULL when libffi rejects the
+ * from `ret_leaves[0..ret_nleaves]`. Returns a handle for `arx_ffi_call_prep`
+ * (free it with `arx_ffi_prep_free`), or NULL when libffi rejects the
  * signature. */
-void *thx_ffi_prep(unsigned nargs,
+void *arx_ffi_prep(unsigned nargs,
                    const int *kinds,
                    const int *leaf_off, const int *leaf_len, const int *leaves,
                    int ret_kind, const int *ret_leaves, int ret_nleaves) {
@@ -88,13 +88,13 @@ void *thx_ffi_prep(unsigned nargs,
             nelems += leaf_len[i] + 1;
         }
     if (ret_kind == K_STRUCT && ret_nleaves > MAX_LEAVES) return NULL;
-    thx_prep_t *p = calloc(1, sizeof *p);
+    arx_prep_t *p = calloc(1, sizeof *p);
     if (!p) return NULL;
     p->atypes = calloc(nargs ? nargs : 1, sizeof *p->atypes);
     p->aggs = calloc(naggs ? naggs : 1, sizeof *p->aggs);
     p->elems = calloc(nelems ? nelems : 1, sizeof *p->elems);
     if (!p->atypes || !p->aggs || !p->elems) {
-        thx_ffi_prep_free(p);
+        arx_ffi_prep_free(p);
         return NULL;
     }
     ffi_type *agg = p->aggs;
@@ -115,7 +115,7 @@ void *thx_ffi_prep(unsigned nargs,
     }
     if (ffi_prep_cif(&p->cif, FFI_DEFAULT_ABI, nargs, rtype,
                      nargs ? p->atypes : NULL) != FFI_OK) {
-        thx_ffi_prep_free(p);
+        arx_ffi_prep_free(p);
         return NULL;
     }
     return p;
@@ -126,18 +126,18 @@ void *thx_ffi_prep(unsigned nargs,
  * must have room for the result (>= struct size, or `sizeof(ffi_arg)`), 8-byte
  * aligned. A prepared cif is only read here, so a nested call (from a callback)
  * may reuse it. */
-void thx_ffi_call_prep(void *handle, void *fn, void **avalues, void *rvalue) {
-    thx_prep_t *p = handle;
+void arx_ffi_call_prep(void *handle, void *fn, void **avalues, void *rvalue) {
+    arx_prep_t *p = handle;
     ffi_call(&p->cif, FFI_FN(fn), rvalue, p->cif.nargs ? avalues : NULL);
 }
 
-/* -- closures: a Thrax function passed to C as a function pointer -- */
+/* -- closures: a Ares function passed to C as a function pointer -- */
 
 /* The Rust dispatcher, invoked whenever foreign C calls the closure. It reads
- * the arguments (per the kinds captured at creation), applies the Thrax closure,
+ * the arguments (per the kinds captured at creation), applies the Ares closure,
  * and writes the result. `user` is the Rust context pointer given to
- * `thx_closure_new`. */
-extern void thx_closure_invoke(void *user, void **args, void *ret);
+ * `arx_closure_new`. */
+extern void arx_closure_invoke(void *user, void **args, void *ret);
 
 typedef struct {
     ffi_closure *closure;
@@ -145,22 +145,22 @@ typedef struct {
     ffi_type *atypes[MAX_ARGS];
     void *code;
     void *user;
-} thx_closure_t;
+} arx_closure_t;
 
-static void thx_closure_binding(ffi_cif *cif, void *ret, void **args, void *user) {
+static void arx_closure_binding(ffi_cif *cif, void *ret, void **args, void *user) {
     (void)cif;
-    thx_closure_t *h = user;
-    thx_closure_invoke(h->user, args, ret);
+    arx_closure_t *h = user;
+    arx_closure_invoke(h->user, args, ret);
 }
 
 /* Allocate and prepare a closure over the scalar `kinds` (leaf codes; structs
  * are not supported in a callback signature). Writes the C-callable code pointer
- * to `*code_out` and returns an opaque handle to free with `thx_closure_free`.
- * `user` is passed back to `thx_closure_invoke`. Returns NULL on failure. */
-void *thx_closure_new(unsigned nargs, const int *kinds, int ret_kind,
+ * to `*code_out` and returns an opaque handle to free with `arx_closure_free`.
+ * `user` is passed back to `arx_closure_invoke`. Returns NULL on failure. */
+void *arx_closure_new(unsigned nargs, const int *kinds, int ret_kind,
                       void *user, void **code_out) {
     if (nargs > MAX_ARGS) return NULL;
-    thx_closure_t *h = calloc(1, sizeof(thx_closure_t));
+    arx_closure_t *h = calloc(1, sizeof(arx_closure_t));
     if (!h) return NULL;
     h->user = user;
     for (unsigned i = 0; i < nargs; i++) h->atypes[i] = ty(kinds[i]);
@@ -174,7 +174,7 @@ void *thx_closure_new(unsigned nargs, const int *kinds, int ret_kind,
         free(h);
         return NULL;
     }
-    if (ffi_prep_closure_loc(h->closure, &h->cif, thx_closure_binding, h, h->code)
+    if (ffi_prep_closure_loc(h->closure, &h->cif, arx_closure_binding, h, h->code)
         != FFI_OK) {
         ffi_closure_free(h->closure);
         free(h);
@@ -184,8 +184,8 @@ void *thx_closure_new(unsigned nargs, const int *kinds, int ret_kind,
     return h;
 }
 
-void thx_closure_free(void *handle) {
-    thx_closure_t *h = handle;
+void arx_closure_free(void *handle) {
+    arx_closure_t *h = handle;
     if (h) {
         ffi_closure_free(h->closure);
         free(h);

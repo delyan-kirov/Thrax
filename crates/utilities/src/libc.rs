@@ -1,14 +1,14 @@
 //! The C standard library's real prototypes, for the integer slots an `@extern`
 //! types loosely.
 //!
-//! `library/C.thx` gives libc functions the friendly `@Int` for every integer
+//! `library/C.ares` gives libc functions the friendly `@Int` for every integer
 //! and handle, but C does not: `fgetc` returns a 32-bit `int`, `write` takes a
 //! `size_t`, a `FILE*` is a pointer, and `long` is 32 bits on Windows. Calling
 //! across that gap reads the upper half of a narrow return as garbage (so EOF is
 //! 4294967295, not -1), and on wasm, where every call is type-checked, it links
 //! a trapping stub instead of the function. [`exact_types`] rewrites such a
 //! call's integer slots to the sized types the target's C library really uses,
-//! so both engines marshal it exactly; the Thrax-facing types stay as written.
+//! so both engines marshal it exactly; the Ares-facing types stay as written.
 
 use crate::target::{Os, Target};
 use crate::StrId;
@@ -28,11 +28,11 @@ enum C {
     Size,
     /// `ssize_t`, the target's word, signed.
     SSize,
-    /// `time_t`, 64 bits on every target Thrax builds for.
+    /// `time_t`, 64 bits on every target Ares builds for.
     Time,
     /// `clock_t`, a `long`.
     Clock,
-    /// Any pointer that a Thrax binding may carry as an integer (`FILE*`).
+    /// Any pointer that a Ares binding may carry as an integer (`FILE*`).
     Ptr,
     /// Anything a binding cannot get wrong with an integer: `char*` (`@Str`),
     /// `double`, `void`.
@@ -41,7 +41,7 @@ enum C {
 
 use C::*;
 
-/// The functions `library/C.thx` (and the corpus) bind, with their prototypes:
+/// The functions `library/C.ares` (and the corpus) bind, with their prototypes:
 /// `(symbol, result, parameters)`.
 const PROTOTYPES: &[(&str, C, &[C])] = &[
     // stdlib.h
@@ -115,7 +115,7 @@ fn is_integer(ty: &str) -> bool {
     ty == "@Int" || ty == "@Nat" || ty.starts_with("@Int") || ty.starts_with("@Nat")
 }
 
-/// The sized Thrax type `c` is on `target`, or `None` to keep the binding's own.
+/// The sized Ares type `c` is on `target`, or `None` to keep the binding's own.
 fn sized(target: Target, c: C) -> Option<&'static str> {
     let word = target.ptr_bits() == 64;
     let long64 = word && target.os != Os::Windows;

@@ -1,0 +1,153 @@
+$ @mod IO
+
+# \file IO.ares
+# \info Console and file IO over the auto-injected `C` libc namespace.
+#       Console output goes through unbuffered `C.write` (never mixed with
+#       C's buffered stdout, so ordering is deterministic); files go through
+#       the FILE* API, whose handles travel as word-sized Ints (see the C
+#       namespace notes in DR). C functions returning a negative C `int` do
+#       not arrive as negative Ints across the FFI, so end-of-stream is
+#       detected as "not a byte" (outside 0..255) and errors as `not == 0`.
+
+$ with OPT
+$ with STR
+$ with VEC
+
+# ---- console ----
+
+$ print : @Str -> <@IO> {} = \s => C.write { 1, s, @array_len s }; {}
+
+$ println : @Str -> <@IO> {} = \s => C.write { 1, s, @array_len s }; C.write { 1, "\n", 1 }; {}
+
+$ eprint : @Str -> <@IO> {} = \s => C.write { 2, s, @array_len s }; {}
+
+$ eprintln : @Str -> <@IO> {} = \s => C.write { 2, s, @array_len s }; C.write { 2, "\n", 1 }; {}
+
+$ print_int : @Int -> <@IO> {} = \n => print (from_int n)
+
+$ println_int : @Int -> <@IO> {} = \n => println (from_int n)
+
+# One line from stdin, without the trailing newline. Returns "" at
+# end-of-input (indistinguishable from an empty line).
+$ read_line : {} -> <@IO> @Str = \u => read_line_acc ""
+
+# ---- files ----
+
+# The whole file as a @Str, byte-exact; None when it cannot be opened. A
+# regular file is sized with `lseek` and read into one buffer; a stream that
+# cannot seek (a pipe, a terminal) is read in chunks to end of file.
+$ read_file : @Str -> <@IO> Option @Str = \path =>
+    let fd = C.open { path, 0 } in
+    if fd < 0 =>
+        Option.None
+    else
+        let n = C.lseek { fd, 0, 2 } in
+        let body =
+            if n < 0 =>
+                read_chunks fd (C.malloc 65536) ""
+            else
+                C.lseek { fd, 0, 0 }; read_sized fd n
+        in
+        C.close fd; Option.Some.{ body }
+
+# The names (not paths) of a directory's entries, `.` and `..` excluded, sorted
+# byte-wise so the result never depends on the filesystem's or the locale's
+# order. Empty when the directory cannot be read.
+$ read_dir : @Str -> <@IO> @Vec @Str = \dir => VEC.sort_by STR.cmp_str
+    (VEC.filter (\name => !(STR.is_empty name)) (STR.lines (C.dir_entries dir)))
+
+# A directory's entries with their kinds, in the order the system lists them.
+# The kind needs no `stat` per entry where the system reports it while listing.
+# Empty when the directory cannot be read.
+$ list_dir : @Str -> <@IO> @Vec Entry = \dir => entries (C.list_dir dir) 0 (@vec_new {})
+
+$ Entry : @struct =
+    kind: EntryKind,
+    name: @Str,
+
+$ EntryKind : @union =
+    Dir: {},
+    File: {},
+    Link: {},
+    Other: {},
+
+# When the file was last modified, in nanoseconds since the epoch (as fine as
+# the system keeps it); None when it does not exist or cannot be read.
+$ mtime : @Str -> <@IO> Option @Int = \path =>
+    let t = C.mtime path in if t < 0 => Option.None else Option.Some.{ t }
+
+# Write (truncating) / append `content` to the file; true on success, false
+# on failure to open.
+$ write_file : @Str -> @Str -> <@IO> @Bool = \path content => spill_file path content "wb"
+
+$ append_file : @Str -> @Str -> <@IO> @Bool = \path content => spill_file path content "ab"
+
+$ remove_file : @Str -> <@IO> @Bool = \path => (C.remove path) == 0
+
+# The environment variable's value, or "" when unset (libc's NULL becomes
+# the empty string across the FFI).
+$ env : @Str -> <@IO> @Str = \name => C.getenv name
+
+# Seconds since the Unix epoch (libc time(NULL)).
+$ now : {} -> <@IO> @Int = \u => C.time 0
+
+# ---- internal helpers ----
+
+$ @private
+
+$ read_line_acc : @Str -> <@IO> @Str = \acc =>
+    let c = C.getchar {} in
+    if c == 10 => acc else if is_byte c => read_line_acc (@array_push acc c) else acc
+
+# `fgetc`/`getchar` return a byte, or EOF (-1).
+$ is_byte : @Int -> @Bool = \c => if c < 0 => @false else c <= 255
+
+$ read_bytes : @Int -> @Int -> @Str -> <@IO> @Str = \f n acc =>
+    if n <= 0 =>
+        acc
+    else
+        let c = C.fgetc f in
+        if is_byte c =>
+            read_bytes f (n - 1) (@array_push acc c)
+        else
+            acc # stream ended early (unreadable path, truncated file)
+
+# `n` bytes of `fd`, fewer if it ends early: `read` may return a part, so it
+# is called until the buffer is full.
+$ read_sized : @Int -> @Int -> <@IO> @Str = \fd n =>
+    let buf = C.malloc (n + 1) in
+    let got = read_into fd buf 0 n in
+    let body = @ptr_bytes buf got in
+    C.free buf; body
+
+$ read_into : @Int -> @Ptr -> @Int -> @Int -> <@IO> @Int = \fd buf got n =>
+    if got >= n =>
+        got
+    else
+        let r = C.read { fd, C.ptr_add { buf, got }, n - got } in
+        if r <= 0 => got else read_into fd buf (got + r) n
+
+$ read_chunks : @Int -> @Ptr -> @Str -> <@IO> @Str = \fd buf acc =>
+    let r = C.read { fd, buf, 65536 } in
+    if r <= 0 => C.free buf; acc else read_chunks fd buf (acc ++ @ptr_bytes buf r)
+
+# One `C.list_dir` line per entry: a kind byte, the name, a newline.
+$ entries : @Str -> @Int -> @Vec Entry -> @Vec Entry = \s i acc =>
+    if i >= @array_len s =>
+        acc
+    else
+        let nl = @array_scan s i newline in
+        let kind =
+            @array_get s i |> \
+                | 100 => EntryKind.Dir
+                | 102 => EntryKind.File
+                | 108 => EntryKind.Link
+                | _   => EntryKind.Other
+        in
+        entries s (nl + 1) (@vec_push acc Entry.{ kind, @array_slice s (i + 1) nl })
+
+$ newline : @Str = STR.byte_set "\n"
+
+$ spill_file : @Str -> @Str -> @Str -> <@IO> @Bool = \path content mode =>
+    let f = C.fopen { path, mode } in
+    if f == 0 => @false else C.fwrite { content, 1, @array_len content, f }; (C.fclose f) == 0

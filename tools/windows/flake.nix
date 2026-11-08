@@ -1,5 +1,5 @@
 {
-  description = "Thrax for Windows: cross-compile from Linux with MinGW-w64, run under Wine";
+  description = "Ares for Windows: cross-compile from Linux with MinGW-w64, run under Wine";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -22,29 +22,29 @@
       ];
 
       # The corpus on both Windows engines, under Wine. Wine cannot wait on the
-      # Unix gcc that `thrax.exe build` would launch, so the native leg goes
+      # Unix gcc that `ares.exe build` would launch, so the native leg goes
       # through `emit-c` and the cross gcc instead; the C is the same.
-      wineCorpus = pkgs.writeShellScriptBin "thrax-wine-corpus" ''
+      wineCorpus = pkgs.writeShellScriptBin "ares-wine-corpus" ''
         set -eu
-        cargo build -p thrax
+        cargo build -p ares
         t=$CARGO_TARGET_DIR/${triple}/debug
         out=$CARGO_TARGET_DIR/corpus
         mkdir -p "$out"
-        wine "$t/thrax.exe" run tests/MAIN.thx > "$out/interp.txt"
-        wine "$t/thrax.exe" emit-c tests/MAIN.thx > "$out/MAIN.c"
-        x86_64-w64-mingw32-cc -O2 "$out/MAIN.c" -o "$out/MAIN.exe" -lm -lpthread -L"$t" -lthrax
-        cp "$t/thrax.dll" "$out/"
+        wine "$t/ares.exe" run tests/MAIN.ares > "$out/interp.txt"
+        wine "$t/ares.exe" emit-c tests/MAIN.ares > "$out/MAIN.c"
+        x86_64-w64-mingw32-cc -O2 "$out/MAIN.c" -o "$out/MAIN.exe" -lm -lpthread -L"$t" -lares
+        cp "$t/ares.dll" "$out/"
         wine "$out/MAIN.exe" > "$out/native.txt"
         cat "$out/native.txt"
         cmp "$out/interp.txt" "$out/native.txt"
-        echo "thrax-wine-corpus: OK (engines agree)"
+        echo "ares-wine-corpus: OK (engines agree)"
       '';
     in
     {
       # Linux is the development platform; this shell builds and tests the
       # Windows executables from it. `cargo build` and `cargo test` produce
       # x86_64-pc-windows-gnu binaries, and cargo runs them under Wine.
-      # `thrax-wine-corpus` runs the corpus on both engines. `cargo test` runs
+      # `ares-wine-corpus` runs the corpus on both engines. `cargo test` runs
       # too, except the tests that compile C at run time: under Wine a Windows
       # process cannot wait on the Unix gcc. Windows CI runs those natively.
       devShells.${system}.default = pkgs.mkShell {

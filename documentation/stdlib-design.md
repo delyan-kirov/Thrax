@@ -2,7 +2,7 @@
 
 The stdlib grew organically and it showed. This document is the deliberate
 version: what the two reference libraries (Koka's std and Jai's distribution
-modules) actually contain, what Thrax has as of the `standard-library`
+modules) actually contain, what Ares has as of the `standard-library`
 branch, and the roadmap for the rest -- including the parts gated on
 language features (tuples, generic mutable storage) and why.
 
@@ -56,9 +56,9 @@ conventions, all adoptable without type classes:
 
 1. Lookup returns `maybe` -- never a sentinel, never a trap.
 2. Dot syntax: `m.get(k)`, `xs.map(f)` -- any function is a "method".
-   (Thrax: qualified names + `|>` cover most of this today.)
+   (Ares: qualified names + `|>` cover most of this today.)
 3. Implicit parameters (`?(==)`, `?cmp`, `?hash`): dictionary passing where
-   the COMPILER finds the dictionary by name at the call site. Thrax passes
+   the COMPILER finds the dictionary by name at the call site. Ares passes
    dictionaries explicitly (`sort_by cmp_int`); same semantics, one word
    noisier, no new machinery.
 4. Effects in rows: fallibility (`exn`), divergence (`div`), state (`st`)
@@ -81,11 +81,11 @@ input/GL modules.
 
 The Jai lesson is orthogonal to Koka's: the library is UNAPOLOGETICALLY
 imperative and thin over the OS -- read the whole file into one buffer,
-mutate the table in place, explicit allocators everywhere. Thrax's native
+mutate the table in place, explicit allocators everywhere. Ares's native
 seam (the `C` namespace + libffi) is exactly the right vehicle for this
 layer, and "wrap C, don't re-derive" is the rule for all OS-facing modules.
 
-## 3. Where Thrax stands (this branch)
+## 3. Where Ares stands (this branch)
 
 Done, tested in both engines (see documentation/standard-library.md for the per-module
 function tables): OPT, RESULT (+ `Fail` effect), LIST (Koka core set
@@ -111,7 +111,7 @@ Design decisions already made:
 ## 4. The mutable map (Rust/Jai flavor): gated, and on what
 
 A real hash table needs O(1) random-access mutable storage for buckets.
-Thrax now HAS the gating piece: generic `Vec \`T` (route 1 below) landed --
+Ares now HAS the gating piece: generic `Vec \`T` (route 1 below) landed --
 see section 6 item 1 for what shipped. The table itself is the next step.
 The original analysis, for the record:
 
@@ -126,13 +126,13 @@ The original analysis, for the record:
    map; `freeze` returns it). Same API feel, O(log n) not O(1), zero new
    machinery -- a fine stopgap if the need arises before Vec lands.
 3. C-backed handle table (Jai literally): a runtime-owned table addressed by
-   an @Int handle over FFI. Rejected for polymorphic values: storing Thrax
+   an @Int handle over FFI. Rejected for polymorphic values: storing Ares
    values in C memory fights the refcounter's ownership; only viable for
    word/Str payloads, which is too narrow to be THE mutable map.
 
 ### Status and the open decision (next step)
 
-`Vec \`T` shipped (PR #84, on master: `library/VEC.thx`, `vec_*` primitives,
+`Vec \`T` shipped (PR #84, on master: `library/VEC.ares`, `vec_*` primitives,
 `"%vec"` rep, rc==1 in-place set/push). The stale local `vectors` branch is
 its dead precursor -- ignore it, start fresh off master (`vectors-part-2`).
 NOTHING is left to re-create for vectors.
@@ -144,8 +144,8 @@ linear/MINSTD probe, resize + rehash at 0.75 load, Jai surface (`new`, `set`,
 `find` -> Option, `remove`, `has`, `len`, `is_empty`, `fold`, `from_list`/
 `to_list`). Hashing is dictionary-passed like `MAP`'s `cmp` (`new hash_int
 impl_IEq_for_int`, ...); @Int + Str hashers to start. Deliverables:
-`library/TABLE.thx`, `examples/STDLIB_TABLE.thx` (a `$ test : @Int` that
-`tests/MAIN.thx` picks up from the directory on its own), a row in
+`library/TABLE.ares`, `examples/STDLIB_TABLE.ares` (a `$ test : @Int` that
+`tests/MAIN.ares` picks up from the directory on its own), a row in
 documentation/standard-library.md.
 
 DECISION TO MAKE FIRST (deliberately deferred): is `Table` a plain VALUE --
@@ -158,7 +158,7 @@ the effect system. Pick this before writing code.
 ## 5. Tuples `{@Int, Real}`, and `Map {@Int, Str}` (DONE)
 
 The language feature landed (2026-07-20, branch standard-library-part-2;
-examples/TUPLES.thx):
+examples/TUPLES.ares):
 
 - Type former `{A, B, ...}` of ANY arity: `{}` is the empty tuple (it IS
   the unit type, kept word-represented), `{A}` a real one-element tuple,
@@ -178,7 +178,7 @@ examples/TUPLES.thx):
   `%tupleN`.
 - One grammar subtlety: after `Tag:` in a union declaration, `{` always
   opens the PAYLOAD's field braces, never a bare tuple type (a single
-  tuple-typed field is `Tag: {{A, B}}` or `Tag: {t: {A, B}}`); documentation/thrax.y
+  tuple-typed field is `Tag: {{A, B}}` or `Tag: {t: {A, B}}`); documentation/ares.y
   resolves this structurally (payload_decl / type_nb).
 - `Map {@Int, Str}` works today as a type argument; keying a map by a tuple
   just needs a lexicographic comparison (dictionary passing, see
@@ -209,7 +209,7 @@ join the resolution fixpoint conservatively; see documentation/standard-library.
    the interpreter always copies (value semantics), the native runtime
    mutates a uniquely-owned (rc==1) spine in place for `set`/`push` like
    the byte vectors (no capacity field yet, so a non-unique push is O(n)
-   pointer memcpy -- add capacity when it shows up). `library/VEC.thx` is
+   pointer memcpy -- add capacity when it shows up). `library/VEC.ares` is
    the derived surface: checked `get` -> Option / `set` (out-of-range =
    unchanged), `from_list`/`to_list`, `map`/`fold`. Next: `TABLE` is ~150
    lines of stdlib over it: open addressing, resize at 0.75 load, Jai's
@@ -225,10 +225,10 @@ Phase 2 -- OS layer, pure C wrapping, no language work:
 - `PATH` (DONE), `SET` (DONE).
 - `DIR`: list/create/remove (opendir/readdir/mkdir/rmdir externs; readdir
   returns a struct -- needs either a small runtime shim or the dirent
-  layout per platform, prefer a shim in THxRT).
+  layout per platform, prefer a shim in ARESxRT).
 - `PROCESS`: `run : Str -> @Int` (system), later popen for captured output.
 - `ARGS`/`FLAGS`: argv access (needs DR to expose argv; today only `env`),
-  then Koka-flags-style parsing in pure Thrax.
+  then Koka-flags-style parsing in pure Ares.
 - `TIME`: now (done), `clock`, formatting via localtime/strftime (shim for
   the struct tm layout).
 
@@ -248,20 +248,20 @@ Phase 4 -- text:
 Non-goals for now: Koka's time-scale/astronomy tower, DOM bindings, Jai's
 windowing/GL layer, threads (no runtime story yet), decimal/ddouble.
 
-## 7. core.thx: the language-defined layer (DONE)
+## 7. core.ares: the language-defined layer (DONE)
 
 Historical note: `if` took @Int truth because the language predates its type
 system; predicates returned 1/0 to match. Both halves of the plan landed
 (2026-07-20, branch standard-library-part-2):
 
-- **One real file**: `core/PRELUDE.thx`, baked into the stdlib amalgam and
+- **One real file**: `core/PRELUDE.ares`, baked into the stdlib amalgam and
   auto-injected with BARE names (the prelude exemption). It holds what the
   language DEFINES in itself: `Bool` (with `true`/`false`), `List`, and
   `assert`. The file is documentation: the `@` sigil marks what is truly
-  built-in; everything else is readable Thrax you can open. Diagnostics
+  built-in; everything else is readable Ares you can open. Diagnostics
   point into it like any stdlib file.
 - **The target-dependent lines stay generated**: DR still emits the other
-  half of the PRELUDE module (`PRELUDE_implTarget.thx`) -- `@Int`/`@Nat`
+  half of the PRELUDE module (`PRELUDE_implTarget.ares`) -- `@Int`/`@Nat`
   alias the TARGET's word type, and the fixed aliases mirror
   OP::base_aliases. A future `@word`/`@uword` canonical spelling would let
   the whole prelude go static.
@@ -273,7 +273,7 @@ system; predicates returned 1/0 to match. Both halves of the plan landed
   CR rewrites `Bool.True`/`Bool.False` literals to @Int 1/0, and PatLower
   rewrites Bool variant patterns to integer-literal patterns -- so at
   runtime and across the C FFI a Bool is a plain word, but user code can
-  still construct and match it as an ordinary union (examples/AGTxSUM.thx
+  still construct and match it as an ordinary union (examples/AGTxSUM.ares
   does both). Stdlib predicates and predicate parameters are all
   `Bool`-typed now; IO's write/append/remove return `Bool` success
   (true = ok) instead of C-style 0/1 status codes.
@@ -291,7 +291,7 @@ Three overloadable functions -- `seq_empty`, `seq_push`, `seq_done` --
 resolved by the expected type like any overload (the conservative
 user-site fixpoint already handles expected-type-directed picks). `done`
 exists so List can build reversed and flip once (O(n)), while Array's
-`done` is the identity. List's and Array's instances then live in core.thx
+`done` is the identity. List's and Array's instances then live in core.ares
 -- the "implement the `[]` syntax for List and Array in the core" idea --
 and `Vec \`T` picks up literals for free the day it lands, as does any
 user collection.
@@ -307,5 +307,5 @@ Two footnotes:
   an optimization for the known core instances.
 
 Sequencing note: the protocol pays off most alongside Vec (section 6), so
-the natural order is Bool/core.thx, then Vec + `[]` protocol together,
+the natural order is Bool/core.ares, then Vec + `[]` protocol together,
 then tuples.

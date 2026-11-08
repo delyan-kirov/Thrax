@@ -246,7 +246,7 @@ pub enum Pat {
         rest: Option<StrId>,
     },
     /// A literal byte-string prefix `"GET " ++ rest`, or with `back` a suffix
-    /// `rest ++ ".thx"`. `rest` matches what is left.
+    /// `rest ++ ".ares"`. `rest` matches what is left.
     StrPrefix {
         prefix: StrId,
         back: bool,

@@ -19,7 +19,7 @@
 
 /* LoadLibrary takes only `\` as a path separator, while `@extern` paths are
  * written with `/` to read the same on every platform. */
-void *thx_host_dl_open(const char *name) {
+void *arx_host_dl_open(const char *name) {
   char path[MAX_PATH];
   size_t n = strlen(name);
   if (n >= sizeof path) return NULL;
@@ -42,7 +42,7 @@ static const char *crt_alias(const char *sym) {
 }
 
 /* The process' loaded set, the counterpart of `dlsym(RTLD_DEFAULT, ...)`: the
- * executable (whose `dllexport`ed functions are the `thx_*` helpers), then every
+ * executable (whose `dllexport`ed functions are the `arx_*` helpers), then every
  * module loaded so far. */
 static void *find_loaded(const char *sym) {
   void *p = find(GetModuleHandleA(NULL), sym);
@@ -57,7 +57,7 @@ static void *find_loaded(const char *sym) {
   return NULL;
 }
 
-void *thx_host_dl_sym(void *handle, const char *sym) {
+void *arx_host_dl_sym(void *handle, const char *sym) {
   void *p = handle ? find((HMODULE)handle, sym) : find_loaded(sym);
   if (p) return p;
   const char *alias = crt_alias(sym);
@@ -67,7 +67,7 @@ void *thx_host_dl_sym(void *handle, const char *sym) {
 
 /* Without this the C runtime writes "\r\n" for every "\n" a foreign call prints,
  * while Rust's own output does not. */
-void thx_host_stdio_binary(void) {
+void arx_host_stdio_binary(void) {
   _setmode(_fileno(stdout), _O_BINARY);
   _setmode(_fileno(stderr), _O_BINARY);
 }
@@ -76,12 +76,12 @@ void thx_host_stdio_binary(void) {
 
 #include <dlfcn.h>
 
-void *thx_host_dl_open(const char *name) { return dlopen(name, RTLD_NOW | RTLD_GLOBAL); }
+void *arx_host_dl_open(const char *name) { return dlopen(name, RTLD_NOW | RTLD_GLOBAL); }
 
-void *thx_host_dl_sym(void *handle, const char *sym) {
+void *arx_host_dl_sym(void *handle, const char *sym) {
   return dlsym(handle ? handle : RTLD_DEFAULT, sym);
 }
 
-void thx_host_stdio_binary(void) {}
+void arx_host_stdio_binary(void) {}
 
 #endif
