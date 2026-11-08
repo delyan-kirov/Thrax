@@ -250,7 +250,7 @@ fn unsaved_sibling_buffer_is_a_module() {
     let dir = std::env::temp_dir().join(format!("ares-lsp-sibling-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
-    let main_src = "$ @mod MAIN\n$ with GREET\n$ n : @Int = GREET.hello\n$ with G = GREET\n$ m : @Int = G.hello\n";
+    let main_src = "$ @mod MAIN\n$ @import GREET\n$ n : @Int = GREET.hello\n$ @import G = GREET\n$ m : @Int = G.hello\n";
     std::fs::write(dir.join("MAIN.ares"), main_src).unwrap();
     let main_uri = ares::lsp::path_to_uri(&dir.join("MAIN.ares"));
     let greet_uri = ares::lsp::path_to_uri(&dir.join("GREET.ares"));
@@ -309,7 +309,7 @@ fn build_script_import_path_reaches_the_editor() {
     )
     .unwrap();
     std::fs::write(dir.join("source/GREET.ares"), "$ @mod GREET\n$ greeting : @Str = \"hi\"\n").unwrap();
-    let src = "$ @mod MAIN\n$ with GREET\n$ g : @Int = greeting\n";
+    let src = "$ @mod MAIN\n$ @import GREET\n$ g : @Int = greeting\n";
     std::fs::write(dir.join("MAIN.ares"), src).unwrap();
     let uri = ares::lsp::path_to_uri(&dir.join("MAIN.ares"));
 
@@ -344,8 +344,8 @@ fn an_import_that_cannot_be_loaded_is_reported() {
     let dir = std::env::temp_dir().join(format!("ares-lsp-missing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
-    std::fs::write(dir.join("LOCAL.ares"), "$ @mod LOCAL\n$ with NOPE\n$ one : @Int = 1\n").unwrap();
-    let src = "$ @mod MAIN\n$ with VECC\n$ n : @Int = 1\n";
+    std::fs::write(dir.join("LOCAL.ares"), "$ @mod LOCAL\n$ @import NOPE\n$ one : @Int = 1\n").unwrap();
+    let src = "$ @mod MAIN\n$ @import VECC\n$ n : @Int = 1\n";
     std::fs::write(dir.join("MAIN.ares"), src).unwrap();
     let uri = ares::lsp::path_to_uri(&dir.join("MAIN.ares"));
 
@@ -392,12 +392,12 @@ fn an_import_that_cannot_be_loaded_is_reported() {
             ]),
         );
     };
-    change(&mut c, 2, "$ @mod MAIN\n$ with VEC\n$ n : @Int = 1\n");
+    change(&mut c, 2, "$ @mod MAIN\n$ @import VEC\n$ n : @Int = 1\n");
     let diags = c.diagnostics(&uri);
     assert!(diags.is_empty(), "{diags:?}");
 
     // LOCAL loads, but its own import does not.
-    change(&mut c, 3, "$ @mod MAIN\n$ n : @Int = 1\n$ with LOCAL\n");
+    change(&mut c, 3, "$ @mod MAIN\n$ n : @Int = 1\n$ @import LOCAL\n");
     let diags = c.diagnostics(&uri);
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert_eq!(diags[0].get("code").as_str(), Some("UNKNOWN_MODULE"), "{diags:?}");

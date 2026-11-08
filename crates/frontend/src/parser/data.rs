@@ -40,7 +40,7 @@ pub struct Ast {
     pat_seqs: Store<Aol<Pattern>>,
     str_seqs: Store<StrId>,
     field_decls: Store<FieldDecl>,
-    includes: Store<Include>,
+    entry_splices: Store<EntrySplice>,
     rec_fields: Store<RecField>,
     field_inits: Store<FieldInit>,
     field_pats: Store<FieldPat>,
@@ -90,7 +90,7 @@ sliced! {
     Aol<Pattern> => pat_seqs,
     StrId => str_seqs,
     FieldDecl => field_decls,
-    Include => includes,
+    EntrySplice => entry_splices,
     RecField => rec_fields,
     FieldInit => field_inits,
     FieldPat => field_pats,
@@ -151,6 +151,90 @@ impl Ast {
     pub fn pat(&self, id: Aol<Pattern>) -> &Pattern {
         self.pats.lookup(id)
     }
+
+    /// A declared type rendered back to source that parses as the same type, or
+    /// None while it still holds an `@e` splice. Reflection reports field and
+    /// payload types this way, for a generator to copy them into a declaration.
+    pub fn ty_source(&self, ty: Aol<Ty>) -> Option<String> {
+        self.ty_src(ty, 0)
+    }
+
+    /// `prec` is what the context binds: 0 takes any type, 1 an application (an
+    /// arrow's domain), 2 an atom (an application's argument).
+    fn ty_src(&self, ty: Aol<Ty>, prec: u8) -> Option<String> {
+        let wrap = |s: String, at: u8| if prec > at { format!("({s})") } else { s };
+        Some(match self.ty(ty) {
+            Ty::Con { module: Some(m), name } => format!("{m}.{name}"),
+            Ty::Con { module: None, name } => name.to_string(),
+            Ty::Var(name) => name.to_string(),
+            Ty::Nat(_) | Ty::SizeAdd(..) | Ty::SizeMul(..) => self.size_src(ty, 0)?,
+            Ty::Sized { variance, size, elem } => {
+                let marker = match variance {
+                    Variance::Neutral => "",
+                    Variance::Co => "@co ",
+                    Variance::Contra => "@contra ",
+                };
+                format!("[{marker}{}]{}", self.size_src(*size, 0)?, self.ty_src(*elem, 2)?)
+            }
+            Ty::App(head, arg) => wrap(format!("{} {}", self.ty_src(*head, 1)?, self.ty_src(*arg, 2)?), 1),
+            Ty::MetaE(_) => return None,
+            Ty::Arrow { from, effect, to } => {
+                let row = match effect {
+                    Some(row) => format!("{} ", self.row_src(row)?),
+                    None => String::new(),
+                };
+                wrap(format!("{} -> {row}{}", self.ty_src(*from, 1)?, self.ty_src(*to, 0)?), 0)
+            }
+            Ty::Row(row) => self.row_src(row)?,
+            Ty::Unit => "{}".to_string(),
+            Ty::Tuple(items) => {
+                let items: Option<Vec<String>> = self.slice(*items).iter().map(|t| self.ty_src(*t, 0)).collect();
+                format!("{{{}}}", items?.join(", "))
+            }
+            Ty::Record { fields, tail } => {
+                let fields: Option<Vec<String>> = self
+                    .slice(*fields)
+                    .iter()
+                    .map(|f| Some(format!("{}: {}", f.name, self.ty_src(f.ty, 0)?)))
+                    .collect();
+                let tail = tail.map_or(String::new(), |t| format!(" | {t}"));
+                format!("{{{}{tail}}}", fields?.join(", "))
+            }
+        })
+    }
+
+    /// A tensor size: `*` binds tighter than `+`.
+    fn size_src(&self, ty: Aol<Ty>, prec: u8) -> Option<String> {
+        Some(match self.ty(ty) {
+            Ty::Nat(n) => n.to_string(),
+            Ty::SizeAdd(a, b) => {
+                let s = format!("{} + {}", self.size_src(*a, 0)?, self.size_src(*b, 1)?);
+                if prec > 0 { format!("({s})") } else { s }
+            }
+            Ty::SizeMul(a, b) => format!("{} * {}", self.size_src(*a, 1)?, self.size_src(*b, 1)?),
+            _ => self.ty_src(ty, 2)?,
+        })
+    }
+
+    fn row_src(&self, row: &EffectRow) -> Option<String> {
+        let mut entries = Vec::new();
+        for e in self.slice(row.entries) {
+            if e.meta.is_some() {
+                return None;
+            }
+            let mut parts = vec![e.name.to_string()];
+            for arg in self.slice(e.args) {
+                parts.push(self.ty_src(*arg, 2)?);
+            }
+            entries.push(parts.join(" "));
+        }
+        Some(match (entries.is_empty(), row.tail) {
+            (true, None) => "<>".to_string(),
+            (true, Some(t)) => format!("<{t}>"),
+            (false, None) => format!("<{}>", entries.join(", ")),
+            (false, Some(t)) => format!("<{} | {t}>", entries.join(", ")),
+        })
+    }
 }
 
 /// A whole compilation unit: `$ @mod NAME` followed by top-level items.
@@ -191,19 +275,17 @@ pub enum Item {
         ctx: Option<Aol<Ty>>,
         body: Aol<Expr>,
     },
-    /// `$ Name : @struct [@extern "abi"] [a b ...] = [with Other, ...] field, ...`.
-    /// `params` are the declared type parameters, in order; when omitted they are
-    /// inferred from the free type variables in the fields. `includes` are struct
-    /// types whose fields are copied in (before the declared ones), in order. This is
-    /// a declaration-time splice for convenience; it creates NO type relationship (no
-    /// subtyping), just a fresh struct that repeats those fields. `abi` is set when
+    /// `$ Name : @struct [@extern "abi"] [a b ...] = field, ...`. `params` are the
+    /// declared type parameters, in order; when omitted they are inferred from the
+    /// free type variables in the fields. `splices` are the `@e X` entries whose
+    /// generated fields the expand loop splices in before the final compile. `abi` is set when
     /// the struct is a C-layout foreign type (`@struct @extern "C"`): its runtime
     /// representation is a flat, unboxed C struct, so it can cross the `@extern`
     /// boundary by value. The string names the ABI, matching the function form.
     Struct {
         name: StrId,
         params: Slice<StrId>,
-        includes: Slice<Include>,
+        splices: Slice<EntrySplice>,
         fields: Slice<FieldDecl>,
         abi: Option<StrId>,
         /// A C `union` (`@union @extern "abi"`): the members share offset 0 and the
@@ -211,14 +293,13 @@ pub enum Item {
         /// handled as a C-repr struct, so it reuses construction and access.
         c_union: bool,
     },
-    /// `$ Name : @union [a b ...] = [with Other, ...] Tag : payload, ...`. `params`
-    /// are the declared type parameters (inferred from the variants when omitted).
-    /// `includes` are union types whose variants are copied in (before the declared
-    /// ones). As for structs this is a splice, not a subtype relationship.
+    /// `$ Name : @union [a b ...] = Tag : payload, ...`. `params` are the declared
+    /// type parameters (inferred from the variants when omitted). `splices` are
+    /// `@e X` entries generating variants, as for structs.
     Union {
         name: StrId,
         params: Slice<StrId>,
-        includes: Slice<Include>,
+        splices: Slice<EntrySplice>,
         variants: Slice<VariantDecl>,
     },
     /// `$ Name : @alias [a b ...] = ty`. `params` are the declared type parameters
@@ -239,7 +320,7 @@ pub enum Item {
         params: Slice<StrId>,
         ops: Slice<FieldDecl>,
     },
-    /// `$ with module`, or `$ with ALIAS = module`: a qualified-only import whose
+    /// `$ @import module`, or `$ @import ALIAS = module`: a qualified-only import whose
     /// names are reachable only as `ALIAS.name`. `span` covers the module path.
     Import {
         module: Slice<StrId>,
@@ -264,12 +345,12 @@ pub struct FieldDecl {
     pub ty: Aol<Ty>,
 }
 
-/// One `with Other` splice in a struct or union declaration. The span is the
-/// type name's, so an unknown or cyclic include carets the `with` that asked
-/// for it.
+/// One `@e X` entry of a struct or union declaration: `X` builds the `@Code` of
+/// a list of fields (`@parse_fields`) or variants (`@parse_variants`), which the
+/// driver splices in place of the entry. `span` covers the whole entry.
 #[derive(Clone, Copy, Debug)]
-pub struct Include {
-    pub name: StrId,
+pub struct EntrySplice {
+    pub expr: Aol<Expr>,
     pub span: Span,
 }
 
@@ -352,7 +433,7 @@ pub enum Ty {
     /// A tuple type `{ A, B, ... }` (n >= 1).
     Tuple(Slice<Aol<Ty>>),
     /// A record type `{ x: A, y: B }` (closed) or `{ x: A | r }` (open, `tail` is
-    /// the row variable). A closed record with no `with` fields in parameter
+    /// the row variable). A closed record in parameter
     /// position is also the named-record parameter sugar; an open one (`tail`
     /// present) is always a row-polymorphic record type.
     Record {
@@ -361,10 +442,9 @@ pub enum Ty {
     },
 }
 
-/// A field of the named-record parameter sugar; `with` scopes its fields in.
+/// A field of the named-record parameter sugar.
 #[derive(Clone, Copy, Debug)]
 pub struct RecField {
-    pub with: bool,
     pub name: StrId,
     pub ty: Aol<Ty>,
 }
@@ -534,11 +614,11 @@ pub enum Expr {
     },
     /// An anonymous, structural record value: `{ .foo = 1, .bar = 2 }` (plain),
     /// `{ .foo = v | base }` (update: the rest come from `base`), or
-    /// `{ .foo = 1, with base }` (stack: this record's fields on top of `base`'s).
+    /// `{ .foo = 1, ..base }` (extend: this record's fields on top of `base`'s).
     /// Its type is a [`crate::typing::types::TypeNode::Record`] row, not a nominal struct.
     Record {
         fields: Slice<FieldInit>,
-        with: Option<Aol<Expr>>,
+        extend: Option<Aol<Expr>>,
         update: Option<Aol<Expr>>,
     },
     /// `Type.Tag.{ ... }` / `.Tag` variant construction.
@@ -569,11 +649,6 @@ pub enum Expr {
     /// `\p1 p2 => body`.
     Lambda {
         params: Slice<LamParam>,
-        body: Aol<Expr>,
-    },
-    /// `with subject in body` field-scoping.
-    With {
-        subject: Aol<Expr>,
         body: Aol<Expr>,
     },
     /// `do body [ctl k clauses ...]`.

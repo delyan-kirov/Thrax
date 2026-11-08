@@ -9,9 +9,9 @@ $ @mod IO
 #       not arrive as negative Ints across the FFI, so end-of-stream is
 #       detected as "not a byte" (outside 0..255) and errors as `not == 0`.
 
-$ with OPT
-$ with STR
-$ with VEC
+$ @import OPT
+$ @import STR
+$ @import VEC
 
 # ---- console ----
 

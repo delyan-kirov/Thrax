@@ -6,7 +6,7 @@ involved one. The examples use the language's real, current surface syntax
 Where a feature is only partly built, the entry says so.
 
 Every code block below is self-contained and type-checks on its own (verified
-with `ares check`); a block that needs a library imports it (`$ with LA`, etc.).
+with `ares check`); a block that needs a library imports it (`$ @import LA`, etc.).
 
 Conventions used throughout: a global is `$ name : Type = expr`; a lambda is
 `\x => e` (curried: `\a b => e`); a branch is `if c => t else e`; a match is
@@ -142,42 +142,34 @@ $ even : @Int -> @Bool = \n => if n == 0 => @true else odd (n - 1)
 $ odd  : @Int -> @Bool = \n => if n == 0 => @false else even (n - 1)
 ```
 
-## 2.3 Imports `$ with`
-`$ with MOD` brings a module's public names into scope, bare or qualified.
+## 2.3 Imports `$ @import`
+`$ @import MOD` brings a module's public names into scope, bare or qualified.
 A qualified `MOD.symbol` needs the import too. An import brings in the whole
 module, not one symbol.
 
 ```ares
-$ with MATH                    # MATH.sqrt, or bare sqrt
-$ with STR
+$ @import MATH                 # MATH.sqrt, or bare sqrt
+$ @import STR
 ```
 
 When two imports export the same name, the bare name is ambiguous and the
 qualified form picks one (`VEC.len`, `LIST.len`).
 
-`$ with ALIAS = MOD` imports `MOD` qualified only, under the name `ALIAS`. None
+`$ @import ALIAS = MOD` imports `MOD` qualified only, under the name `ALIAS`. None
 of its names come into scope bare, so several modules with overlapping names
 import side by side without ambiguity. Its values, types and constructors are
 all reached through the alias (`V.len`, `O.Option @Int`, `O.Option.Some.{ 1 }`).
 Writing the module's own name as the alias makes a plain qualified-only import.
 
 ```ares
-$ with V = VEC                 # V.len, never bare len or VEC.len
-$ with LIST = LIST             # LIST.len, never bare len
+$ @import V = VEC              # V.len, never bare len or VEC.len
+$ @import LIST = LIST          # LIST.len, never bare len
 ```
 
 An alias is one capitalized name. It may not repeat, nor reuse the name of
 another imported module, of this module, or of the built-in `C` namespace.
 
-One `$ with` may list several imports, separated by commas, with an optional
-trailing comma. Each entry is a module or an `ALIAS = MOD`.
-
-```ares
-$ with
-    VEC,
-    M = MAP,
-    STR,
-```
+Each `$ @import` names one module; there is no import list.
 
 ## 2.4 Visibility `$ @private`
 Symbols are public by default. `$ @private` hides every symbol below it, to the
@@ -306,10 +298,10 @@ Simple:
 $ area : { x: @Int, y: @Int | r } -> @Int = \p => p.x * p.y
 ```
 
-Involved (update preserves the open tail; `with` stacks a field):
+Involved (update preserves the open tail; `..p` extends `p` with a field):
 ```ares
 $ shift : { x: @Int | r } -> { x: @Int | r } = \p => { .x = p.x + 10 | p }
-$ tag   : { x: @Int | r } -> { x: @Int, t: @Int | r } = \p => { .t = 99, with p }
+$ tag   : { x: @Int | r } -> { x: @Int, t: @Int | r } = \p => { .t = 99, ..p }
 ```
 
 ## 3.9 Sized tensors
@@ -814,16 +806,20 @@ $ Tree : @union a = Leaf: a, Node: { Tree a, Tree a }
 $ t : Tree @Int = Tree.Node.{ Tree.Leaf.{ 1 }, Tree.Leaf.{ 2 } }
 ```
 
-## 6.4 Type splice `with`
-A `@struct`/`@union` may start with `with Other` to copy that type's fields or
-variants ahead of its own. A copy-paste convenience with no subtyping
-relationship. Transitive; a duplicate member is an error.
+## 6.4 Generated members `@e`
+An entry `@e X` of a `@struct` or `@union` runs `X` at build time and splices the
+fields (`@parse_fields`) or variants (`@parse_variants`) it builds in its place.
+DERIVE's `fields_of` and `variants_of` copy another declaration's members, a
+copy with no subtyping relationship. A copied type may itself be generated; a
+generic one is applied to the new type's parameters (`fields_of "Pair b"`). A
+duplicate member is an error.
 
 ```ares
+$ @import DERIVE
 $ Point  : @struct = x: @Int, y: @Int
-$ Point3 : @struct = with Point, z: @Int          # x, y, then z
+$ Point3 : @struct = @e <| DERIVE.fields_of "Point", z: @Int   # x, y, then z
 $ Base   : @union  = Red: {}, Green: {}
-$ Color  : @union  = with Base, Blue: {}         # Red, Green, then Blue
+$ Color  : @union  = @e <| DERIVE.variants_of "Base", Blue: {} # Red, Green, then Blue
 ```
 
 ## 6.5 Recursive types are lazy
@@ -1173,7 +1169,7 @@ so it is total, `t.[n]` wraps to `t.[0]`). Indexing an empty `[0]T` is the sole
 fault.
 
 ```ares
-$ with LA
+$ @import LA
 $ v : [3]@Int = [10, 20, 30]
 $ a : @Int = v.[1]        # 20
 $ b : @Int = v.[3]        # wraps to v.[0] = 10
@@ -1183,7 +1179,7 @@ $ b : @Int = v.[3]        # wraps to v.[0] = 10
 `[m, n]T` is nested `[m][n]T`. `t.[i, j]` reads one element (`t.[i].[j]`).
 
 ```ares
-$ with LA
+$ @import LA
 $ g : [2][2]@Int = [ [1,2], [3,4] ]
 $ z : @Int = g.[1, 0]     # 3
 ```
@@ -1194,7 +1190,7 @@ compared by a canonical form (`[n+m]` equals `[m+n]`; `[n+n]` is `[2*n]`). This
 drives size-changing operations, whose result size is computed at compile time.
 
 ```ares
-$ with LA
+$ @import LA
 # LA provides `concat`, its result size computed at compile time:
 #   concat : [n]a -> [m]a -> [n+m]a
 $ joined : [5]@Int = concat [1, 2] [3, 4, 5]      # [2+3] = [5]
@@ -1207,7 +1203,7 @@ Each axis may carry a variance tag `@contra` (upper index / column) or `@co`
 (lower index / row); `matmul` contracts a `@co` axis against a `@contra` axis.
 
 ```ares
-$ with LA
+$ @import LA
 $ row : [m][n]a -> @Int -> [n]a = \m i => m.[i]
 $ col : [m][n]a -> @Int -> [m]a = \m j => m.[.., j]
 $ sub : [8]@Int -> [4]@Int = \m => m.[2 ... 5]      # inclusive 2..5, four elements
@@ -1478,7 +1474,7 @@ listing a `@build` usually wants.
 Rules: every module may have one (not just the root, unlike `@main`), it runs
 once, and it runs before any `$ @e` of that round, so code it generates is
 available to the rest of the compile-time code. Anything it injects is itself
-expanded, so a generated `$ @e` still runs and a generated `$ with M` loads M.
+expanded, so a generated `$ @e` still runs and a generated `$ @import M` loads M.
 Note what "every module" implies: importing a module lets its `@build` perform IO
 during *your* build, the same trust an imported `build.rs` carries.
 
@@ -1582,7 +1578,7 @@ A growable typed vector, wrapped by the `VEC` library over `@vec_new`,
 `@vec_push`, `@vec_get`, `@vec_set`, `@vec_len`, `@vec_fill`.
 
 ```ares
-$ with VEC
+$ @import VEC
 $ v : @Vec @Int = push (push (new {}) 1) 2   # VEC over @vec_* primitives
 ```
 
@@ -1671,7 +1667,7 @@ ares --target=wasm32-wasi build app.ares
 
 # 15. Standard library modules
 
-Imported with `$ with MOD` (except `CORE`, `C`, and `TARGET`, which need no
+Imported with `$ @import MOD` (except `CORE`, `C`, and `TARGET`, which need no
 import). A brief map:
 
 | Module | Contents |

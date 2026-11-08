@@ -12,7 +12,7 @@ $ @mod LIST
 #       is later forced), so the rebuilders take pure functions; an effectful walk
 #       is CORE's `for` / `formap`.
 
-$ with OPT
+$ @import OPT
 
 $ empty : List t = List.Nil
 

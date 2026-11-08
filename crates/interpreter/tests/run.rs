@@ -417,13 +417,13 @@ fn a_name_two_imports_share_is_qualified() {
              $ unwrap : Box -> @Int = \\b => b.v";
     let q = "$ @mod Q\n$ make : @Int -> @Int = \\n => n + 100";
     let root = "$ @mod M\n\
-                $ with P\n\
-                $ with Q\n\
+                $ @import P\n\
+                $ @import Q\n\
                 $ r : @Int = unwrap (P.make 5) + Q.make 1";
     assert_eq!(run_modules(&[p, q, root], "r"), "106");
     let bare = "$ @mod M\n\
-                $ with P\n\
-                $ with Q\n\
+                $ @import P\n\
+                $ @import Q\n\
                 $ r : @Int = unwrap (make 5)";
     let e = errors_modules(&[p, q, bare], "r");
     assert!(e.contains("imported from more than one module"), "{e}");
@@ -436,7 +436,7 @@ fn a_prelude_type_is_not_another_modules_namesake() {
     // in both its layout and its laziness.
     let p = "$ @mod P\n$ Token : @union = Op: { Token, Token }, Leaf: {}";
     let q = "$ @mod Q\n$ s : @Str = @token_text (Token.Op.{ \"*\" })";
-    let root = "$ @mod M\n$ with Q\n$ r : @Str = Q.s";
+    let root = "$ @mod M\n$ @import Q\n$ r : @Str = Q.s";
     assert_eq!(run_modules(&[p, q, root], "r"), "\"*\"");
 }
 
@@ -446,7 +446,7 @@ fn an_unqualified_tag_prefers_the_expected_union_over_the_prelude() {
     // of P's `Found` is P's.
     let p = "$ @mod P\n$ Found : @union = Hit: @Int, Missing: {}";
     let root = "$ @mod M\n\
-                $ with P\n\
+                $ @import P\n\
                 $ score : Found -> @Int = \\ | .Hit.{ n } => n | .Missing => 0\n\
                 $ r : @Int = score (Found.Hit.{ 5 }) + score Found.Missing";
     assert_eq!(run_modules(&[p, root], "r"), "5");
@@ -458,7 +458,7 @@ fn a_local_definition_shadows_an_import() {
     // library name never has to be avoided just because it is in scope.
     let p = "$ @mod P\n$ make : @Int -> @Int = \\n => n + 100";
     let root = "$ @mod M\n\
-                $ with P\n\
+                $ @import P\n\
                 $ make : @Int -> @Int = \\n => n + 1\n\
                 $ r : @Int = make 5 + P.make 5";
     assert_eq!(run_modules(&[p, root], "r"), "111");
@@ -473,7 +473,7 @@ fn private_helper_runs_through_public_api() {
                $ @private\n\
                $ double : @Int -> @Int = \\x => x + x";
     let root = "$ @mod M\n\
-                $ with A\n\
+                $ @import A\n\
                 $ r : @Int = scale 10";
     assert_eq!(run_modules(&[lib, root], "r"), "21");
 }
@@ -487,7 +487,7 @@ fn literal_hook_from_imported_module() {
                $ strlit_text : @IStrLit Text = .{ .of_str = \\s => Text.{ .bytes = s } }\n\
                $ size : Text -> @Int = \\t => @array_len t.bytes";
     let root = "$ @mod M\n\
-                $ with LIBSTR\n\
+                $ @import LIBSTR\n\
                 $ greeting : Text = \"hello\"\n\
                 $ r : @Int = size greeting";
     assert_eq!(run_modules(&[lib, root], "r"), "5");
@@ -597,7 +597,7 @@ fn ctx_instance_crosses_module_boundary() {
                $ sh_box : @use {d: Show t} -> Show (Box t) = \n\
                \t.{ .show = \\x => x |> \\ | Box.Wrap.{a} => \"W(\" ++ d.show a ++ \")\" }";
     let root = "$ @mod M\n\
-                $ with GENM\n\
+                $ @import GENM\n\
                 $ sh_int : GENM.Show @Int = .{ .show = \\n => to_string n }\n\
                 $ r : @Int = if show (GENM.Box.Wrap.{ 5 } : GENM.Box @Int) == \"W(5)\" => 0 else 1";
     assert_eq!(run_modules(&[lib, root], "r"), "0");
@@ -611,22 +611,10 @@ fn qualified_ctx_call_injects_its_context() {
                $ Ord : @struct t = gt: t -> t -> @Bool,\n\
                $ maxf : @use {o: Ord t} -> t -> t -> t = \\x y => if o.gt x y => x else y";
     let root = "$ @mod M\n\
-                $ with LM\n\
+                $ @import LM\n\
                 $ impl_Ord_for_int : LM.Ord @Int = .{ .gt = \\a b => a > b }\n\
                 $ r : @Int = LM.maxf 3 7";
     assert_eq!(run_modules(&[lib, root], "r"), "7");
-}
-
-#[test]
-fn struct_with_splices_included_fields() {
-    // `Point3` copies `Point`'s fields ahead of its own; the positional/field
-    // layout must be x, y, then z.
-    let src = "$ @mod M\n\
-               $ Point : @struct = x: @Int, y: @Int\n\
-               $ Point3 : @struct = with Point, z: @Int\n\
-               $ r : @Int =\n\
-               \tlet p = Point3.{ .x = 1, .y = 2, .z = 3 } in p.x + p.y + p.z";
-    assert_eq!(run(src, "r"), "6");
 }
 
 #[test]
@@ -655,19 +643,6 @@ fn parameterized_alias_picks_which_generic() {
 }
 
 #[test]
-fn union_with_splices_included_variants() {
-    // `Color` copies `Base`'s variants; a match over a copied and a new variant
-    // both dispatch by tag.
-    let src = "$ @mod M\n\
-               $ Base : @union = Red: {}, Green: {}\n\
-               $ Color : @union = with Base, Blue: {}\n\
-               $ rank : Color -> @Int = \\c =>\n\
-               \tc |> \\ | Color.Red => 1 | Color.Green => 2 | Color.Blue => 3\n\
-               $ r : @Int = rank Color.Red + rank Color.Blue";
-    assert_eq!(run(src, "r"), "4");
-}
-
-#[test]
 fn open_row_param_accepts_any_matching_struct() {
     // One row-polymorphic function `{ x:@Int, y:@Int | r } -> @Int` accepts several
     // distinct nominal structs, as long as they carry x:@Int and y:@Int.
@@ -681,12 +656,12 @@ fn open_row_param_accepts_any_matching_struct() {
 
 #[test]
 fn anonymous_records_literal_update_stack() {
-    // Anonymous literal into an open row; update (`| p`) preserving shape and stack
-    // (`with p`) on an open-row parameter.
+    // Anonymous literal into an open row; update (`| p`) preserving shape and
+    // extension (`..p`) on an open-row parameter.
     let src = "$ @mod M\n\
                $ area : { x: @Int, y: @Int | r } -> @Int = \\p => p.x * p.y\n\
                $ shift : { x: @Int | r } -> { x: @Int | r } = \\p => { .x = p.x + 10 | p }\n\
-               $ tag : { x: @Int | r } -> { x: @Int, tag: @Int | r } = \\p => { .tag = 99, with p }\n\
+               $ tag : { x: @Int | r } -> { x: @Int, tag: @Int | r } = \\p => { .tag = 99, ..p }\n\
                $ r : @Int =\n\
                \t(area { .x = 2, .y = 5, .tag = 7 })\n\
                \t+ (area (shift { .x = 1, .y = 4 }))\n\
@@ -1156,7 +1131,7 @@ fn imported_global_does_not_shadow_a_same_named_effect_op() {
         $ State : @effect = get : {} -> @Int, put : @Int -> {},\n\
         $ getit : {} -> <State> @Int = \\u => get {}\n\
         $ run : @Int = do getit {} ctl k | State.get u => k 42 | State.put v => k {} | r => r";
-    let root = "$ @mod M\n$ with A\n$ with B\n$ r : @Int = B.run";
+    let root = "$ @mod M\n$ @import A\n$ @import B\n$ r : @Int = B.run";
     assert_eq!(run_modules(&[a, b, root], "r"), "42");
 }
 
@@ -1173,7 +1148,7 @@ fn same_named_struct_types_in_two_modules_do_not_collide() {
         $ Pair : @struct = a: @Int, b: @Int\n\
         $ first : Pair -> @Int = \\p => p |> \\ | Pair.{ x, y } => x\n\
         $ bfst : @Int = first Pair.{ .a = 3, .b = 4 }";
-    let root = "$ @mod M\n$ with A\n$ with B\n$ r : @Int = B.bfst";
+    let root = "$ @mod M\n$ @import A\n$ @import B\n$ r : @Int = B.bfst";
     assert_eq!(run_modules(&[a, b, root], "r"), "3");
 }
 
@@ -1755,15 +1730,6 @@ fn struct_field_access_and_match() {
              $ sum : Point -> @Int = \\pt => pt |> \\ | Point.{ x, y } => x + y | _ => 0\n\
              $ a : @Int = sum Point.{ .x = 10, .y = 20 }";
     assert_eq!(run(m, "a"), "30");
-}
-
-#[test]
-fn with_scopes_struct_fields() {
-    let src = "$ @mod M\n\
-               $ Point : @struct = x: @Int, y: @Int\n\
-               $ p : Point = Point.{ .x = 3, .y = 4 }\n\
-               $ a : @Int = with p in x + y";
-    assert_eq!(run(src, "a"), "7");
 }
 
 #[test]

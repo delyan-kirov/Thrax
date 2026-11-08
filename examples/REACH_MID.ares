@@ -4,7 +4,7 @@ $ @mod REACH_MID
 # \info The middle of a three-module chain (see `REACH`): a struct whose field
 #       holds a type from `REACH_LIB`, which `REACH` does not import.
 
-$ with REACH_LIB
+$ @import REACH_LIB
 
 $ Bag : @struct = items : @Vec Item, best : Item
 

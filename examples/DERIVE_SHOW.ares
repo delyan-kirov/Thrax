@@ -8,8 +8,8 @@ $ @mod DERIVE_SHOW
 #       even though the definitions did not exist until the generator ran (a
 #       forward-referenced injection). One macro, any struct or union.
 
-$ with DERIVE
-$ with DERIVE_LIB
+$ @import DERIVE
+$ @import DERIVE_LIB
 
 $ Rgb : @struct =
     r: @Int,

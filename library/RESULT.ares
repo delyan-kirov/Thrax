@@ -13,7 +13,7 @@ $ @mod RESULT
 #       `untry` and `expect` bridge the two directions, so code can move
 #       freely between "return a Result" and "perform Fail".
 
-$ with OPT
+$ @import OPT
 
 # ---- the value shape ----
 

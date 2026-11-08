@@ -563,6 +563,8 @@ builtins! {
     ParseItems = compiler("@parse_items", 1),
     ParseType = compiler("@parse_type", 1),
     ParseRow = compiler("@parse_row", 1),
+    ParseFields = compiler("@parse_fields", 1),
+    ParseVariants = compiler("@parse_variants", 1),
     Format = compiler("@format", 1),
     Eval = compiler("@eval", 1),
     Unparse = compiler("@unparse", 1),

@@ -3,8 +3,8 @@ $ @mod STDLIB_VEC
 # \file STDLIB_VEC.ares
 # \info The standard library's growable vector, `@Vec `T`
 
-$ with VEC
-$ with OPT
+$ @import VEC
+$ @import OPT
 
 $ v : @Vec @Int = push (push (push (new {}) 10) 20) 30
 

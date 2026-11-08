@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 
 use crate::parser::data::{
-    Ast, Binding, EffectRow, Expr, FieldInit, FieldPat, Item, LamParam, Pattern,
+    Ast, Binding, EffectRow, EntrySplice, Expr, FieldInit, FieldPat, Item, LamParam, Pattern,
     Program, RecField, SliceSlot, Ty,
 };
 use crate::typing::{declarations::payload_fields, CtxVal, HookImpl, Resolved};
@@ -92,6 +92,13 @@ pub fn desugar_program(
     for item in ast.slice(program.items).iter() {
         match item {
             Item::Def { body, .. } if matches!(ast.expr(*body), Expr::Builtin) => {}
+            // A lenient round held the whole body back: it failed against a type
+            // whose generated entries are not spliced in yet, so it is not lowered.
+            Item::Def { name, body, .. } if lw.resolved.deferred_sites.contains(body) => {
+                lw.deferred.push(*name);
+                let term = lw.fault(format!("`{name}` waits for a generated declaration"));
+                globals.push((*name, term));
+            }
             Item::Def {
                 name, sig, ctx, body,
             } => {
@@ -110,16 +117,23 @@ pub fn desugar_program(
             // module, and the driver qualifies the same way to force it.
             Item::Run(expr, span) => {
                 let name = StrId::intern(&format!("@e#{}", ct_runs.len()));
-                let term = lw.watched(name, |lw| lw.expr(*expr));
+                let term = if lw.resolved.deferred_sites.contains(expr) {
+                    lw.deferred.push(name);
+                    lw.fault("this `@e` waits for a generated declaration")
+                } else {
+                    lw.watched(name, |lw| lw.expr(*expr))
+                };
                 globals.push((name, term));
                 ct_runs.push((name, *span));
             }
-            Item::Struct { fields, .. } => {
+            Item::Struct { fields, splices, .. } => {
+                lw.collect_entry_splices(ast.slice(*splices));
                 for f in ast.slice(*fields).iter() {
                     lw.collect_meta_types(f.ty);
                 }
             }
-            Item::Union { variants, .. } => {
+            Item::Union { variants, splices, .. } => {
+                lw.collect_entry_splices(ast.slice(*splices));
                 for v in ast.slice(*variants).iter() {
                     for (_, ty) in payload_fields(ast, &v.payload) {
                         lw.collect_meta_types(ty);
@@ -198,11 +212,11 @@ pub fn desugar_program(
 struct Desugarer<'a> {
     ast: &'a Ast,
     resolved: &'a Resolved,
-    /// This lowering's own `@mod` name and the modules it imports (`$ with`),
+    /// This lowering's own `@mod` name and the modules it imports (`$ @import`),
     /// used to resolve a same-named type to the right module's declaration.
     module: StrId,
     imports: Vec<StrId>,
-    /// Import aliases (`$ with V = VEC`), alias to module, so `V.name` lowers
+    /// Import aliases (`$ @import V = VEC`), alias to module, so `V.name` lowers
     /// to `VEC.name`.
     aliases: HashMap<StrId, StrId>,
     names: FreshNames,
@@ -320,30 +334,6 @@ impl<'a> Desugarer<'a> {
         self.resolved.lazy_slots.get(&(home, ty, tag)).map(Vec::as_slice)
     }
 
-    /// The head type constructor's name, if `t` is a (possibly applied) `Con`.
-    fn ty_head_con(&self, t: Aol<Ty>) -> Option<StrId> {
-        match self.tnode(t) {
-            Ty::Con { name, .. } => Some(*name),
-            Ty::App(head, _) => self.ty_head_con(*head),
-            _ => None,
-        }
-    }
-
-    /// Desugar `with subject in body` into a `let` per field: bind the subject to
-    /// a fresh name (so it is forced once) and each of its `fields` to a field
-    /// access on it. This removes the name-binding-by-type `with` node from the
-    /// Core, keeping it De-Bruijn indexable.
-    fn desugar_with(&mut self, subject: Aol<Term>, fields: &[StrId], body: Aol<Term>) -> Aol<Term> {
-        let s = self.fresh();
-        let mut inner = body;
-        for &f in fields.iter().rev() {
-            let sv = self.var(s);
-            let val = self.field(sv, f);
-            inner = self.terms.let_(f, val, inner);
-        }
-        self.terms.let_(s, subject, inner)
-    }
-
     /// Lower a definition, consuming leading record parameters of its signature. A
     /// `@use` context parameter needs nothing here: the body binds it like any other first
     /// parameter, and each call site injects the resolved value as a leading
@@ -419,22 +409,10 @@ impl<'a> Desugarer<'a> {
 
     /// Wrap `body` in the lambda binding a record parameter's fields by name. The
     /// parameter is a name-keyed record value, so each field is bound by field
-    /// access (`param.field`); the field bindings are outermost so a `with` field's
-    /// scoping can reference them.
+    /// access (`param.field`).
     fn record_param(&mut self, fields: &[RecField], body: Aol<Term>) -> Aol<Term> {
         let param = self.fresh();
         let mut inner = body;
-        for f in fields.iter().rev() {
-            if f.with {
-                let names: Vec<StrId> = self
-                    .ty_head_con(f.ty)
-                    .and_then(|s| self.resolved.declarations.fields_of(self.module, &self.imports, s))
-                    .map(<[StrId]>::to_vec)
-                    .unwrap_or_default();
-                let subject = self.var(f.name);
-                inner = self.desugar_with(subject, &names, inner);
-            }
-        }
         for f in fields.iter().rev() {
             let pv = self.var(param);
             let val = self.field(pv, f.name);
@@ -739,7 +717,7 @@ impl<'a> Desugarer<'a> {
             }
             Expr::Record {
                 fields,
-                with,
+                extend,
                 update,
             } => {
                 // Checked against a declared struct, the literal builds that
@@ -747,11 +725,11 @@ impl<'a> Desugarer<'a> {
                 if let Some(&name) = self.resolved.struct_lit_names.get(&e) {
                     return self.struct_lit(Some(name), self.ast.slice(*fields), None);
                 }
-                // A name-keyed record value. Update (`| base`) and stack (`with
-                // base`) build over that base with the listed fields overriding /
+                // A name-keyed record value. Update (`| base`) and extension
+                // (`..base`) build over that base with the listed fields overriding /
                 // adding; an anonymous record has no nominal name (access is
                 // name-keyed, so the empty name is fine).
-                let base = (*update).or(*with).map(|b| self.expr(b));
+                let base = (*update).or(*extend).map(|b| self.expr(b));
                 let mut out = Vec::new();
                 for fi in self.ast.slice(*fields).iter() {
                     if let FieldInit::Named { name, value } = fi {
@@ -848,14 +826,6 @@ impl<'a> Desugarer<'a> {
                     term = self.binding(&b, term);
                 }
                 term
-            }
-
-            Expr::With { subject, body } => {
-                let (subject, body) = (*subject, *body);
-                let subject_t = self.expr(subject);
-                let body_t = self.expr(body);
-                let fields = self.resolved.with_fields.get(&e).cloned().unwrap_or_default();
-                self.desugar_with(subject_t, &fields, body_t)
             }
 
             Expr::Handle { body, handler } => {
@@ -1182,6 +1152,16 @@ impl<'a> Desugarer<'a> {
     }
 
     /// The type arguments of an effect row's entries (`<Chan (@e X)>`).
+    /// A declaration's `@e X` entries, each a synthetic global whose code the
+    /// driver splices bare in place of the entry, as for a row entry.
+    fn collect_entry_splices(&mut self, splices: &[EntrySplice]) {
+        for s in splices {
+            let name = StrId::intern(&format!("@e_entries#{}", self.meta_row_evals.len()));
+            let term = self.watched(name, |lw| lw.expr(s.expr));
+            self.meta_row_evals.push((name, term, s.span));
+        }
+    }
+
     fn collect_meta_row(&mut self, row: &EffectRow) {
         for entry in self.ast.slice(row.entries).to_vec() {
             if let Some(expr) = entry.meta {

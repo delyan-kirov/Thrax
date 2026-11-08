@@ -8,11 +8,11 @@ $ @mod STDLIB_MAP
 #       `remove` return an updated copy and never disturb the original, and
 #       `to_list` / `keys` come back in ascending key order.
 
-$ with MAP
-$ with OPT
-$ with VEC
-$ with STR
-$ with MATH
+$ @import MAP
+$ @import OPT
+$ @import VEC
+$ @import STR
+$ @import MATH
 
 $ ages : Map @Str @Int = insert (insert (insert new_str "carol" 41) "alice" 30) "bob" 25
 

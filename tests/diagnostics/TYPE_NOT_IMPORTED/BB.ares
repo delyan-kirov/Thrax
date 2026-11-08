@@ -1,5 +1,5 @@
 $ @mod BB
 
-$ with AA
+$ @import AA
 
 $ Outer : @struct = items : @Vec Inner,

@@ -127,8 +127,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Check a body against its signature, implicitly consuming leading record
-    /// parameters (`{x: Int, y: Int}` binds its fields directly; a `with` field
-    /// also scopes its struct's fields).
+    /// parameters (`{x: Int, y: Int}` binds its fields directly).
     pub(super) fn check_body_against_sig(
         &mut self,
         body: Aol<Expr>,
@@ -193,30 +192,8 @@ impl<'a> Checker<'a> {
                 .map(|(_, t)| *t)
                 .unwrap_or_else(|| self.unifier.fresh());
             self.bind(name, t);
-            if f.with {
-                self.scope_struct_fields(t)?;
-            }
         }
         Ok(())
-    }
-
-    /// Bring the struct's fields into scope, returning their names in declaration
-    /// order (empty if `ty` is not a known struct). Lowering keys the `with`
-    /// desugaring off these names.
-    pub(super) fn scope_struct_fields(&mut self, ty: Type) -> Result<Vec<StrId>> {
-        let (head, args) = self.spine(ty);
-        let mut names = Vec::new();
-        if let TypeNode::Con(name) = self.unifier.types.node(head) {
-            if let Some(info) = self.structs.get(&name).cloned() {
-                let mut subst = subst_from_args(&info.params, &args, &mut self.unifier);
-                for (fname, fty) in &info.fields {
-                    let field_ty = self.ty_of_ast(*fty, &mut subst);
-                    self.bind(*fname, field_ty);
-                    names.push(*fname);
-                }
-            }
-        }
-        Ok(names)
     }
 
     pub(super) fn pending_vars(&self) -> HashSet<VarId> {
@@ -424,7 +401,7 @@ impl<'a> Checker<'a> {
             // its laziness however the value is written.
             Expr::Record {
                 fields,
-                with: None,
+                extend: None,
                 update: None,
             } if self.struct_name_of(expected).is_some()
                 && self.ast.slice(*fields).iter().all(|f| matches!(f, FieldInit::Named { .. })) =>
@@ -907,11 +884,11 @@ impl<'a> Checker<'a> {
             }
             Expr::Record {
                 fields,
-                with,
+                extend,
                 update,
             } => {
                 let fields = self.ast.slice(*fields);
-                self.infer_record(fields, *with, *update)
+                self.infer_record(fields, *extend, *update)
             }
             Expr::Variant {
                 module, ty, tag, fields,
@@ -932,16 +909,6 @@ impl<'a> Checker<'a> {
                 let i = self.unifier.types.con(ty::INT);
                 self.unifier.unify(ts, i, "in an array size")?;
                 Ok(self.unifier.types.con(ty::ARRAY))
-            }
-            Expr::With { subject, body } => {
-                let (subject, body) = (*subject, *body);
-                let subject_ty = self.infer(subject)?;
-                self.enter_scope();
-                let names = self.scope_struct_fields(subject_ty)?;
-                self.with_fields.insert(e, names);
-                let t = self.infer(body);
-                self.leave_scope();
-                t
             }
             Expr::Handle { body, handler } => match handler {
                 None => self.infer(*body),
@@ -1863,13 +1830,13 @@ impl<'a> Checker<'a> {
     }
 
     /// Infer an anonymous record value. Plain `{ .x = e }` builds a closed row from
-    /// the fields' inferred types; `{ .x = e, with base }` stacks its fields on
+    /// the fields' inferred types; `{ .x = e, ..base }` stacks its fields on
     /// `base`'s (row concat); `{ .x = e | base }` updates `base` (its shape is
     /// preserved, each listed field must already exist).
     pub(super) fn infer_record(
         &mut self,
         fields: &'a [FieldInit],
-        with: Option<Aol<Expr>>,
+        extend: Option<Aol<Expr>>,
         update: Option<Aol<Expr>>,
     ) -> Result<Type> {
         let mut explicit: Vec<(StrId, Type)> = Vec::new();
@@ -1898,8 +1865,8 @@ impl<'a> Checker<'a> {
             }
             return Ok(base_ty);
         }
-        if let Some(w) = with {
-            // Stack: prepend the explicit fields onto the base's row, keeping the
+        if let Some(w) = extend {
+            // Extend: prepend the explicit fields onto the base's row, keeping the
             // base's tail (so stacking onto an open row stays open).
             let wty = self.infer(w)?;
             let row = self.record_row_of(wty)?;

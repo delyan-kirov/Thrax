@@ -1,6 +1,6 @@
 $ @mod RANGES
-$ with VEC
-$ with LA
+$ @import VEC
+$ @import LA
 
 # \file ranges.ares
 # \info Inclusive range patterns in match arms: `lo ... hi` matches when

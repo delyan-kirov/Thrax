@@ -5,7 +5,7 @@ $ @mod WHEN
 # the `IToResult` interface, so a `@Bool` gives the body `{}`, and an `Option` or a
 # `Result` gives it the payload.
 
-$ with OPT
+$ @import OPT
 
 $ Yield : @effect = yield : @Int -> {},
 $ sumY : ({} -> <Yield> {}) -> @Int = \a =>

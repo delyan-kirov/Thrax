@@ -378,7 +378,7 @@ impl Layout<'_, '_> {
                     let head = self.lay_run(run, breaks, fills);
                     return self.finale(head, ts, pos, &halt);
                 }
-                if starts_form(&t) || (matches!(t.kind, Kind::With) && self.has_in(ts, *pos, &halt)) {
+                if starts_form(&t) {
                     let form = self.form(ts, pos, &halt);
                     run.push(form);
                     break;
@@ -501,15 +501,6 @@ impl Layout<'_, '_> {
         P { d: outer, first: head.first, last: body.last }
     }
 
-    /// Whether an `in` follows at this level before the expression ends.
-    fn has_in(&self, ts: &[Tree], pos: usize, halt: &dyn Fn(&Tok) -> bool) -> bool {
-        ts[pos + 1..]
-            .iter()
-            .filter_map(|t| self.tok_of(t))
-            .take_while(|t| !halt(t))
-            .any(|t| matches!(t.kind, Kind::In))
-    }
-
     fn expect(&mut self, ts: &[Tree], pos: &mut usize, want: impl Fn(&Tok) -> bool) -> Option<P> {
         let (i, t) = self.peek(ts, *pos)?;
         let tok = self.tok_of(t).copied()?;
@@ -522,7 +513,7 @@ impl Layout<'_, '_> {
         Some(self.with_comments(cs, p))
     }
 
-    /// A `let`/`with`/`if`/`\`/`do` form, which runs to the end of
+    /// A `let`/`if`/`\`/`do` form, which runs to the end of
     /// the enclosing expression.
     fn form(&mut self, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
         let kw = self.tok_of(&ts[*pos]).copied().expect("a form starts with a token");
@@ -540,7 +531,7 @@ impl Layout<'_, '_> {
                 }
                 self.hang_below(head, body, true)
             }
-            Kind::Let | Kind::With => self.binding_form(ts, pos, halt),
+            Kind::Let => self.binding_form(ts, pos, halt),
             Kind::If => self.if_form(ts, pos, halt),
             Kind::Do => {
                 let k = self.tok(Self::first_tok(&ts[*pos]));
@@ -708,7 +699,7 @@ impl Layout<'_, '_> {
         self.join(&ps).expect("a lambda has its backslash")
     }
 
-    /// `let p = v in body` (and `with s in`). The head stays on
+    /// `let p = v in body`. The head stays on
     /// one line if it fits; otherwise the value goes one level under `=` (or
     /// the keyword) with `in` alone below it. A bracketed value opens on the
     /// keyword's line and keeps `in` beside its closing bracket. The body
@@ -752,7 +743,7 @@ impl Layout<'_, '_> {
         let mut body = self.expr(ts, pos, halt, false);
         // A chain of lets breaks as one: once this one ends its line with `in`,
         // so does every let after it.
-        if matches!(self.toks[body.first].kind, Kind::Let | Kind::With) {
+        if matches!(self.toks[body.first].kind, Kind::Let) {
             while let Node::Cat(xs) = &self.docs.nodes[body.d] {
                 let [x] = xs[..] else { break };
                 body.d = x;
@@ -824,7 +815,7 @@ impl Layout<'_, '_> {
     /// ends in the group.
     fn opens_block(&self, p: P) -> bool {
         let t = self.toks[p.first];
-        if !self.opens[p.last] || starts_form(&t) || matches!(t.kind, Kind::With) {
+        if !self.opens[p.last] || starts_form(&t) {
             return false;
         }
         let mut i = p.first;
@@ -990,14 +981,12 @@ impl Layout<'_, '_> {
         if ts.is_empty() {
             return self.docs.text("");
         }
-        if matches!(ts.get(1).and_then(|t| self.tok_of(t)).map(|t| t.kind), Some(Kind::With)) {
-            return self.import(ts);
-        }
         let eq = ts.iter().position(|t| matches!(self.tok_of(t).map(|t| t.kind), Some(Kind::Eq)));
         let second = ts.get(1).and_then(|t| self.tok_of(t)).copied();
         let is_meta_e = second.is_some_and(|t| matches!(t.kind, Kind::At) && t.text == "@e");
-        let Some(eq) = eq.filter(|_| !is_meta_e) else {
-            // `$ @e expr`, `$ with M`, `$ @private`, `$ @mod M`.
+        let is_import = second.is_some_and(|t| matches!(t.kind, Kind::At) && t.text == "@import");
+        let Some(eq) = eq.filter(|_| !is_meta_e && !is_import) else {
+            // `$ @e expr`, `$ @import [A =] M`, `$ @private`, `$ @mod M`.
             let split = if is_meta_e { 2 } else { ts.len() };
             let head_ps: Vec<P> = ts[..split].iter().map(|t| self.tree(t)).collect();
             let head = self.join(&head_ps).expect("non-empty");
@@ -1054,76 +1043,6 @@ impl Layout<'_, '_> {
         let nested = self.docs.nest(inner);
         let d = self.docs.cat(vec![head.d, nested]);
         self.docs.group(d, exploded || head_comment)
-    }
-
-    /// `$ with A, B = C`: one line when it fits, else one entry per line under
-    /// the `$ with`. A trailing comma on a list written over several lines
-    /// keeps it one entry per line.
-    fn import(&mut self, ts: &[Tree]) -> D {
-        let dollar = self.tree(&ts[0]);
-        let with = self.tree(&ts[1]);
-        let head = self.join(&[dollar, with]).expect("non-empty");
-        let is_comma = |me: &Self, t: &Tree| matches!(me.tok_of(t).map(|t| t.kind), Some(Kind::Comma));
-        // Each entry with its comma (if any) and the comments that end its line.
-        let mut entries: Vec<(P, bool, Vec<P>)> = Vec::new();
-        let mut tail = Vec::new();
-        let mut pos = 2;
-        while pos < ts.len() {
-            let cs = self.comments(ts, &mut pos);
-            let start = pos;
-            while pos < ts.len() && !self.is_comment(&ts[pos]) && !is_comma(self, &ts[pos]) {
-                pos += 1;
-            }
-            if start == pos && !(pos < ts.len() && is_comma(self, &ts[pos])) {
-                tail = cs;
-                continue;
-            }
-            let parts: Vec<P> = ts[start..pos].iter().map(|t| self.tree(t)).collect();
-            let entry = match self.join(&parts) {
-                Some(entry) => self.with_comments(cs, entry),
-                None => {
-                    let d = self.docs.text("");
-                    self.with_comments(cs, P { d, first: start, last: start })
-                }
-            };
-            let comma = pos < ts.len() && is_comma(self, &ts[pos]);
-            if comma {
-                pos += 1;
-            }
-            let mut after = Vec::new();
-            while pos < ts.len() && self.is_comment(&ts[pos]) && !self.toks[Self::first_tok(&ts[pos])].newline {
-                after.push(self.comment(Self::first_tok(&ts[pos])));
-                pos += 1;
-            }
-            entries.push((entry, comma, after));
-        }
-        let Some(&(_, trailing, _)) = entries.last() else {
-            return head.d;
-        };
-        let mut body: Option<P> = None;
-        for (entry, comma, after) in entries {
-            let mut ds = vec![entry.d];
-            if comma {
-                ds.push(self.docs.text(","));
-            }
-            for c in &after {
-                ds.push(self.docs.text(" "));
-                ds.push(c.d);
-            }
-            let last = after.last().map_or(entry.last, |c| c.last);
-            let piece = P { d: self.docs.cat(ds), first: entry.first, last };
-            body = Some(match body {
-                Some(b) => self.line_join(b, piece, Node::Line),
-                None => piece,
-            });
-        }
-        let body = self.close_list(body.expect("non-empty"), false, tail);
-        let exploded = trailing && self.multiline(head.last, self.toks.len() - 1);
-        let line = self.docs.add(Node::Line);
-        let inner = self.docs.cat(vec![line, body.d]);
-        let nested = self.docs.nest(inner);
-        let d = self.docs.cat(vec![head.d, nested]);
-        self.docs.group(d, exploded)
     }
 
     /// Anything an expression did not consume (malformed input), appended

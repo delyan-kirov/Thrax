@@ -10,7 +10,7 @@ $ @mod TENSORS
 #       The compiler provides only the `@`-primitives; the operations (`index`
 #       that `.[..]` uses, `matmul`, `dot`, `transpose`, `concat`) live in `LA`.
 
-$ with LA
+$ @import LA
 
 $ v : [3] @Int = [10, 20, 30]
 

@@ -8,8 +8,8 @@ $ @mod STDLIB_STM
 #       choice's writes. The checks perform `@IO`, so they run when the corpus
 #       runs, not at compile time.
 
-$ with PAR
-$ with STM
+$ @import PAR
+$ @import STM
 
 $ transfer : TVar @Int -> TVar @Int -> @Int -> <Stm> {} = \from to n =>
     let balance = read from in

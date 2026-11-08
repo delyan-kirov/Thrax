@@ -41,7 +41,7 @@
  * type_nb), matching parser.rs's context rule; see payload_decl.
  *
  * DIVERGENCES from parser.rs (this grammar is intentionally stricter):
- *   - SHOULD WARN (future work): parser.rs lets a control form (let/if/\/with)
+ *   - SHOULD WARN (future work): parser.rs lets a control form (let/if/\)
  *     be a bare operand/argument (starts_operand), body extending maximally
  *     right, so `f let x = 1 in x + 100` parses as `f (let x = 1 in (x+100))`
  *     -- the `+ 100` is swallowed. Legal, but a footgun that should emit a
@@ -61,7 +61,7 @@
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN AT_BUILD
 %token AT_E AT_RUN AT_USE AT_IFACE  /* AT_USE: `@use`; `@ctx` is reserved for
                                       the unified binder of #406 */
-%token AT_PRIVATE AT_EXTERN AT_ARRAY
+%token AT_PRIVATE AT_EXTERN AT_ARRAY AT_IMPORT
 %token AT_TRUE AT_FALSE /* the two `@Bool` literals (there is no `true`/`false` alias) */
 %token AT_TYCON     /* any other @name: a built-in type (@Int64, @Str, @Vec) or
                        effect (@IO) in a type, an intrinsic (@vec_len) as a value */
@@ -70,7 +70,7 @@
 %token LAMBDA       /* \ */
 %token EQ ARROW FATARROW DOLLAR COLON COMMA DOT  /* FATARROW is `=>` */
 
-%token KW_LET KW_IN KW_IF KW_ELSE KW_WITH
+%token KW_LET KW_IN KW_IF KW_ELSE
 %token KW_DO KW_CTL
 
 %right SEMI                         /* ; */
@@ -113,7 +113,7 @@ global
   | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ type
   | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ eff_row  /* a row alias */
   | DOLLAR UIDENT COLON AT_EFFECT opt_type_params EQ effect_body
-  | DOLLAR KW_WITH import opt_comma
+  | DOLLAR AT_IMPORT import
   | DOLLAR AT_PRIVATE
   | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@Vec @Str -> <@IO> @Int` */
   /* The compile-time entry, run during compilation; its `@Code` result adds
@@ -149,8 +149,7 @@ operator_name
   | AND_AND | OR_OR | SEMI | PIPE_FWD | PIPE_BACK | COMPOSE
   ;
 
-import       : import_entry | import COMMA import_entry ;  /* `$ with A, V = VEC,` */
-import_entry : dotted_name | any_name EQ dotted_name ;     /* `V = VEC`: qualified only */
+import       : dotted_name | any_name EQ dotted_name ;  /* `$ @import V = VEC`: qualified only */
 dotted_name  : any_name | any_name DOT any_name ;
 any_name     : UIDENT | LIDENT ;
 
@@ -161,11 +160,14 @@ opt_type_params : /* empty */ | opt_type_params LIDENT ;
 
 struct_body   : field_decls opt_comma ;
 field_decls   : field_decl | field_decls COMMA field_decl ;
-field_decl    : LIDENT COLON type | KW_WITH type_app_head ;  /* `with P` copies P's fields */
+field_decl    : LIDENT COLON type | entry_splice ;
 
 union_body    : variant_decls opt_comma ;
 variant_decls : variant_decl | variant_decls COMMA variant_decl ;
-variant_decl  : UIDENT COLON payload_decl | KW_WITH type_app_head ;
+variant_decl  : UIDENT COLON payload_decl | entry_splice ;
+/* `@e X`: X builds the `@Code` of fields (`@parse_fields`) or variants
+ * (`@parse_variants`), spliced in place of the entry before the final compile. */
+entry_splice  : AT_E expr | AT_E PIPE_BACK expr ;
 
 /* After `Tag:` a '{' ALWAYS opens the payload's field braces (`{}` empty,
  * `{A, B}` two positional fields) never a bare tuple type; that is how
@@ -235,8 +237,7 @@ type_atom
   | LBRACE rec_field_list opt_comma RBRACE /* named-record parameter sugar:
       `{x: T, y: U}` is the tuple `{T, U}` whose field names bind the argument;
       a one-field `{x: T}` collapses to `T` (see parse_global). Legal only in a
-      function parameter position. A `with`-prefixed field additionally scopes
-      that field's own struct fields into the body, as `with <field> in ..`. */
+      function parameter position. */
   | LBRACK shape RBRACK type_atom  /* sized tensor `[n]T` / `[m, n]T` (Nat-kind) */
   | LPAREN type RPAREN
   ;
@@ -260,10 +261,7 @@ rec_field_list
   | rec_field_list COMMA rec_field
   ;
 
-/* Spelled out rather than with an optional `with`: an empty rule before the
- * name would have to be reduced before seeing whether `{x` starts a record
- * parameter or a tuple of type variables. */
-rec_field : LIDENT COLON type | KW_WITH LIDENT COLON type ;
+rec_field : LIDENT COLON type ;
 
 eff_row
   : ANGLE_EMPTY
@@ -296,8 +294,6 @@ ctrl_expr
   /* Each form takes ONE binding, subject or arm; several nest:
    * `let x = a in let y = b in e`, `if a => b else if c => d else e`. */
   : KW_LET let_binder EQ expr KW_IN expr
-  | KW_WITH expr KW_IN expr  /* field-scoping: bring the subject struct's
-                                fields into scope unqualified for the body */
   | KW_IF expr FATARROW expr KW_ELSE expr
   | LAMBDA params FATARROW expr
   /* The multi-arm lambda: ONE argument matched against the arms, top to bottom.
@@ -365,6 +361,8 @@ atom
   | LPAREN expr COLON type RPAREN  /* a type ascription: `([] : List @Int)` */
   | LBRACE dot_inits opt_comma RBRACE  /* a record or codata literal `{ .f = e }` */
   | LBRACE dot_inits BAR expr RBRACE   /* a record update `{ .f = e | base }` */
+  | LBRACE dot_inits COMMA DOT DOT op_expr RBRACE  /* extension `{ .tag = 1, ..p }` */
+  | LBRACE DOT DOT op_expr RBRACE      /* `{ ..p }`: p's fields, as a record */
   /* An explicit `@use` argument, matched to the signature's `@use` fields by
    * name; omitted fields are still searched: `max_of @use {.d = flip} 3 7`.
    * At least one field: an empty `@use {}` supplies nothing, so it is an error.
@@ -420,7 +418,6 @@ elem_list : expr | elem_list COMMA expr ;
 dot_inits
   : DOT LIDENT EQ expr
   | dot_inits COMMA DOT LIDENT EQ expr
-  | dot_inits COMMA KW_WITH op_expr  /* `{ .tag = 1, with p }`: p's fields too */
   ;
 
 use_inits : DOT LIDENT EQ expr | use_inits COMMA DOT LIDENT EQ expr ;

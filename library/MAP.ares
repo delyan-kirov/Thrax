@@ -11,10 +11,10 @@ $ @mod MAP
 #       remove are O(log n); `to_list` / `keys` / `fold` visit entries in
 #       ascending key order.
 
-$ with OPT
-$ with VEC
-$ with MATH
-$ with STR
+$ @import OPT
+$ @import VEC
+$ @import MATH
+$ @import STR
 
 $ Map : @struct k v =
     cmpf: k -> k -> @Int,

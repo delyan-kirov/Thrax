@@ -17,9 +17,9 @@ $ @mod META_BUILD
 #       `tests/MAIN.ares` is the real use: it reads `examples/` and generates its
 #       own imports and `@main` from what is there.
 
-$ with IO
-$ with STR
-$ with VEC
+$ @import IO
+$ @import STR
+$ @import VEC
 
 $ arx_files : {} -> <@Meta, @IO> @Vec @Str = \_ =>
     VEC.filter (\f => STR.ends_with f ".ares") (IO.read_dir "examples")

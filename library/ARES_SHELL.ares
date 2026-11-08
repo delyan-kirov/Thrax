@@ -8,8 +8,8 @@ $ @mod ARES_SHELL
 #       what the `<@Meta>` reflection finds, which the shell can run because
 #       it runs at compile time.
 
-$ with IO
-$ with STR
+$ @import IO
+$ @import STR
 
 # Leave the shell, forget the session, print the session.
 $ @shell_quit : {} -> <@Shell> {} = @extern "ares"
@@ -38,7 +38,7 @@ $ help_text : @Vec @Str = [
     "",
     "  $ _= <expr>       evaluate an expression and print its value and type",
     "  $ name : T = <e>  add (or redefine) a binding (silent, like a file)",
-    "  $ with MOD        import a standard-library module (e.g. VEC, STR, MATH)",
+    "  $ @import MOD        import a standard-library module (e.g. VEC, STR, MATH)",
     "  $ @e <| <code>    run compile-time code, and add the items it returns",
     "",
     "Every session imports ARES_SHELL:",

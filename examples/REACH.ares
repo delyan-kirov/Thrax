@@ -4,9 +4,9 @@ $ @mod REACH
 # \info A type reached through an imported module's declarations is usable
 #       without importing its home module: `REACH_MID.Bag` holds `REACH_LIB.Item`
 #       values, and this module reads them while importing `REACH_MID` alone.
-#       Writing `Item` here would still need `$ with REACH_LIB`.
+#       Writing `Item` here would still need `$ @import REACH_LIB`.
 
-$ with REACH_MID
+$ @import REACH_MID
 
 $ count : @Int = @vec_len (bag {}).items
 $ total : @Int = (@vec_get (bag {}).items 0).v + (@vec_get (bag {}).items 1).v

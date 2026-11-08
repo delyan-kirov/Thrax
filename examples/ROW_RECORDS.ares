@@ -7,7 +7,7 @@ $ @mod ROW_RECORDS
 #       fields, nominal struct or anonymous. Record types are structural, like
 #       effect rows: they unify by field name, and an open tail absorbs the extras.
 #       Inside a function, `{ .x = v | p }` updates an open-row record (its shape
-#       is preserved) and `{ .f = v, with p }` stacks a field on top.
+#       is preserved) and `{ .f = v, ..p }` stacks a field on top.
 
 $ area : { x: @Int, y: @Int | r } -> @Int = \p => p.x * p.y
 
@@ -15,7 +15,7 @@ $ area : { x: @Int, y: @Int | r } -> @Int = \p => p.x * p.y
 $ shift : { x: @Int | r } -> { x: @Int | r } = \p => { .x = p.x + 10 | p }
 
 # Stack: add a field on top of an open-row record.
-$ tag : { x: @Int | r } -> { x: @Int, tag: @Int | r } = \p => { .tag = 99, with p }
+$ tag : { x: @Int | r } -> { x: @Int, tag: @Int | r } = \p => { .tag = 99, ..p }
 
 $ Point : @struct = x: @Int, y: @Int,
 $ Boxed : @struct = x: @Int, y: @Int, z: @Int,

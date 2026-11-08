@@ -9,8 +9,8 @@ $ @mod STDLIB_ASYNC
 #       task may perform effects of its own, served by a handler outside the
 #       group.
 
-$ with ASYNC
-$ with OPT
+$ @import ASYNC
+$ @import OPT
 
 # ---- producer / consumer ----
 

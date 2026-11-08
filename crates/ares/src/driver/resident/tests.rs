@@ -36,8 +36,8 @@ fn a_session_keeps_the_library_and_not_itself() {
 fn a_changed_module_takes_its_importers_with_it() {
     let mut extra = HashMap::new();
     extra.insert("LOW", "$ @mod LOW\n$ x : @Int = 1\n".to_string());
-    extra.insert("MID", "$ @mod MID\n$ with LOW\n$ y : @Int = LOW.x + 1\n".to_string());
-    let root = "$ @mod REPL\n$ with MID\n$ __it = MID.y\n";
+    extra.insert("MID", "$ @mod MID\n$ @import LOW\n$ y : @Int = LOW.x + 1\n".to_string());
+    let root = "$ @mod REPL\n$ @import MID\n$ __it = MID.y\n";
     assert_eq!(session(root, &extra).expect("compiles")[0].1, "@Int");
     assert!(kept().contains(&"MID".to_string()));
 
@@ -47,7 +47,7 @@ fn a_changed_module_takes_its_importers_with_it() {
     assert!(err.contains("MID"), "the error is MID's own: {err}");
     assert!(!kept().contains(&"MID".to_string()), "a module that failed is not kept");
 
-    extra.insert("MID", "$ @mod MID\n$ with LOW\n$ y : @Str = LOW.x\n".to_string());
+    extra.insert("MID", "$ @mod MID\n$ @import LOW\n$ y : @Str = LOW.x\n".to_string());
     assert_eq!(session(root, &extra).expect("compiles")[0].1, "@Str");
 }
 

@@ -9,7 +9,7 @@ $ @mod EXCEPTIONS
 		for `ares build --target=wasm32-wasi`.
  -#
 
-$ with VEC
+$ @import VEC
 
 $ Exception : @struct =
     module: @Str,

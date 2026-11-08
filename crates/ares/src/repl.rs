@@ -6,7 +6,7 @@
 //! defined it is evaluated. To run effects, use an underscore name like `_= `.
 //! That prefill is inserted at the start of every prompt by default and can be
 //! deleted, so the user can instead define a named global symbol they can reuse
-//! (`$ name : T = ...` defines silently, `$ with MOD` imports). The auto-inserted
+//! (`$ name : T = ...` defines silently, `$ @import MOD` imports). The auto-inserted
 //! `$ ` opening each prompt cannot be deleted. Enter submits the whole buffer at
 //! once, wherever the cursor sits and with no trailing `$` needed. `Ctrl-J` starts
 //! a new line instead (it arrives as LF, distinct from the Return key's CR; some
@@ -721,7 +721,7 @@ fn clear_overlay_line() {
 
 /// The import every session opens with: `library/ARES_SHELL.ares`, whose
 /// `<@Shell>` builtins the shell performs (see [`Repl::evaluate`]).
-const SHELL_IMPORT: &str = "$ with ARES_SHELL";
+const SHELL_IMPORT: &str = "$ @import ARES_SHELL";
 
 /// What a `Shell` operation asks the shell to do once the evaluation ends.
 #[derive(Default)]
@@ -732,7 +732,7 @@ struct Requests {
 
 struct Repl {
     root_dir: PathBuf,
-    /// Full `$ with MOD` lines, in entry order, deduplicated.
+    /// Full `$ @import MOD` lines, in entry order, deduplicated.
     imports: Vec<String>,
     /// Accumulated definitions as `(binding name, full source item)`. Redefining
     /// a name replaces its entry, so the module never has a duplicate `$ name`.
@@ -784,7 +784,7 @@ impl Repl {
             self.history.push(body.to_string());
         }
         let item = format!("$ {body}");
-        if body.split_whitespace().next() == Some("with") {
+        if body.split_whitespace().next() == Some("@import") {
             self.import(&item);
             return false;
         }
@@ -832,7 +832,7 @@ impl Repl {
         }
     }
 
-    /// Add a `$ with MOD` import, keeping it only if the session still compiles.
+    /// Add a `$ @import MOD` import, keeping it only if the session still compiles.
     fn import(&mut self, item: &str) {
         if self.imports.iter().any(|i| i == item) {
             return;

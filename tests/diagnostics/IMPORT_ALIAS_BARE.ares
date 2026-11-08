@@ -1,7 +1,7 @@
 $ @mod IMPORT_ALIAS_BARE
 
-$ with V = VEC
-$ with O = OPT
+$ @import V = VEC
+$ @import O = OPT
 
 $ v : @Vec @Int = V.new {}
 $ n : @Int = length v  #~ error[TYPE_UNBOUND]: unbound name `length`

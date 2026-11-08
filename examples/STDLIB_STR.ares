@@ -6,9 +6,9 @@ $ @mod STDLIB_STR
 #       `reverse`/`repeat`/`contains`/`find` also exist in VEC, so uses
 #       here qualify where both modules are imported.
 
-$ with STR
-$ with OPT
-$ with VEC
+$ @import STR
+$ @import OPT
+$ @import VEC
 
 $ ck_len : @Int = if (STR.len "hello") == 5 => 0 else 1
 $ ck_at : @Int = if (at "hello" 1) == 101 => 0 else 1

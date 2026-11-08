@@ -136,7 +136,7 @@ Flags:
                      executable; gnu links glibc dynamically. The default is
                      musl when this compiler ships a musl sysroot (a release
                      build does) and the program links no shared library.
-  --import-dir=DIR   Resolve `$ with MOD` from DIR first (repeatable).
+  --import-dir=DIR   Resolve `$ @import MOD` from DIR first (repeatable).
                      For `run`, flags go before the root file; everything
                      after it is passed to the program unchanged.
   -h, --help         Show this help.

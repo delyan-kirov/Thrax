@@ -5,8 +5,8 @@ $ @mod SH
  - \info Running shell commands and reading what they print
  -#
 
-$ with IO
-$ with STR
+$ @import IO
+$ @import STR
 
 # `ok` is a zero exit status. `pclose` hands back the wait status, which is
 # zero exactly when the command exited with 0.

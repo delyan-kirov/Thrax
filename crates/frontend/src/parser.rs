@@ -9,7 +9,7 @@
 //! * `Parser::parse_primary` parses one atom then a left-associative postfix
 //!   `.` chain (field access, tuple index, struct/variant literals,
 //!   module-qualified names) that binds tighter than application.
-//! * The control forms (`let`, `if`, `when`, `\`, `with`, `do`) are
+//! * The control forms (`let`, `if`, `when`, `\`, `do`) are
 //!   primaries, each with its own `parse_*` method.
 //!
 //! Nodes are built into the [`Ast`] stores as they are parsed (bottom-up), so a
@@ -45,8 +45,6 @@ pub struct Parser<'a> {
     last_end: usize,
     /// Errors recovered from at item boundaries, in source order.
     errors: Vec<Diagnostic>,
-    /// The entries after the first of a `$ with A, B` list, each its own item.
-    more_imports: Vec<Item>,
 }
 
 /// Consume a token of an expected kind, or fail with an `UnexpectedToken`
@@ -73,7 +71,6 @@ impl<'a> Parser<'a> {
             src,
             last_end: 0,
             errors: Vec::new(),
-            more_imports: Vec::new(),
         }
     }
 
@@ -451,10 +448,8 @@ impl<'a> Parser<'a> {
             match self.parse_global() {
                 Ok(item) => {
                     let full = Span::new(start, self.last_end);
-                    for item in std::iter::once(item).chain(self.more_imports.drain(..)) {
-                        items.push(item);
-                        spans.push(ItemSpan { full, name });
-                    }
+                    items.push(item);
+                    spans.push(ItemSpan { full, name });
                 }
                 Err(d) => {
                     if let Some(n) = name {
@@ -529,7 +524,6 @@ impl<'a> Parser<'a> {
         );
         let t = self.peek()?;
         match t.kind {
-            Kind::With => self.parse_import(),
             Kind::At => self.parse_directive(t, dollar.span.start),
             Kind::Word => self.parse_named_global(),
             Kind::LParen => self.parse_operator_global(),
@@ -541,6 +535,7 @@ impl<'a> Parser<'a> {
     /// definition.
     fn parse_directive(&mut self, at: Token, start: usize) -> Result<Item> {
         match self.intrinsic_name(at) {
+            "import" => self.parse_import(),
             "private" => {
                 self.bump()?;
                 Ok(Item::Private)
@@ -602,11 +597,11 @@ impl<'a> Parser<'a> {
                 self.bump()?; // '@struct'
                 let params = self.parse_type_params()?;
                 expect!(self, Kind::Eq, "expected '=' after '@struct'");
-                let (includes, fields) = self.parse_struct_body()?;
+                let (splices, fields) = self.parse_struct_body()?;
                 Ok(Item::Struct {
                     name: iname,
                     params,
-                    includes,
+                    splices,
                     fields,
                     abi: None,
                     c_union: false,
@@ -672,25 +667,9 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `$ with entry, entry, ...` (trailing comma optional), each entry a
-    /// `module` or `ALIAS = module`. The first entry is the item; the rest wait
-    /// in `more_imports`.
+    /// `$ @import module` or `$ @import ALIAS = module`: one module per item.
     fn parse_import(&mut self) -> Result<Item> {
-        self.bump()?; // 'with'
-        self.more_imports.clear();
-        let first = self.parse_import_entry()?;
-        while self.eat(|k| matches!(k, Kind::Comma))? {
-            if matches!(self.peek_kind()?, Kind::Dollar | Kind::Eof) {
-                break;
-            }
-            let entry = self.parse_import_entry()?;
-            self.more_imports.push(entry);
-        }
-        Ok(first)
-    }
-
-    /// One `$ with` entry: `module` or `ALIAS = module`.
-    fn parse_import_entry(&mut self) -> Result<Item> {
+        self.bump()?; // '@import'
         let start = self.here()?;
         let first = self.parse_dotted_name()?;
         let span = Span::new(start, self.last_end);
@@ -706,7 +685,7 @@ impl<'a> Parser<'a> {
                     0,
                     "an import alias is a single capitalized name",
                 )
-                .with_help("write `$ with ALIAS = MODULE`, e.g. `$ with V = VEC`"))
+                .with_help("write `$ @import ALIAS = MODULE`, e.g. `$ @import V = VEC`"))
             }
         };
         let start = self.here()?;
@@ -761,11 +740,11 @@ impl<'a> Parser<'a> {
                     };
                     let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@struct'");
-                    let (includes, fields) = self.parse_struct_body()?;
+                    let (splices, fields) = self.parse_struct_body()?;
                     return Ok(Item::Struct {
                         name,
                         params,
-                        includes,
+                        splices,
                         fields,
                         abi,
                         c_union: false,
@@ -779,11 +758,11 @@ impl<'a> Parser<'a> {
                         self.bump()?; // '@extern'
                         let abi = self.expect_string("expected an ABI string after '@extern'")?;
                         expect!(self, Kind::Eq, "expected '=' after '@union @extern'");
-                        let (includes, fields) = self.parse_struct_body()?;
+                        let (splices, fields) = self.parse_struct_body()?;
                         return Ok(Item::Struct {
                             name,
                             params: self.ast.make_slice(Vec::new()),
-                            includes,
+                            splices,
                             fields,
                             abi: Some(abi),
                             c_union: true,
@@ -791,11 +770,11 @@ impl<'a> Parser<'a> {
                     }
                     let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@union'");
-                    let (includes, variants) = self.parse_union_body()?;
+                    let (splices, variants) = self.parse_union_body()?;
                     return Ok(Item::Union {
                         name,
                         params,
-                        includes,
+                        splices,
                         variants,
                     });
                 }
@@ -1019,14 +998,14 @@ impl<'a> Parser<'a> {
         Ok(self.ast.make_slice(ops))
     }
 
-    /// A struct body: leading `with Other` clauses (copied-in fields) then the
-    /// declared `name : Type` fields, comma-separated and freely interleaved.
-    fn parse_struct_body(&mut self) -> Result<(Slice<Include>, Slice<FieldDecl>)> {
-        let mut includes = Vec::new();
+    /// A struct body: comma-separated `name : Type` fields and `@e X` splices
+    /// of generated fields, freely interleaved.
+    fn parse_struct_body(&mut self) -> Result<(Slice<EntrySplice>, Slice<FieldDecl>)> {
+        let mut splices = Vec::new();
         let mut fields = Vec::new();
         loop {
             match self.peek_kind()? {
-                Kind::With => includes.push(self.parse_with_include()?),
+                _ if self.at_intrinsic("e")? => splices.push(self.parse_entry_splice()?),
                 Kind::Word => {
                     let name = self.bump_word()?;
                     expect!(self, Kind::Colon, "expected ':' after the field name");
@@ -1039,15 +1018,15 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok((self.ast.make_slice(includes), self.ast.make_slice(fields)))
+        Ok((self.ast.make_slice(splices), self.ast.make_slice(fields)))
     }
 
-    fn parse_union_body(&mut self) -> Result<(Slice<Include>, Slice<VariantDecl>)> {
-        let mut includes = Vec::new();
+    fn parse_union_body(&mut self) -> Result<(Slice<EntrySplice>, Slice<VariantDecl>)> {
+        let mut splices = Vec::new();
         let mut variants = Vec::new();
         loop {
             match self.peek_kind()? {
-                Kind::With => includes.push(self.parse_with_include()?),
+                _ if self.at_intrinsic("e")? => splices.push(self.parse_entry_splice()?),
                 Kind::Word => {
                     let tag = self.bump_word()?;
                     let payload = if self.eat(|k| matches!(k, Kind::Colon))? {
@@ -1063,19 +1042,18 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok((self.ast.make_slice(includes), self.ast.make_slice(variants)))
+        Ok((self.ast.make_slice(splices), self.ast.make_slice(variants)))
     }
 
-    /// A `with Other` clause inside a type declaration: the (capitalized) name of a
-    /// same-kind type whose fields/variants are copied into the one declared. Pure
-    /// splicing, no type relationship.
-    fn parse_with_include(&mut self) -> Result<Include> {
-        self.bump()?; // 'with'
-        let t = expect!(self, Kind::Word, "expected a type name after 'with'");
-        self.require_type_capital(self.text(t), &t)?;
-        Ok(Include {
-            name: self.intern(self.text(t)),
-            span: t.span,
+    /// An `@e X` entry in a struct or union declaration. `X` ends at the entry's
+    /// comma, and the entry's span is what the generated entries replace.
+    fn parse_entry_splice(&mut self) -> Result<EntrySplice> {
+        let start = self.here()?;
+        self.bump()?; // '@e'
+        let expr = self.parse_meta_operand()?;
+        Ok(EntrySplice {
+            expr,
+            span: Span::new(start, self.last_end),
         })
     }
 
@@ -1322,18 +1300,16 @@ impl<'a> Parser<'a> {
         if self.eat(|k| matches!(k, Kind::RBrace))? {
             return Ok(self.ty(Ty::Unit));
         }
-        let is_record = matches!(self.peek_kind()?, Kind::With)
-            || (matches!(self.peek_kind()?, Kind::Word)
-                && matches!(self.peek_kind_at(1)?, Kind::Colon));
+        let is_record = matches!(self.peek_kind()?, Kind::Word)
+            && matches!(self.peek_kind_at(1)?, Kind::Colon);
         if is_record {
             let mut fields = Vec::new();
             let mut tail = None;
             loop {
-                let with = self.eat(|k| matches!(k, Kind::With))?;
                 let name = self.expect_word("expected a record field name")?;
                 expect!(self, Kind::Colon, "expected ':' after the field name");
                 let ty = self.parse_type()?;
-                fields.push(RecField { with, name, ty });
+                fields.push(RecField { name, ty });
                 // `{ x: A, y: B | r }`: `| r` opens the record with a row variable.
                 if self.at_op("|")? {
                     self.bump()?;
@@ -1518,7 +1494,6 @@ impl<'a> Parser<'a> {
                 | Kind::Let
                 | Kind::If
                 | Kind::Lambda
-                | Kind::With
                 | Kind::LBrace
                 | Kind::LBrack
                 | Kind::At
@@ -1654,7 +1629,6 @@ impl<'a> Parser<'a> {
             Kind::LParen if self.at_operator_ref()? => self.parse_operator_ref(),
             Kind::LParen => self.parse_group(),
             Kind::Let => self.parse_let(),
-            Kind::With => self.parse_with(),
             Kind::If => self.parse_if(),
             Kind::Is => self.parse_match(),
             Kind::Do => self.parse_handle(),
@@ -1952,12 +1926,12 @@ impl<'a> Parser<'a> {
         if self.eat(|k| matches!(k, Kind::RBrace))? {
             return Ok(self.expr(Expr::Unit));
         }
-        // An anonymous record literal starts with a `.field =` entry or `with`;
-        // anything else (including a `.Tag` variant element) is a tuple.
-        let is_record = matches!(self.peek_kind()?, Kind::With)
-            || (matches!(self.peek_kind()?, Kind::Dot)
-                && matches!(self.peek_kind_at(1)?, Kind::Word)
-                && matches!(self.peek_kind_at(2)?, Kind::Eq));
+        // An anonymous record literal starts with a `.field =` entry or a `..base`
+        // extension; anything else (including a `.Tag` variant element) is a tuple.
+        let is_record = matches!(self.peek_kind()?, Kind::Dot)
+            && (matches!(self.peek_kind_at(1)?, Kind::Dot)
+                || (matches!(self.peek_kind_at(1)?, Kind::Word)
+                    && matches!(self.peek_kind_at(2)?, Kind::Eq)));
         if is_record {
             return self.parse_record_expr();
         }
@@ -1982,19 +1956,21 @@ impl<'a> Parser<'a> {
         Ok(self.expr(Expr::Tuple(elems)))
     }
 
-    /// A record value body (the `{` is already consumed): `.field = e` entries and
-    /// `with base` splices, optionally ending in `| base` (update). `with` and `|`
-    /// are mutually exclusive.
+    /// A record value body (the `{` is already consumed): `.field = e` entries,
+    /// ending in either a `..base` extension (the listed fields stacked on top of
+    /// `base`'s row, mirroring the `..rest` pattern) or a `| base` update.
     fn parse_record_expr(&mut self) -> Result<Aol<Expr>> {
         let mut fields = Vec::new();
-        let mut with = None;
+        let mut extend = None;
         let mut update = None;
         loop {
-            if self.eat(|k| matches!(k, Kind::With))? {
-                with = Some(self.parse_expr(0)?);
-            } else {
-                fields.push(self.parse_field_init()?);
+            if matches!(self.peek_kind()?, Kind::Dot) && matches!(self.peek_kind_at(1)?, Kind::Dot) {
+                self.bump()?;
+                self.bump()?;
+                extend = Some(self.parse_expr(0)?);
+                break;
             }
+            fields.push(self.parse_field_init()?);
             if self.at_op("|")? {
                 self.bump()?;
                 update = Some(self.parse_expr(0)?);
@@ -2009,7 +1985,7 @@ impl<'a> Parser<'a> {
         let fields = self.ast.make_slice(fields);
         Ok(self.expr(Expr::Record {
             fields,
-            with,
+            extend,
             update,
         }))
     }
@@ -2292,7 +2268,7 @@ impl<'a> Parser<'a> {
 
     // -- control forms ------------------------------------------------------
 
-    /// `let`, `with` and `if` take one binding, subject or arm; a comma once chained several. Report it, recovered, with the
+    /// `let` and `if` take one binding or arm; a comma once chained several. Report it, recovered, with the
     /// nested spelling as the fix, so every one is reported (and `ares fix`
     /// rewrites them all). Returns whether another entry follows.
     fn chained_comma(&mut self, form: &str, stop: Kind, nested: &str) -> Result<bool> {
@@ -2336,25 +2312,6 @@ impl<'a> Parser<'a> {
         let body = self.parse_expr(0)?;
         let bindings = self.ast.make_slice(bindings);
         Ok(self.expr(Expr::Let { bindings, body }))
-    }
-
-    fn parse_with(&mut self) -> Result<Aol<Expr>> {
-        self.bump()?; // 'with'
-        let mut subjects = Vec::new();
-        loop {
-            let start = self.here()?;
-            subjects.push((start, self.parse_expr(0)?));
-            if !self.chained_comma("with", Kind::In, " in with")? {
-                break;
-            }
-        }
-        expect!(self, Kind::In, "expected 'in' after the 'with' subject");
-        let mut node = self.parse_expr(0)?;
-        for (start, subject) in subjects.into_iter().rev() {
-            node = self.expr(Expr::With { subject, body: node });
-            node = self.stamp(start, node);
-        }
-        Ok(node)
     }
 
     fn parse_if(&mut self) -> Result<Aol<Expr>> {

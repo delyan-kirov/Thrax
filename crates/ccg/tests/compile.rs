@@ -437,23 +437,6 @@ fn ctx_context_parameter_passing() {
 }
 
 #[test]
-fn type_splice_with() {
-    // `with` copies struct fields and union variants into a new type; the C
-    // backend must lay them out and match them exactly as the interpreter does.
-    let src = "$ @mod M\n\
-               $ Point : @struct = x: @Int, y: @Int\n\
-               $ Point3 : @struct = with Point, z: @Int\n\
-               $ Base : @union = Red: {}, Green: {}\n\
-               $ Color : @union = with Base, Blue: {}\n\
-               $ rank : Color -> @Int = \\c =>\n\
-               \tc |> \\ | Color.Red => 1 | Color.Green => 2 | Color.Blue => 3\n\
-               $ test : @Int =\n\
-               \tlet p = Point3.{ .x = 1, .y = 2, .z = 3 } in\n\
-               \t(p.x + p.y + p.z) + rank Color.Blue\n";
-    assert_matches(src, "test");
-}
-
-#[test]
 fn open_row_record_param() {
     // Row-polymorphic record param over the C backend: field access resolves the
     // same by-name as the interpreter, regardless of the concrete struct passed.

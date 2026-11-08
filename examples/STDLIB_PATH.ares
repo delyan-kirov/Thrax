@@ -5,9 +5,9 @@ $ @mod STDLIB_PATH
 #       "/" is its own base and dir), extensions without the dot, joining,
 #       component splitting. Pure string code; no filesystem involved.
 
-$ with PATH
-$ with VEC
-$ with STR
+$ @import PATH
+$ @import VEC
+$ @import STR
 
 $ ck_base : @Int = if (basename "a/b/c.txt") == "c.txt" => 0 else 1
 $ ck_base_sl: @Int = if (basename "a/b/") == "b" => 0 else 1

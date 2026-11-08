@@ -7,7 +7,7 @@ $ @mod CPX
 #       roots, and the transcendentals, all ordinary Ares over libm through the
 #       `C` namespace.
 
-$ with MATH
+$ @import MATH
 
 # ---- constants ----
 

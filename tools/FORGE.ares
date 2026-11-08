@@ -8,12 +8,12 @@ $ @mod FORGE
  -       Another host is another handler, picked in `with_forge`.
  -#
 
-$ with IO
-$ with OPT
-$ with STR
-$ with VEC
-$ with RESULT
-$ with SH
+$ @import IO
+$ @import OPT
+$ @import STR
+$ @import VEC
+$ @import RESULT
+$ @import SH
 
 $ Issue : @struct =
     title: @Str,

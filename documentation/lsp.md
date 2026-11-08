@@ -29,7 +29,7 @@ what is wrong, `note:` lines that say why, and `help:` lines that say what to
 do. A `help:` may carry machine edits and an applicability, after rustc:
 
 - `MachineApplicable`: certainly right. `ares fix` and the editor's "apply
-  every safe fix" use only these (a missing `$ with IO`, `2.` to `2.0`).
+  every safe fix" use only these (a missing `$ @import IO`, `2.` to `2.0`).
 - `MaybeIncorrect`: a likely fix (a did-you-mean).
 - `HasPlaceholders`: an edit with a hole left to fill.
 

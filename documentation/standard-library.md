@@ -6,7 +6,7 @@ and the byte-vector primitives. It is deliberately separate from the prelude:
 the prelude is the language's blessed core --
 `Bool`, `List`, `assert` in the readable `core/PRELUDE.ares`, plus the
 generated numeric aliases, while the standard library is a toolbox a
-program opts into with `$ with MOD`.
+program opts into with `$ @import MOD`.
 
 ## How it reaches a program
 

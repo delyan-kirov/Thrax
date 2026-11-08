@@ -110,12 +110,11 @@ fn lambda_if_and_comparison() {
 
 #[test]
 fn a_comma_chain_is_an_error_with_the_nested_fix() {
-    // `let`, `if` and `with` take one entry each; a comma reports the
+    // `let` and `if` take one entry each; a comma reports the
     // nested spelling (and a trailing comma its removal) as the fix.
     for (src, fix) in [
         ("$ @mod M\n$ f = \\n => let a = 1, b = 2 in a", " in let"),
         ("$ @mod M\n$ f = \\n => if n == 0 => 1, n > 0 => 2 else 3", " else if"),
-        ("$ @mod M\n$ f = \\a b => with a, b in 1", " in with"),
         ("$ @mod M\n$ f = \\n => let a = 1, in a", ""),
     ] {
         let Err(err) = parse(src) else { panic!("expected a parse error: {src}") };
@@ -377,7 +376,7 @@ fn cons_and_list_and_function_type() {
 
 #[test]
 fn import_alias() {
-    let p = prog("$ @mod M\n$ with V = VEC\n$ with A.B\n");
+    let p = prog("$ @mod M\n$ @import V = VEC\n$ @import A.B\n");
     let items = p.ast.slice(p.program.items);
     let Item::Import { module, alias: Some(alias), .. } = items[0] else {
         panic!("expected an aliased import, got {:?}", items[0]);
@@ -386,14 +385,14 @@ fn import_alias() {
     assert_eq!(p.ast.slice(module).len(), 1);
     assert_eq!(p.ast.text(p.ast.slice(module)[0]), "VEC");
     assert!(matches!(items[1], Item::Import { alias: None, .. }));
-    for bad in ["$ @mod M\n$ with A.B = VEC\n", "$ @mod M\n$ with v = VEC\n"] {
+    for bad in ["$ @mod M\n$ @import A.B = VEC\n", "$ @mod M\n$ @import v = VEC\n"] {
         assert!(parse(bad).is_err(), "{bad} should not parse");
     }
 }
 
 #[test]
-fn import_list() {
-    let p = prog("$ @mod M\n$ with\n    VEC,\n    M = MAP,\n    FOO,\n$ with A, B\n$ x = 1\n");
+fn one_import_per_item() {
+    let p = prog("$ @mod M\n$ @import VEC\n$ @import M = MAP\n$ @import FOO\n$ x = 1\n");
     let items = p.ast.slice(p.program.items);
     let imports: Vec<(Option<&str>, &str)> = items
         .iter()
@@ -406,16 +405,17 @@ fn import_list() {
         .collect();
     assert_eq!(
         imports,
-        [(None, "VEC"), (Some("M"), "MAP"), (None, "FOO"), (None, "A"), (None, "B")]
+        [(None, "VEC"), (Some("M"), "MAP"), (None, "FOO")]
     );
-    assert_eq!(items.len(), 6);
-    assert_eq!(p.ast.slice(p.program.spans).len(), 6);
-    assert!(parse("$ @mod M\n$ with A,,\n").is_err());
+    assert_eq!(items.len(), 4);
+    assert_eq!(p.ast.slice(p.program.spans).len(), 4);
+    assert!(parse("$ @mod M\n$ @import A, B\n").is_err());
+    assert!(parse("$ @mod M\n$ with A\n").is_err());
 }
 
 #[test]
 fn union_effect_import_and_directives() {
-    let src = "$ @mod M\n$ with Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
+    let src = "$ @mod M\n$ @import Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
                    $ State : @effect = get : @Int, put : @Int -> @Int\n$ @e 1";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);

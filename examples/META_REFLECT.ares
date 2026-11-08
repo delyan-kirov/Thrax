@@ -3,14 +3,16 @@ $ @mod META_REFLECT
 # \file META_REFLECT.ares
 # \info Compile-time reflection and diagnostics, the `<@Meta>` operations a
 #       generator asks the compiler with. `@lookup name` is what is declared
-#       under a name, as a CORE `Decl` to match: a struct or union with its
-#       shape, a global value with its type, or `Missing`. `@here {}` is where
+#       under a name, as a CORE `Decl` to match: a struct with its fields and
+#       their types, a union with its variants and their payloads, a global
+#       value with its type, or `Missing`. Types are source text. `@here {}` is where
 #       the running `@e` is. `@check code` type-checks a fragment as if written
 #       at that `@e` and gives its type. `@fail` and `@warn` report a `Diag`
 #       (a message with `note:` and `help:` lines) at the `@e`: `@fail` fails
 #       the build, `@warn` lets it go on.
 
-$ with STR
+$ @import STR
+$ @import VEC
 
 $ Rgb : @struct = r: @Int, g: @Int, b: @Int
 $ Shape : @union = Dot: {}, Square: @Int, Rect: { @Int, @Int }
@@ -22,8 +24,9 @@ $ area : Shape -> @Int = \
 # A one-line description of whatever a name is.
 $ describe : @Str -> <@Meta> @Str = \name =>
     @lookup name |> \
-        | Decl.Struct.{ _, fields } => "struct of " ++ STR.join ", " fields
-        | Decl.Union.{ _, vs }      => "union of " ++ to_string (@vec_len vs)
+        | Decl.Struct.{ _, fields } =>
+            "struct of " ++ STR.join ", " (VEC.map (\f => f.0 ++ ": " ++ f.1) fields)
+        | Decl.Union.{ _, vs }      => "union of " ++ STR.join ", " (VEC.map (\v => v.0) vs)
         | Decl.Value.{ ty }         => ty
         | Decl.Missing              => "nothing"
 
@@ -49,11 +52,11 @@ $ @e <| needs_struct "Rgb"
 $ here_line : @Int = @e <| @parse_str <| to_string (@here {}).line
 $ area_type : @Str = @e <| quote <| @check (@parse_str "area (Shape.Square.{ 3 })")
 
-$ ck1 : @Int = if rgb_text == "struct of r, g, b" => 0 else 1
-$ ck2 : @Int = if shape_text == "union of 3" => 0 else 2
+$ ck1 : @Int = if rgb_text == "struct of r: @Int, g: @Int, b: @Int" => 0 else 1
+$ ck2 : @Int = if shape_text == "union of Dot, Square, Rect" => 0 else 2
 $ ck3 : @Int = if area_text == "Shape -> @Int" => 0 else 4
 $ ck4 : @Int = if nothing_text == "nothing" => 0 else 8
-$ ck5 : @Int = if here_line == 49 => 0 else 16
+$ ck5 : @Int = if here_line == 52 => 0 else 16
 $ ck6 : @Int = if area_type == "@Int" => 0 else 32
 
 $ test : @Int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6

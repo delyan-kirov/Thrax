@@ -5,13 +5,13 @@ $ @mod THRAX
  - \info Ares task runner
  -#
 
-$ with IO
-$ with OPT
-$ with STR
-$ with VEC
-$ with RESULT
-$ with FORGE
-$ with HOOKS
+$ @import IO
+$ @import OPT
+$ @import STR
+$ @import VEC
+$ @import RESULT
+$ @import FORGE
+$ @import HOOKS
 
 $ Command : @union =
     Build,

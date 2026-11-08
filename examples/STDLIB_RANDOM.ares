@@ -5,8 +5,8 @@ $ @mod STDLIB_RANDOM
 #       generator is a value threaded through `next`, so a fixed seed gives a
 #       reproducible sequence -- which is exactly what a test wants.
 
-$ with RANDOM
-$ with VEC
+$ @import RANDOM
+$ @import VEC
 
 # The MINSTD sequence from seed 1: 48271, then 48271^2 mod (2^31 - 1).
 $ d1 : { @Int, Rng } = next (RANDOM.new 1)

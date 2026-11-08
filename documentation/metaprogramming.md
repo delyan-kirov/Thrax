@@ -186,14 +186,19 @@ Compiler messages, send:
 
 ```
 $ Decl : @union =
-    Struct: { params: @Vec @Str, fields: @Vec @Str },
-    Union: { params: @Vec @Str, variants: @Vec { @Str, @Int } },
+    Struct: { params: @Vec @Str, fields: @Vec { @Str, @Str } },
+    Union: { params: @Vec @Str, variants: @Vec { @Str, @Str } },
     Value: @Str,
     Missing: {},
 ```
 
 and a name nobody declared is `Decl.Missing`, a value to match rather than a
-fault or a `Maybe` to unwrap. It is the matchable form of the `@type_*`
+fault or a `Maybe` to unwrap. A field is `{name, type}` and a variant
+`{tag, payload}` (the payload empty for a bare tag), each type as source over
+the declaration's own `params` (#442), so a generator can copy members into
+another declaration. A type whose own `@e` entries have not been spliced in yet
+faults instead of answering with part of its members: the generator asking
+runs again next round. It is the matchable form of the `@type_*`
 operations below, which remain as shorthands (and fault on a missing name). See
 `examples/META_REFLECT.ares`.
 
@@ -597,7 +602,7 @@ A `@build` of any other shape is rejected by name before it is ever run.
   that references them must not run before it. Each module's `@build` is forced
   **once** (nothing consumes it, so the `built` set is what terminates the loop);
   whatever it injects is expanded by the rounds that follow, so a generated `$ @e`
-  still runs, and a generated `$ with M` loads M (the loop reopens the module
+  still runs, and a generated `$ @import M` loads M (the loop reopens the module
   set each round).
 - **Any module may have one**, not just the root, unlike `@main`. The entry is
   singular because a program has one way in; a build has as many contributors as
@@ -611,7 +616,7 @@ A `@build` of any other shape is rejected by name before it is ever run.
   appended to its module. Without it the only windows on a metaprogram are
   `check`'s inferred types and the emitted C.
 - `tests/MAIN.ares` is the real use: it reads `examples/` at compile time and
-  generates its own `$ with` imports and `@main` from what is there, so adding an
+  generates its own `$ @import` imports and `@main` from what is there, so adding an
   example is adding a file. `examples/META_BUILD.ares` is the small demonstration.
 
 **Still deferred:** the message loop. `@msg`/`@add_code` from arbitrary
@@ -717,7 +722,7 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    `MAX_META_ROUNDS` (100) rounds with an `EXPANSION_LIMIT` error naming every
    site still pending, so a generator that injects a fresh `@e` each round
    cannot hang the build. An `@eval` fragment run during expansion sees the
-   `$ with` imports of the module whose directive runs it, and compiles against
+   `$ @import` imports of the module whose directive runs it, and compiles against
    the sources the round already holds rather than re-reading them from disk.
 2a. **DONE: expression-position `@e X`.** `@e` is a universal compile-time
    splice at any expression site, composing with `|>`/`<|`. `@e (gen "+")` where
@@ -746,6 +751,16 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    fields, and the annotations inside a body (`let x : T`, `\(x : T)`,
    `(e : T)`). Before #160 a member-type `@e` parsed but was never spliced, so it
    stood as an unchecked variable. See `examples/META_TYPE.ares`.
+2f. **DONE: declaration entries `@e X` (#442).** An entry of a `@struct` or
+   `@union` that starts with `@e` is a splice; `X` ends at the entry's comma and
+   builds the `@Code` of fields (`@parse_fields`) or variants
+   (`@parse_variants`), spliced bare in place of the entry (`ct_rows`, like a
+   `<@e (X)>` row entry). DERIVE's `fields_of "Point"` / `variants_of "Base"`
+   copy another declaration's members, which replaced the compiler's `with
+   Other` include. While a module has a type with a pending entry, a lenient
+   round holds back any global (or `$ @e`) whose check fails, treating its body
+   as a deferred site: the entries it is missing may still arrive. See
+   `examples/TYPE_SPLICE.ares`.
 2d. **DONE: pattern-position `@e (X)` (#160, #197).** The operand is always
    parenthesized, so it ends at `)` before the arm's `=>`, `|` or `::`.
    `Pattern::MetaE` types as a match of any value that binds nothing; coverage is

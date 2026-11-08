@@ -5,10 +5,10 @@ $ @mod STDLIB_SET
 #       Sets carry their element ordering, are values (add/remove return
 #       copies), and iterate in ascending order.
 
-$ with SET
-$ with VEC
-$ with MATH
-$ with STR
+$ @import SET
+$ @import VEC
+$ @import MATH
+$ @import STR
 
 $ s : Set @Int = SET.from_list cmp_int [3, 1, 2, 3, 1]
 

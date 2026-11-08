@@ -118,7 +118,7 @@ A name is used but not defined anywhere in scope: an unbound value, an unknown
 type, or a type that is defined in a module this one does not import.
 
 If it is a typo, the did-you-mean fix corrects it. If the name lives in a
-standard-library module, the fix adds the `$ with MODULE` import. Type names are
+standard-library module, the fix adds the `$ @import MODULE` import. Type names are
 capitalized; a lowercase name in a type is a type variable.
 
 ## TYPE_ANNOTATION_REQUIRED
@@ -162,7 +162,7 @@ instance per type.
 
 ## UNKNOWN_MODULE
 
-A `$ with MODULE` names a module that cannot be found, or a qualified name
+A `$ @import MODULE` names a module that cannot be found, or a qualified name
 `M.x` uses a module that is not in scope.
 
 Check the spelling (a did-you-mean fix is offered), that the file `MODULE.ares`

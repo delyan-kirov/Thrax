@@ -8,9 +8,9 @@ $ @mod STDLIB_ASYNC_IO
 #       blocked. The answers do not depend on how the two interleave, so both
 #       engines agree whatever the timing.
 
-$ with ASYNC
-$ with OPT
-$ with STR
+$ @import ASYNC
+$ @import OPT
+$ @import STR
 
 $ fileno : @Int -> <@IO> @Int32 = @extern "C" "fileno" "libc"
 # `@Int32`: C's `int` result, so EOF reads back as -1.
