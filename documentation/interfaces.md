@@ -138,13 +138,14 @@ The set and what reaches it:
 
 | interface | surface |
 | --- | --- |
-| `@IIntLit` `@IRealLit` `@IImagLit` `@IStrLit` | a literal whose expected type is a user type |
+| `@IIntLit` `@IRealLit` `@IImagLit` `@IStrLit` | a literal whose expected type is a user type (or `@Code`, through CORE's `@IStrLit` instance) |
 | `@ISeqLit` | `[a, b, c]` |
 | `@IRange` `@IRangeFrom` | `[lo ... hi]`, `[lo ...]` |
 | `@IIndex` | `recv.[i]`, `recv.[i, j]` |
 | `@ISlice` | `recv.[lo ... hi]` on a non-tensor |
 | `@ISeqView` | `[]` / `[a, b]` / `[a] ++ r` / `h :: t` PATTERNS (pieces before the middle) |
 | `@ISeqViewBack` | `r ++ [y, z]` PATTERNS (pieces after the middle) |
+| `@IInterp` `@IInterpText` `@IInterpHole` | `"a ?(x) b"` whose expected type has an `@IInterp` instance (CORE's for `@Code` make it a quotation) |
 
 A literal PATTERN on a user type uses the construction interface plus the type's
 ordinary `IEq` instance, so no separate equality hook exists.

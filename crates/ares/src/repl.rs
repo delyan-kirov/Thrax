@@ -15,8 +15,8 @@
 //! evaluated, and the `$` is "moved" to the next prompt.
 //!
 //! The shell has no commands of its own. It runs its items at compile time, so
-//! the `<@Meta>` operations a `$ @e` can call (`@scope`, `@type_of`, `@check`,
-//! ...) work at the prompt, and a `$ @e` item expands as it would in a file.
+//! the `<@Meta>` operations a `$ &` can call (`@scope`, `@type_of`, `@check`,
+//! ...) work at the prompt, and a `$ &` item expands as it would in a file.
 //! Every session imports `ARES_SHELL`: short commands over that reflection
 //! (`type "1 + 2"`, `scope "vec"`, `help {}`) and session control (`quit {}`,
 //! `reset {}`, `list {}`), which perform the built-in `<@Shell>` effect: the
@@ -736,9 +736,9 @@ struct Repl {
     imports: Vec<String>,
     /// Accumulated definitions as `(binding name, full source item)`. Redefining
     /// a name replaces its entry, so the module never has a duplicate `$ name`.
-    /// The items a `$ @e` expanded to are one entry, under a name no binding has.
+    /// The items a `$ &` expanded to are one entry, under a name no binding has.
     defs: Vec<(String, String)>,
-    /// How many `$ @e` items have been added, to name their entries.
+    /// How many `$ &` items have been added, to name their entries.
     expansions: usize,
     /// Bodies of submitted items in entry order, for reverse history search.
     history: Vec<String>,
@@ -788,7 +788,7 @@ impl Repl {
             self.import(&item);
             return false;
         }
-        if body.starts_with("@e") {
+        if body.starts_with('&') {
             self.splice(&item);
             return false;
         }
@@ -805,7 +805,7 @@ impl Repl {
 
     /// `item` with its compile-time sites expanded against the session, as a
     /// file's are, or `None` (the diagnostic printed) when expansion fails. An
-    /// item with no `@e` is as written.
+    /// item with no `&` is as written.
     fn expanded(&self, item: &str) -> Option<String> {
         if !has_site(item) {
             return Some(item.to_string());
@@ -817,7 +817,7 @@ impl Repl {
         Some(all[before.len()..].trim().to_string())
     }
 
-    /// Add the items a `$ @e` item expands to. One run only for its effect (a
+    /// Add the items a `$ &` item expands to. One run only for its effect (a
     /// `@warn`, say) adds nothing.
     fn splice(&mut self, item: &str) {
         let Some(items) = self.expanded(item) else { return };
@@ -825,7 +825,7 @@ impl Repl {
             return;
         }
         self.expansions += 1;
-        self.defs.push((format!("@e#{}", self.expansions), items));
+        self.defs.push((format!("@splice#{}", self.expansions), items));
         if let Err(e) = self.recompile() {
             self.defs.pop();
             print!("{e}");
@@ -946,13 +946,11 @@ impl Repl {
     }
 }
 
-/// Whether `item` holds a compile-time site, `@e` as a whole word. A site can
-/// only be written so; a false hit (`@e` inside a string) only costs an
-/// expansion round that finds nothing.
+/// Whether `item` holds a compile-time site, a `&` that is not part of `&&` or
+/// `&&&`. A false hit (`&` inside a string) only costs an expansion round that
+/// finds nothing.
 fn has_site(item: &str) -> bool {
-    item.match_indices("@e").any(|(at, _)| {
-        !item[at + 2..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_')
-    })
+    ares::driver::splice_offsets(item).next().is_some()
 }
 
 /// The name a definition typed after the `_=` prefill would bind, as in

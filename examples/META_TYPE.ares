@@ -1,56 +1,53 @@
 $ @mod META_TYPE
 
 # \file META_TYPE.ares
-# \info Type-position `@e`. `Foo : @e X = ...` runs X at build time; X must build an
-#       `@Code` denoting a TYPE (with `@parse_type`), whose source is spliced into
-#       the annotation before the final compile. This completes `@e` across all
-#       three positions: expression (`let a = @e X`), item (`$ @e X`), and now type
-#       (`Foo : @e X`). The generator picks the type from compile-time data, so one
-#       source can specialize a binding's type by a build-time choice. A type
-#       splice works at every type position: declaration members (struct fields,
-#       union payloads, alias bodies, effect operations), effect-row entries and
-#       their arguments, `@use` fields, and the annotations inside a body
-#       (`let x : T`, `\(x : T)`, `(e : T)`). `@parse_type` and `@parse_row`
-#       build the code, since a type or a row is not an expression.
+# \info Type-position `&`. `Foo : &X = ...` runs X at build time; X must build an
+#       `@Code` denoting a TYPE, whose source is spliced into the annotation
+#       before the final compile, as `&` does in expression (`let a = &X`) and
+#       item (`$ &X`) position. The generator picks the type from compile-time
+#       data, so one source can specialize a binding's type by a build-time
+#       choice. A type splice works at every type position: declaration members
+#       (struct fields, union payloads, alias bodies, effect operations),
+#       effect-row entries and their arguments, `@use` fields, and the
+#       annotations inside a body (`let x : T`, `\(x : T)`, `(e : T)`). The code
+#       is a quotation, a string literal expected as `@Code`; the splice site
+#       checks it parses as a type (or as row entries in `<&X>`).
 
 # A compile-time generator: choose a type by name.
-$ number_type : @Str -> @Code = \which =>
-    if which == "wide" => @parse_type "@Int64" else @parse_type "@Int"
+$ number_type : @Str -> @Code = \which => if which == "wide" => "@Int64" else "@Int"
 
 # The element type of a vector, computed at build time.
-$ elem_type : {} -> @Code = \_ => @parse_type "@Int"
+$ elem_type : {} -> @Code = \_ => "@Int"
 
 # The annotation is filled in by running the generator: `n : @Int64`.
-$ n : @e (number_type "wide") = 1000 + 24
+$ n : &number_type "wide" = 1000 + 24
 
-# `@e` nests inside a larger type: `xs : @Vec @Int`.
-$ xs : @Vec (@e (elem_type {})) = [3, 4, 5]
+# `&` nests inside a larger type: `xs : @Vec @Int`.
+$ xs : @Vec (&elem_type {}) = [3, 4, 5]
 
 # --- declaration members ------------------------------------------------------
-$ Point : @struct = x: @e (elem_type {}), y: @e (number_type "narrow")
-$ Shape : @union = Dot: {}, Square: @e (elem_type {})
-$ Count : @alias = @e (elem_type {})
-$ Cell : @effect = read : {} -> @e (elem_type {})
+$ Point : @struct = x: &elem_type {}, y: &number_type "narrow"
+$ Shape : @union = Dot: {}, Square: &elem_type {}
+$ Count : @alias = &elem_type {}
+$ Cell : @effect = read : {} -> &elem_type {}
 
 $ pt : Point = { .x = 3, .y = 4 }
 $ side : Shape -> Count = \ | Shape.Square.{ s } => s | Shape.Dot => 0
 
 # --- annotations inside a body and effect-row arguments -------------------------
 $ annotated : @Int =
-    let a : @e (elem_type {}) = 5 in
-    let sq = \(b : @e (elem_type {})) => b * b in
-    sq (a : @e (elem_type {}))
+    let a : &elem_type {} = 5 in let sq = \(b : &elem_type {}) => b * b in sq (a : &elem_type {})
 
 $ State : @effect s = get : {} -> s
-$ peek : {} -> <State (@e (elem_type {}))> @Int = \_ => State.get {}
+$ peek : {} -> <State (&elem_type {})> @Int = \_ => State.get {}
 $ peeked : @Int =
     do peek {}
     ctl k | State.get u => k 7 | v => v
 
-# A whole row entry, or several, can come from a generator too: `<@e (X)>`.
+# A whole row entry, or several, can come from a generator too: `<&X>`.
 $ Log : @effect = log : @Int -> {}
-$ row : {} -> @Code = \_ => @parse_row "Log, State @Int"
-$ logged : {} -> <@e (row {})> @Int = \_ => Log.log 1; State.get {}
+$ row : {} -> @Code = \_ => "Log, State @Int"
+$ logged : {} -> <&row {}> @Int = \_ => Log.log 1; State.get {}
 $ logged_value : @Int =
     do logged {}
     ctl k
@@ -67,4 +64,4 @@ $ ck_row : @Int = if peeked == 7 && logged_value == 9 => 0 else 32
 
 $ test : @Int = ck_scalar + ck_nested + ck_struct + ck_union + ck_body + ck_row
 
-$ @e <| assert (test == 0) "META_TYPE: a check failed"
+$ &assert (test == 0) "META_TYPE: a check failed"

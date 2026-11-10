@@ -1,0 +1,77 @@
+$ @mod META_TEMPLATE
+
+# \file META_TEMPLATE.ares
+# \info A macro over a `Template`. A string literal expected as a `Template`
+#       keeps its pieces as text and QUOTES its holes: `&sql "... ?(name) ..."`
+#       hands `sql` the code `name`, not a value, because `name` is a
+#       parameter of the function the literal is written in and exists only at
+#       run time. The macro learns each hole's type with `@check`, which sees
+#       the locals in scope at the `&`, and checks the statement against a
+#       schema at build time. Compare INTERPOLATION.ares, where a runtime
+#       instance keeps holes apart with no macro at all.
+
+$ @import STR
+
+$ Param : @union = PInt: @Int, PStr: @Str
+$ Query : @struct = text: @Str, params: @Vec Param
+
+# The tables a statement may read, known at build time.
+$ schema : @Vec @Str = ["users", "orders"]
+
+$ known_table : @Str -> @Int -> @Bool = \text i =>
+    if i >= @vec_len schema =>
+        @false
+    else if STR.contains text ("FROM " ++ @vec_get schema i) =>
+        @true
+    else
+        known_table text (i + 1)
+
+# The statement text, each hole numbered `$1`, `$2`, ...
+$ numbered : @Vec @Str -> @Int -> @Str = \pieces i =>
+    if i + 1 >= @vec_len pieces =>
+        @vec_get pieces i
+    else
+        @vec_get pieces i ++ "$" ++ to_string (i + 1) ++ numbered pieces (i + 1)
+
+# A hole as the parameter its type picks.
+$ param : @Code -> <@Meta> @Code = \hole =>
+    @check hole |> \
+        | "@Int" => "Param.PInt.{ ?(hole) }"
+        | "@Str" => "Param.PStr.{ ?(hole) }"
+        | ty     => @fail (diag ("`sql` binds an @Int or a @Str, not " ++ ty))
+
+$ params : @Vec @Code -> @Int -> <@Meta> @Code = \holes i =>
+    if i >= @vec_len holes =>
+        ""
+    else if i + 1 == @vec_len holes =>
+        param (@vec_get holes i)
+    else
+        let p = param (@vec_get holes i) in let rest = params holes (i + 1) in "?(p), ?(rest)"
+
+$ sql : Template -> <@Meta> @Code = \t =>
+    let text = numbered t.pieces 0 in
+    if !(known_table text 0) =>
+        @fail (diag ("`sql` reads no known table: " ++ text))
+    else
+        let ps = params t.holes 0 in "Query.{ .text = ?(text), .params = [?(ps)] }"
+
+$ by_name : @Str -> @Int -> Query = \name age =>
+    &sql "SELECT id FROM users WHERE name = ?(name) AND age > ?(age)"
+
+# A hole is any expression the site can type.
+$ by_total : @Int -> Query = \cents => &sql "SELECT id FROM orders WHERE total > ?(cents * 100)"
+
+# With no holes, the literal is still a `Template`.
+$ everyone : Query = &sql "SELECT id FROM users"
+
+$ q : Query = by_name "ann" 30
+
+$ test : @Int =
+    let ok_text = q.text == "SELECT id FROM users WHERE name = $1 AND age > $2" in
+    let ok_params =
+        q.params |> \ | [Param.PStr.{ s }, Param.PInt.{ n }] => s == "ann" && n == 30 | _ => @false
+    in
+    let ok_total = (by_total 5).params |> \ | [Param.PInt.{ n }] => n == 500 | _ => @false in
+    if ok_text && ok_params && ok_total && everyone.text == "SELECT id FROM users" => 0 else 1
+
+$ &assert (test == 0) "META_TEMPLATE: a check failed"

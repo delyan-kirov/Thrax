@@ -37,7 +37,7 @@ pub use typing::types::{
 };
 pub use typing::unify::Unifier;
 pub use typing::Checker;
-pub use typing::{collect_resolved, Declarations, ReflectInfo, Resolved};
+pub use typing::{collect_resolved, Declarations, Homes, ReflectInfo, Resolved};
 
 use utilities::{Result, StrId};
 

@@ -47,7 +47,7 @@ pub const KEYS: &[Key] = &[
           doc: "The most errors `ares check` prints." },
     Key { section: "lsp", name: "check", kind: Kind::Choice(&["type", "save"]), default: "type",
           doc: "When the editor checks: as you type (`type`), or only when a file is saved (`save`). \
-                Compile-time code (`$ @e`) always runs on save only." },
+                Compile-time code (`&` splices) always runs on save only." },
     Key { section: "lsp", name: "focus", kind: Kind::Choice(&["all", "roots", "one"]), default: "roots",
           doc: "How loudly errors are shown. `all`: every error at full strength. `roots`: errors \
                 that follow from an earlier one are quieter. `one`: only the most important error \

@@ -1,5 +1,5 @@
 $ @mod META_PARSE_STR_COMPUTED
 
-# A fragment no literal spells stays at the `@e` site.
+# A fragment no literal spells stays at the `&` site.
 $ y : @Int =
-    @e <| @parse_str <| "2 * " ++ "* 3" #~ error[UNEXPECTED_TOKEN]: expected an expression, found '*'
+    &(@parse_str <| "2 * " ++ "* 3") #~ error[UNEXPECTED_TOKEN]: expected an expression, found '*'

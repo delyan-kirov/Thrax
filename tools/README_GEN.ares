@@ -5,23 +5,11 @@ $ @import STR
 # \file README_GEN.ares
 # \info Parse and test examples in readme and generate the README file
 
-# Discard already-parsed code, returning empty code. Parsing happens inside
-# `@parse_items`/`@parse_str` (which trap on a syntax error), so
-# `$ @e <| validate <| @parse_items ..` VALIDATES the items without inserting them
-# (a bare `$ @e <| @parse_items ..` would insert).
-$ validate : @Code -> @Code = \_ => @parse_items ""
-
-# `s` spelled as a Ares string literal. `?` is escaped because `?(` opens an
-# interpolation.
-$ quote : @Str -> @Str = \s =>
-    let esc = \needle repl t => STR.replace t needle repl in
-    "\"" ++ (s |> esc "\\" "\\\\" |> esc "\"" "\\\"" |> esc "\n" "\\n" |> esc "?" "\\?") ++ "\""
-
-# Validate the items `src`, then define `name` as their text laid out by
-# `@format`, so the README shows each snippet as `ares fmt` writes it.
+# Define `name` as the items `src` laid out by `@format`, so the README shows
+# each snippet as `ares fmt` writes it. `@format` traps on text that does not
+# parse as items, which fails the build.
 $ formatted : @Str -> @Str -> @Code = \name src =>
-    validate (@parse_items src);
-    @parse_items ("$ " ++ name ++ " : @Str = " ++ quote (STR.trim_right (@format src)))
+    "$ ?(@code name) : @Str = ?(STR.trim_right (@format src))"
 
 # ---- Markdown helpers -----------------------------------------------------
 
@@ -104,10 +92,10 @@ $ ex_ffi : @Str =
 # A malformed declaration or a wrong expected value fails the build here. Each
 # snippet `ex_x` is shown in the README as `fmt_x`, its canonical layout.
 
-$ @e <| formatted "fmt_inference" ex_inference
-$ @e <| formatted "fmt_ffi" ex_ffi
-$ @e <| formatted "fmt_entry" ex_entry
-$ @e <| assert (@eval (@parse_str ex_expr) == 25) "ex_expr should evaluate to 25"
+$ &formatted "fmt_inference" ex_inference
+$ &formatted "fmt_ffi" ex_ffi
+$ &formatted "fmt_entry" ex_entry
+$ &assert (@eval (@parse_str ex_expr) == 25) "ex_expr should evaluate to 25"
 
 # ---- README assembly ------------------------------------------------------
 
@@ -156,12 +144,12 @@ $ compiling : @Str =
         ++ "returns the exit code. It is the only name the compiler knows.\n\n"
         ++ fence fmt_entry
         ++ "\nEvery other module is a library. Checking one runs its compile-time\n"
-        ++ "assertions (`$ @e <| assert ..`), so a module states its own invariants and\n"
+        ++ "assertions (`$ &assert ..`), so a module states its own invariants and\n"
         ++ "type-checking it is testing it.\n\n"
         ++ sh
             (
                 "ares run     MAIN.ares          # run under the interpreter\n"
-                    ++ "ares check   examples/FIB.ares  # type-check, print types, run `$ @e` checks\n"
+                    ++ "ares check   examples/FIB.ares  # type-check, print types, run `$ &` checks\n"
                     ++ "ares expand  MAIN.ares          # the source after metaprogram expansion\n"
                     ++ "ares emit-c  MAIN.ares          # print the generated C (native backend)\n"
                     ++ "ares build   MAIN.ares          # compile to a native executable\n"
@@ -185,14 +173,14 @@ $ compiling : @Str =
 
 $ features : @Str =
     "\n## Features\n\n"
-        ++ "- **Algebraic data types**: structs and sum types, generic by default; a declaration can copy another's members with an `@e` splice.\n"
+        ++ "- **Algebraic data types**: structs and sum types, generic by default; a declaration can copy another's members with a `&` splice.\n"
         ++ "- **Pattern matching**: nested, literal, string, and range patterns, `++` sequence patterns that match a prefix, a suffix, or both ends, and fall-through guards.\n"
         ++ "- **Typed algebraic effects with handlers**: the effect row is part of the type; continuations are first-class and resumable.\n"
         ++ "- **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.\n"
         ++ "- **C FFI with no ceremony**: `@extern \"C\" \"sym\" \"lib\"` binds a foreign function; C structs pass by value both ways.\n"
         ++ "- **WebAssembly**: cross-compile with `--target=wasm32-wasi`, or run the whole compiler in the browser.\n"
         ++ "- **Interfaces resolved by type**: an interface is a struct, an implementation is a value of it, and a function takes one as a named `@use` field the compiler infers. One mechanism; no overloading, so a name's printed type is its contract.\n"
-        ++ "- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`@e` inserts generated code, plus a `@build` entry that generates part of a module from what is on disk).\n"
+        ++ "- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`&` inserts generated code, plus a `@build` entry that generates part of a module from what is on disk).\n"
 
 $ example : @Str =
     "\n## Example: exact probabilistic inference\n\n"

@@ -401,6 +401,22 @@ impl<'a> Checker<'a> {
                     Applicability::MachineApplicable,
                 );
         }
+        // A binder a generator's quotation spells is renamed apart where it is
+        // spliced, `x` to `x__7`, so the site's own `x` does not reach it.
+        let renamed = |n: &StrId| {
+            n.as_str()
+                .strip_prefix(name.as_str())
+                .and_then(|rest| rest.strip_prefix("__"))
+                .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+        };
+        if self.scopes.iter().skip(1).any(|s| s.keys().any(renamed)) {
+            return unbound(name)
+                .with_note(format!(
+                    "the `{name}` in scope here is a binder a generator's quotation wrote, and it binds \
+                     only names that quotation spells"
+                ))
+                .with_help(format!("have the generator take the binder as code, and pass it from here as `\"{name}\"`"));
+        }
         let visible = self
             .scopes
             .iter()
@@ -505,7 +521,6 @@ pub(super) fn collect_ty_nodes(ast: &Ast, ty: Aol<Ty>, out: &mut HashSet<Aol<Ty>
                 row(r, out);
             }
         }
-        Ty::Row(r) => row(r, out),
         Ty::Tuple(items) => ast
             .slice(*items)
             .iter()

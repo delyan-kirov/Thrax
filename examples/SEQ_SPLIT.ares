@@ -65,4 +65,4 @@ $ test : @Int =
         + ck_byte_empty + ck_last + ck_last_empty + ck_ends + ck_ends_one + ck_tail2_ok + ck_two
         + ck_sum3 + ck_rest_sum + ck_split + ck_corner
 
-$ @e <| assert (test == 0) "SEQ_SPLIT: a check failed"
+$ &assert (test == 0) "SEQ_SPLIT: a check failed"

@@ -162,12 +162,9 @@ $ spec : Command -> Spec = \c =>
         | .Help          => Spec.{ .name = "help", .usage = "", .info = "show this help" }
 
 # `$ commands : @Vec Command = [Command.Build, ...]`, in declaration order.
-$ @e <| @parse_items
-    (
-        "$ commands : @Vec Command = ["
-            ++ STR.join ", " (VEC.map (\v => "Command." ++ v.0) (@type_variants "Command"))
-            ++ "]"
-    )
+$ command_names : {} -> <@Meta> @Code = \_ =>
+    @code <| STR.join ", " <| VEC.map (\v => "Command." ++ v.0) <| @type_variants "Command"
+$ &"$ commands : @Vec Command = [?(command_names {})]"
 
 $ parse_command : @Str -> Option Command = \s => VEC.find (\c => (spec c).name == s) commands
 

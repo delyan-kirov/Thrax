@@ -285,28 +285,16 @@ pub const UNIT: &str = "{}";
 pub const PTR: &str = "@Ptr";
 pub const ARRAY: &str = "@Array";
 pub const VEC: &str = "@Vec";
+pub const CODE: &str = "@Code";
+/// The CORE struct a macro argument is built as: an interpolated string
+/// expected as one quotes its holes.
+pub const TEMPLATE: &str = "Template";
 
 /// Format a fully resolved type (no `Var` links left) for display. Variables are
 /// named `t0`, `t1`, ... by first appearance via `namer`.
 pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
-    display_folding(types, ty, namer, &[])
-}
-
-/// A row alias that display may print in place of its labels: the alias name
-/// and the labels it stands for.
-pub type RowFold = (StrId, Vec<StrId>);
-
-/// [`display`], printing any row that holds every label of a fold in `folds` with
-/// the fold's name instead of those labels. Earlier folds are tried first.
-pub fn display_folding(
-    types: &Types,
-    ty: Type,
-    namer: &mut dyn FnMut(VarId) -> String,
-    folds: &[RowFold],
-) -> String {
     fn go(
         types: &Types,
-        folds: &[RowFold],
         ty: Type,
         namer: &mut dyn FnMut(VarId) -> String,
         out: &mut String,
@@ -320,14 +308,14 @@ pub fn display_folding(
             TypeNode::Con(name) => out.push_str(types.name(name)),
             TypeNode::Nat(n) => out.push_str(&n.to_string()),
             TypeNode::NatAdd(a, b) => paren(out, prec > 2, |out| {
-                go(types, folds, a, namer, out, 2);
+                go(types, a, namer, out, 2);
                 out.push_str(" + ");
-                go(types, folds, b, namer, out, 2);
+                go(types, b, namer, out, 2);
             }),
             TypeNode::NatMul(a, b) => paren(out, prec > 3, |out| {
-                go(types, folds, a, namer, out, 3);
+                go(types, a, namer, out, 3);
                 out.push_str(" * ");
-                go(types, folds, b, namer, out, 3);
+                go(types, b, namer, out, 3);
             }),
             TypeNode::App(head, arg) => {
                 if let Some((variance, size, elem)) = tensor_spine_raw(types, ty) {
@@ -340,28 +328,27 @@ pub fn display_folding(
                             out.push_str("@co ");
                         }
                     }
-                    go(types, folds, size, namer, out, 0);
+                    go(types, size, namer, out, 0);
                     out.push(']');
-                    go(types, folds, elem, namer, out, 2);
+                    go(types, elem, namer, out, 2);
                 } else {
                     let wrap = prec > 1;
                     paren(out, wrap, |out| {
-                        go(types, folds, head, namer, out, 1);
+                        go(types, head, namer, out, 1);
                         out.push(' ');
-                        go(types, folds, arg, namer, out, 2);
+                        go(types, arg, namer, out, 2);
                     });
                 }
             }
             TypeNode::Arrow(from, to, eff) => {
                 let wrap = prec > 0;
                 paren(out, wrap, |out| {
-                    go(types, folds, from, namer, out, 1);
+                    go(types, from, namer, out, 1);
                     out.push_str(" -> ");
                     // Only a row with concrete labels is shown; a pure or
                     // fully-polymorphic effect (empty row / bare row variable) is
                     // elided, so ordinary functions read as `A -> B`.
-                    let (labels, tail) = row_parts(types, folds, eff, namer);
-                    let labels = fold_labels(labels, folds);
+                    let (labels, tail) = row_parts(types, eff, namer);
                     if !labels.is_empty() {
                         out.push('<');
                         out.push_str(&labels.join(", "));
@@ -371,7 +358,7 @@ pub fn display_folding(
                         }
                         out.push_str("> ");
                     }
-                    go(types, folds, to, namer, out, 0);
+                    go(types, to, namer, out, 0);
                 });
             }
             TypeNode::Tuple(items) => {
@@ -380,15 +367,14 @@ pub fn display_folding(
                     if i > 0 {
                         out.push_str(", ");
                     }
-                    go(types, folds, *item, namer, out, 0);
+                    go(types, *item, namer, out, 0);
                 }
                 out.push('}');
             }
             // A bare row outside an arrow (only shown in raw dumps / diagnostics).
             TypeNode::RowEmpty => out.push_str("<>"),
             TypeNode::RowExtend(..) => {
-                let (labels, tail) = row_parts(types, folds, ty, namer);
-                let labels = fold_labels(labels, folds);
+                let (labels, tail) = row_parts(types, ty, namer);
                 out.push('<');
                 out.push_str(&labels.join(", "));
                 if let Some(t) = tail {
@@ -408,7 +394,7 @@ pub fn display_folding(
                             first = false;
                             out.push_str(types.name(label));
                             out.push_str(": ");
-                            go(types, folds, fty, namer, out, 0);
+                            go(types, fty, namer, out, 0);
                             cur = rest;
                         }
                         TypeNode::Var(id) => {
@@ -425,9 +411,9 @@ pub fn display_folding(
             TypeNode::RowField(label, fty, rest) => {
                 out.push_str(types.name(label));
                 out.push_str(": ");
-                go(types, folds, fty, namer, out, 0);
+                go(types, fty, namer, out, 0);
                 out.push_str(" | ");
-                go(types, folds, rest, namer, out, 0);
+                go(types, rest, namer, out, 0);
             }
         }
     }
@@ -435,7 +421,6 @@ pub fn display_folding(
     /// and its tail variable (if the row is open).
     fn row_parts(
         types: &Types,
-        folds: &[RowFold],
         row: Type,
         namer: &mut dyn FnMut(VarId) -> String,
     ) -> (Vec<String>, Option<VarId>) {
@@ -448,7 +433,7 @@ pub fn display_folding(
                     if let TypeNode::Tuple(items) = types.node(args) {
                         for arg in types.items(items) {
                             text.push(' ');
-                            go(types, folds, arg, namer, &mut text, 2);
+                            go(types, arg, namer, &mut text, 2);
                         }
                     }
                     labels.push(text);
@@ -470,27 +455,8 @@ pub fn display_folding(
         }
     }
     let mut out = String::new();
-    go(types, folds, ty, namer, &mut out, 0);
+    go(types, ty, namer, &mut out, 0);
     out
-}
-
-/// Replace each fold whose labels all occur in `labels` by the fold's name, at
-/// the position of its first label. One occurrence of each label is consumed, so
-/// a label the row repeats outside the alias still shows.
-pub fn fold_labels(mut labels: Vec<String>, folds: &[RowFold]) -> Vec<String> {
-    let is = |label: &String, member: &StrId| *member == label.as_str();
-    for (name, members) in folds {
-        if members.is_empty() || !members.iter().all(|m| labels.iter().any(|l| is(l, m))) {
-            continue;
-        }
-        let at = labels.iter().position(|l| members.iter().any(|m| is(l, m))).expect("a member is present");
-        for m in members {
-            let i = labels.iter().position(|l| is(l, m)).expect("checked above");
-            labels.remove(i);
-        }
-        labels.insert(at, name.to_string());
-    }
-    labels
 }
 
 /// Peel a literal (already-zonked) sized-tensor spine `@tensor variance size elem`
@@ -542,7 +508,7 @@ fn closed_row_is(types: &Types, row: Type, want: &[&str]) -> bool {
 
 /// The one name the compiler knows a program by: `$ @main`, a C-style entry that
 /// takes the argument vector and returns an exit code. Nothing else is special;
-/// a test harness is ordinary code (a compile-time check under `$ @e`, or a
+/// a test harness is ordinary code (a compile-time check under `$ &`, or a
 /// global some tool evaluates by name).
 pub const ENTRY: &str = "@main";
 
@@ -573,7 +539,7 @@ pub fn is_entry_type(types: &Types, ty: Type) -> bool {
 /// runs *during* compilation. Its `@Code` result is injected in place of its own
 /// definition, so a module generates part of itself from whatever the build can
 /// see. It is the only context whose effect row discharges `<@IO>` at compile
-/// time, which is what separates it from `$ @e`: building is IO.
+/// time, which is what separates it from `$ &`: building is IO.
 pub const BUILD: &str = "@build";
 
 /// The build function's mandated signature, in source spelling, for diagnostics.
@@ -659,6 +625,8 @@ pub(crate) const IF_SEQ_VIEW: &str = "@ISeqView";
 
 pub(crate) const IF_SEQ_VIEW_BACK: &str = "@ISeqViewBack";
 
+pub(crate) const IF_INTERP: &str = "@IInterp";
+
 /// The equality a literal PATTERN on a user type compares with: CORE's ordinary
 /// `IEq`, the same interface `==` wraps, so a type needs no second instance.
 pub(crate) const IF_EQ: &str = "IEq";
@@ -682,6 +650,9 @@ pub const BLESSED_INTERFACES: &[&str] = &[
     "@ISlice",
     "@ISeqView",
     "@ISeqViewBack",
+    "@IInterp",
+    "@IInterpText",
+    "@IInterpHole",
 ];
 
 /// Whether `name` (with its `@` sigil) is one of [`BLESSED_INTERFACES`].

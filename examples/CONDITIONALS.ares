@@ -32,4 +32,4 @@ $ chk_all : @Int =
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = abs_neg; abs_pos; sign_neg; sign_zero; sign_pos; max_ex; min_ex; chk_all
 
-$ @e <| assert (test == 0) "CONDITIONALS: a check failed"
+$ &assert (test == 0) "CONDITIONALS: a check failed"

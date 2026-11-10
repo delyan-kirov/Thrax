@@ -30,4 +30,4 @@ $ half_cubed : @Float64 = pow 0.5 3
 $ test : @Int =
     pi; e; sci; small; sum; product; diff; quot; negate; lt; ge; eq; two_pow_10; half_cubed; 0
 
-$ @e <| assert (test == 0) "REALS: a check failed"
+$ &assert (test == 0) "REALS: a check failed"

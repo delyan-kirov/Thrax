@@ -1672,7 +1672,7 @@ pub fn eval(prog: &IrProgram, name: &str) -> Result<String> {
 
 /// Evaluate a global to its structured value (like [`eval`] but without
 /// rendering to a string), so a caller can inspect it, e.g. a compile-time
-/// `$ @e` whose `@Code` result the driver splices.
+/// `$ &` whose `@Code` result the driver splices.
 pub fn eval_value<'p>(prog: &'p IrProgram, name: &str) -> Result<PVal<'p>> {
     let outer = ffi::set_layouts(prog.crepr_layouts.iter().map(|(n, l)| (n.to_string(), l.clone())).collect());
     let m = Machine::new(prog);
@@ -1799,7 +1799,7 @@ pub fn set_meta_eval(host: Option<Box<dyn Fn(&str) -> std::result::Result<OwnedV
 thread_local! {
     /// Build directives a compile-time `@link` / `@link_path` recorded, as
     /// `(is_search_path, arg)`. The driver drains them into the link set after
-    /// running `$ @e`; nothing else looks at them (so a stray call at runtime is
+    /// running `$ &`; nothing else looks at them (so a stray call at runtime is
     /// harmless).
     static LINKS: std::cell::RefCell<Vec<(bool, String)>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -1879,7 +1879,7 @@ thread_local! {
     /// The names a bare reference at the running site can resolve to, each with
     /// its type as source, for `@scope`.
     static META_SCOPE: std::cell::RefCell<Option<Rc<Vec<(String, String)>>>> = const { std::cell::RefCell::new(None) };
-    /// The `@e` site running now, `(file, line, column)`, for `@here`.
+    /// The `&` site running now, `(file, line, column)`, for `@here`.
     static META_SITE: std::cell::RefCell<Option<(String, i64, i64)>> = const { std::cell::RefCell::new(None) };
     /// What `@warn` reported while the current site ran, for the driver to render
     /// at that site.
@@ -1891,7 +1891,7 @@ pub fn set_meta_check(host: Option<Box<dyn Fn(&str) -> std::result::Result<Strin
     META_CHECK.with(|c| *c.borrow_mut() = host);
 }
 
-/// Set (or clear) the `@e` site `@here` reports.
+/// Set (or clear) the `&` site `@here` reports.
 pub fn set_meta_site(site: Option<(String, i64, i64)>) {
     META_SITE.with(|c| *c.borrow_mut() = site);
 }
@@ -1903,7 +1903,7 @@ pub fn set_meta_scope(scope: Option<Rc<Vec<(String, String)>>>) {
 
 pub(crate) fn meta_scope() -> Result<Rc<Vec<(String, String)>>> {
     META_SCOPE.with(|c| c.borrow().clone())
-        .ok_or_else(|| fault("@scope is only available at compile time (inside `$ @e`)"))
+        .ok_or_else(|| fault("@scope is only available at compile time (inside a `&` splice)"))
 }
 
 /// Take the warnings `@warn` reported since the last call.
@@ -1917,7 +1917,7 @@ pub(crate) fn push_meta_warning(d: utilities::Diagnostic) {
 
 pub(crate) fn meta_site() -> Result<(String, i64, i64)> {
     META_SITE.with(|c| c.borrow().clone())
-        .ok_or_else(|| fault("@here is only available while a compile-time `@e` runs"))
+        .ok_or_else(|| fault("@here is only available while a compile-time `&` runs"))
 }
 
 pub(crate) fn meta_check(src: &str) -> Result<String> {
@@ -1951,7 +1951,7 @@ impl TypeInfo {
         }
     }
 
-    /// Whether the declaration still waits for an `@e` splice of its members.
+    /// Whether the declaration still waits for a `&` splice of its members.
     fn pending(&self) -> bool {
         match self {
             TypeInfo::Struct(s) => s.pending,
@@ -1987,7 +1987,7 @@ thread_local! {
     /// The compile-time reflection host: given a type name, the driver answers its
     /// declared shape (`@type_kind`/`@type_fields`/`@type_variants`), or a global
     /// value's type (`@type_of`). Installed
-    /// around a `$ @e` like the `@eval` host; absent at runtime, so a stray
+    /// around a `$ &` like the `@eval` host; absent at runtime, so a stray
     /// reflection call faults cleanly.
     static TYPE_HOST: std::cell::RefCell<Option<Box<dyn Fn(&str) -> Option<TypeInfo>>>> =
         const { std::cell::RefCell::new(None) };
@@ -2005,16 +2005,16 @@ pub(crate) fn type_lookup(name: &str) -> Result<TypeInfo> {
 }
 
 /// What is declared under `name`, if anything. Faults outside compile time, and
-/// on a type whose members an `@e` splice has yet to generate: the generator
+/// on a type whose members a `&` splice has yet to generate: the generator
 /// asking then runs again next round, once they are spliced in.
 pub(crate) fn find_declared(name: &str) -> Result<Option<TypeInfo>> {
     let info = TYPE_HOST.with(|c| match &*c.borrow() {
         Some(host) => Ok(host(name)),
-        None => Err(fault("type reflection is only available at compile time (inside `$ @e`)")),
+        None => Err(fault("type reflection is only available at compile time (inside a `&` splice)")),
     })?;
     match info {
         Some(info) if info.pending() => Err(fault(format!(
-            "reflection: `{name}`'s declaration holds an `@e` splice that has not run yet"
+            "reflection: `{name}`'s declaration holds a `&` splice that has not run yet"
         ))),
         info => Ok(info),
     }

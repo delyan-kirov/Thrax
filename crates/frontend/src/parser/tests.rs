@@ -416,7 +416,7 @@ fn one_import_per_item() {
 #[test]
 fn union_effect_import_and_directives() {
     let src = "$ @mod M\n$ @import Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
-                   $ State : @effect = get : @Int, put : @Int -> @Int\n$ @e 1";
+                   $ State : @effect = get : @Int, put : @Int -> @Int\n$ &1";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
     assert!(matches!(items[0], Item::Import { .. }));
@@ -491,16 +491,68 @@ fn string_interpolation_desugars_to_concat() {
     let p = prog("$ @mod M\n$ s = \"hi\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Str(_)));
 
-    // An interpolated string becomes a `++` chain.
+    // An interpolated string's default reading is a `++` chain.
+    let default_of = |p: &Parsed| match p.ast.expr(only_def_body(p)) {
+        Expr::Interp { default, .. } => *default,
+        other => panic!("expected an interpolated string, got {other:?}"),
+    };
     let p = prog("$ @mod M\n$ s = \"a ?(x) b\"");
-    let Expr::BinOp { op, .. } = p.ast.expr(only_def_body(&p)) else {
+    let Expr::BinOp { op, .. } = p.ast.expr(default_of(&p)) else {
         panic!("expected a `++` chain");
     };
     assert_eq!(p.ast.text(*op), "++");
 
     // A sole interpolant is still `++` (seeded by a chunk), so it types as @Str.
     let p = prog("$ @mod M\n$ s = \"?(x)\"");
-    assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::BinOp { .. }));
+    assert!(matches!(p.ast.expr(default_of(&p)), Expr::BinOp { .. }));
+}
+
+#[test]
+fn string_interpolation_builder_reading_binds_holes_first() {
+    // The builder reading binds each hole, then calls `@IInterp` on a lambda.
+    let p = prog("$ @mod M\n$ s = \"a ?(x) b ?(y)\"");
+    let Expr::Interp { target, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected an interpolated string");
+    };
+    let mut cur = *target;
+    let mut lets = 0;
+    while let Expr::Let { body, .. } = p.ast.expr(cur) {
+        lets += 1;
+        cur = *body;
+    }
+    assert_eq!(lets, 2, "one binding per hole");
+    let Expr::App(head, arg) = p.ast.expr(cur) else { panic!("expected `@IInterp f`") };
+    assert!(matches!(p.ast.expr(*head), Expr::Var { name, .. } if p.ast.text(*name) == "@IInterp"));
+    assert!(matches!(p.ast.expr(*arg), Expr::Lambda { .. }));
+}
+
+#[test]
+fn string_interpolation_template_reading_quotes_holes() {
+    // The `Template` reading keeps the pieces and quotes each hole's source.
+    let p = prog("$ @mod M\n$ s = \"a ?( x + 1 ) b\"");
+    let Expr::Interp { quoted, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected an interpolated string");
+    };
+    let Expr::StructLit { ty: None, fields, spread: None } = p.ast.expr(*quoted) else {
+        panic!("expected an untyped struct literal");
+    };
+    let items = |i: usize| match p.ast.slice(*fields)[i] {
+        FieldInit::Named { value, .. } => match p.ast.expr(value) {
+            Expr::List(items) => p.ast.slice(*items).to_vec(),
+            other => panic!("expected a list, got {other:?}"),
+        },
+        FieldInit::Positional(_) => panic!("expected a named field"),
+    };
+    let text = |e: Aol<Expr>| match p.ast.expr(e) {
+        Expr::Str(s) => s.as_str().to_string(),
+        other => panic!("expected a string, got {other:?}"),
+    };
+    let pieces: Vec<String> = items(0).into_iter().map(text).collect();
+    assert_eq!(pieces, ["a ", " b"]);
+    let holes = items(1);
+    let Expr::App(head, src) = p.ast.expr(holes[0]) else { panic!("expected `@code \"..\"`") };
+    assert!(matches!(p.ast.expr(*head), Expr::Var { name, .. } if p.ast.text(*name) == "@code"));
+    assert_eq!(text(*src), "x + 1");
 }
 
 #[test]
@@ -562,39 +614,6 @@ fn effect_rows_still_parse_in_type_position() {
         let src = format!("$ @mod M\n$ E : @effect = op : @Int -> @Int\n$ f : @Int -> {sig} = \\n => n");
         assert!(parse(&src).is_ok(), "signature `{sig}` failed to parse");
     }
-}
-
-#[test]
-fn row_alias_body_and_applied_entries_parse() {
-    let p = prog("$ @mod M\n$ W : @alias e = <Log, App | e>\n$ f : @Int -> <W r, @IO> @Int = \\n => n");
-    let items = p.ast.slice(p.program.items);
-    let Item::Alias { ty, .. } = &items[0] else {
-        panic!("expected an alias")
-    };
-    let Ty::Row(row) = p.ast.ty(*ty) else {
-        panic!("expected a row body")
-    };
-    let names: Vec<&str> = p.ast.slice(row.entries).iter().map(|e| p.ast.text(e.name)).collect();
-    assert_eq!(names, ["Log", "App"]);
-    assert_eq!(row.tail.map(|t| p.ast.text(t)), Some("e"));
-    let Item::Def { sig: Some(sig), .. } = &items[1] else {
-        panic!("expected a definition")
-    };
-    let Ty::Arrow { effect: Some(row), .. } = p.ast.ty(*sig) else {
-        panic!("expected an effectful arrow")
-    };
-    let entries = p.ast.slice(row.entries);
-    let args: Vec<&str> = p
-        .ast
-        .slice(entries[0].args)
-        .iter()
-        .map(|a| match p.ast.ty(*a) {
-            Ty::Var(v) => p.ast.text(*v),
-            other => panic!("expected a type variable, got {other:?}"),
-        })
-        .collect();
-    assert_eq!(args, ["r"]);
-    assert!(p.ast.slice(entries[1].args).is_empty());
 }
 
 #[test]

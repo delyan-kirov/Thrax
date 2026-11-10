@@ -237,6 +237,7 @@ pub unsafe extern "C" fn ares_parse(
 pub unsafe extern "C" fn ares_format(src: *const u8, len: usize, err: *mut *mut c_char) -> *mut AresValue {
     guarded(err, || {
         let src = source(src, len)?;
+        check_fragment(src, Fragment::Items).map_err(|d| d.render(src, "@format"))?;
         let out = frontend::format::format_source(src, &Default::default())?;
         Ok(boxed(OwnedValue::Str(out.into_bytes())))
     })

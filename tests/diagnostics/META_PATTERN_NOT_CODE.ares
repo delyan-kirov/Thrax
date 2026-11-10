@@ -1,4 +1,5 @@
 $ @mod META_PATTERN_NOT_CODE
 
-# The operand of a pattern-position `@e` builds the pattern's code.
-$ f : @Int -> @Int = \ | @e (3) => 1 | _ => 0  #~ error[TYPE_MISMATCH]: a numeric literal cannot be used where `@Code` is expected
+# The operand of a pattern-position `&` builds the pattern's code or a literal;
+# a function is neither.
+$ f : @Int -> @Int = \ | &not => 1 | _ => 0  #~ error[TYPE_MISMATCH]: `&` inserts code or a literal, but its operand is `@Bool -> @Bool`

@@ -18,4 +18,4 @@ $ chk_best : @Int = if best == 7 => 0 else 1
 
 $ test : @Int = chk_count + chk_total + chk_best
 
-$ @e <| assert (test == 0) "REACH: a check failed"
+$ &assert (test == 0) "REACH: a check failed"

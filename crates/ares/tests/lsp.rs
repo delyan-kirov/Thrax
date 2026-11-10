@@ -216,7 +216,7 @@ fn diagnostics_fixes_hover_definition_and_formatting() {
     assert!(labels.contains(&"double"), "{labels:?}");
 
     // Saving runs the compile-time checks, whose failures show up too.
-    let checked = "$ @mod DEMO\n$ two : @Int = 2\n$ @e <| assert (two == 3) \"two is not three\"\n";
+    let checked = "$ @mod DEMO\n$ two : @Int = 2\n$ &assert (two == 3) \"two is not three\"\n";
     std::fs::write(&path, checked).unwrap();
     c.notify(
         "textDocument/didChange",
@@ -305,7 +305,7 @@ fn build_script_import_path_reaches_the_editor() {
     let dir = dir.canonicalize().unwrap();
     std::fs::write(
         dir.join("BUILD.ares"),
-        "$ @mod BUILD\n$ @build : {} -> <@Meta, @IO> @Code = \\_ => @import_path \"source\"; @parse_items \"\"\n",
+        "$ @mod BUILD\n$ @build : {} -> <@Meta, @IO> @Code = \\_ => @import_path \"source\"; \"\"\n",
     )
     .unwrap();
     std::fs::write(dir.join("source/GREET.ares"), "$ @mod GREET\n$ greeting : @Str = \"hi\"\n").unwrap();
@@ -481,7 +481,7 @@ fn members_a_splice_generates_are_not_errors_while_editing() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("COPY.ares");
     let src = "$ @mod COPY\n\n$ @import DERIVE\n\n$ Point : @struct = x: @Int, y: @Int\n\
-               $ Point3 : @struct = @e <| DERIVE.fields_of \"Point\", z: @Int\n\n\
+               $ Point3 : @struct = &DERIVE.fields_of \"Point\", z: @Int\n\n\
                $ sum : Point3 -> @Int = \\p => p.x + p.z\n";
     std::fs::write(&path, src).unwrap();
     let path = path.canonicalize().unwrap();

@@ -72,4 +72,4 @@ $ test : @Int =
     (if chance two_boys == "1/3" => 0 else 1) + (if chance tuesday_boy == "13/27" => 0 else 2)
         + (if chance switching_wins == "2/3" => 0 else 4)
 
-$ @e <| assert (test == 0) "INFERENCE: a check failed"
+$ &assert (test == 0) "INFERENCE: a check failed"

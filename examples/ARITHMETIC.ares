@@ -20,4 +20,4 @@ $ exp : @Int = 2 ^ 3
 $ test : @Int =
     sum; product; precedence; grouped; quotient; remainder; negate; double_neg; chained; big; 0
 
-$ @e <| assert (test == 0) "ARITHMETIC: a check failed"
+$ &assert (test == 0) "ARITHMETIC: a check failed"

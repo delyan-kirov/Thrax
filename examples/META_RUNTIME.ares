@@ -1,9 +1,9 @@
 $ @mod META_RUNTIME
 
 # \file META_RUNTIME.ares
-# \info The compiler at run time. `@lex`, `@parse`, `@parse_str`,
-#       `@parse_items`, `@unparse`, `@format` and `@eval` are pure, so they work in ordinary
-#       code as well as inside `@e`. The interpreter runs them in-process; a
+# \info The compiler at run time. `@lex`, `@parse`, `@parse_str`, `@code`,
+#       `@unparse`, `@format` and `@eval` are pure, so they work in ordinary
+#       code as well as inside `&`. The interpreter runs them in-process; a
 #       native build links the compiler as a library (`libares`) and calls into
 #       it. `@eval` compiles its fragment against the standard library and
 #       returns the value, which must be first-order data (no functions). The

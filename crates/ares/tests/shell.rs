@@ -1,5 +1,5 @@
 //! The shell (`ares shell`), fed items on a pipe: it runs them at compile time,
-//! so reflection and `@e` work at the prompt, and `ARES_SHELL` gives it short
+//! so reflection and `&` work at the prompt, and `ARES_SHELL` gives it short
 //! commands.
 
 use std::io::Write;
@@ -39,16 +39,16 @@ fn reflection_runs_at_the_prompt() {
 fn e_items_and_sites_expand_once() {
     let out = shell(&[
         "x : @Int = 1",
-        "@e <| @parse_items \"$ y : @Int = 41 + x\"",
+        "&\"$ y : @Int = 41 + x\"",
         "_= y",
-        "_= @e <| @parse_str \"y + 1\"",
+        "_= &@parse_str \"y + 1\"",
         "_= list {}",
     ]);
     assert!(out.contains("# 42 : @Int"), "{out}");
     assert!(out.contains("# 43 : @Int"), "{out}");
-    // The session keeps what the `$ @e` item expanded to, not the item.
+    // The session keeps what the `$ &` item expanded to, not the item.
     assert!(out.contains("$ y : @Int = 41 + x"), "{out}");
-    assert!(!out.contains("@parse_items"), "{out}");
+    assert!(!out.contains("&\""), "{out}");
 }
 
 #[test]

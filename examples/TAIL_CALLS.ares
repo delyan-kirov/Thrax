@@ -29,4 +29,4 @@ $ test : @Int =
     (if sum_to 65000 0 == 2112532500 => 0 else 1) + (if let_sum 65000 == 2112532500 => 0 else 1)
         + (if is_even 65000 == 1 => 0 else 1) + (if is_odd 65000 == 0 => 0 else 1)
 
-$ @e <| assert (test == 0) "TAIL_CALLS: a check failed"
+$ &assert (test == 0) "TAIL_CALLS: a check failed"

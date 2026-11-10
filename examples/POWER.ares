@@ -16,4 +16,4 @@ $ pow_5_3 : @Int = pow 5 3
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = pow2_8; pow2_10; pow_2_10; pow_3_4; pow_5_3; 0
 
-$ @e <| assert (test == 0) "POWER: a check failed"
+$ &assert (test == 0) "POWER: a check failed"

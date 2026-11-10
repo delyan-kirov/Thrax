@@ -90,4 +90,4 @@ $ test : @Int =
         + ck_merge + ck_min + ck_max + ck_froml + ck_pair + ck_pair2 + ck_bigsize + ck_bigget
         + ck_bigmin + ck_bigrm
 
-$ @e <| assert (test == 0) "STDLIB_MAP: a check failed"
+$ &assert (test == 0) "STDLIB_MAP: a check failed"

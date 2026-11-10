@@ -1,7 +1,7 @@
 /* libares: the Ares compiler as a C library.
  *
  * Link `libares.a` or `libares.so`. A native Ares program links it on its own
- * when it uses `@lex`, `@parse`, `@parse_str`, `@parse_items` or `@eval` at run
+ * when it uses `@lex`, `@parse`, `@parse_str`, `@format` or `@eval` at run
  * time; any other C program may call it directly.
  *
  * Values cross as an owned tree of `ares_value`. Every tree and error string
@@ -55,7 +55,8 @@ ares_value *ares_lex(const uint8_t *src, size_t len, char **err);
 int ares_parse(const uint8_t *src, size_t len, int kind, char **err);
 
 /* Format the top-level items `src` as `ares fmt` does. Returns a ARES_STR,
- * or NULL with `*err` set when the formatter refuses the text. */
+ * or NULL with `*err` set when the text does not parse as items or the
+ * formatter refuses it. */
 ares_value *ares_format(const uint8_t *src, size_t len, char **err);
 
 /* Compile and run the expression `src` against the standard library, returning

@@ -247,6 +247,23 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         match self.node(e) {
+            // An interpolated string expected as a type with an `@IInterp`
+            // instance builds through it; anything else is the `@Str` default.
+            Expr::Interp { default, target, quoted } => {
+                let (default, target, quoted) = (*default, *target, *quoted);
+                if self.is_template(expected) {
+                    self.interp_quoted.insert(e);
+                    self.check(quoted, expected)
+                } else if self.builds_interp(expected) {
+                    self.interp_targets.insert(e);
+                    if self.is_code(expected) {
+                        self.quotations.insert(e);
+                    }
+                    self.check(target, expected)
+                } else {
+                    self.check(default, expected)
+                }
+            }
             Expr::Lambda { params, body } => {
                 let params = self.ast.slice(*params);
                 self.enter_scope();
@@ -273,6 +290,41 @@ impl<'a> Checker<'a> {
                 self.ambient = saved;
                 self.leave_scope();
                 out
+            }
+            // A `let` has its body's type, so the expected type checks the body.
+            Expr::Let { bindings, body } => {
+                let (bindings, body) = (self.ast.slice(*bindings), *body);
+                self.enter_scope();
+                let out = self.infer_let_group(bindings).and_then(|_| self.check(body, expected));
+                self.leave_scope();
+                out
+            }
+            // A blessed interface applied where its result type is known: that
+            // type picks the instance before the argument is checked.
+            Expr::App(f, x)
+                if matches!(self.node(*f), Expr::Var { module: None, name } if is_blessed_interface(name.as_str())) =>
+            {
+                let (f, x) = (*f, *x);
+                let Expr::Var { name, .. } = *self.node(f) else { unreachable!("guarded") };
+                let got = self.infer_blessed_app(f, name, &[x], Some(expected))?;
+                self.unifier.unify_expected(got, expected, "against the expected type")
+            }
+            // `a; b` is `b`'s value: the expected type checks `b`.
+            Expr::BinOp { op, lhs, rhs } if op.as_str() == ";" => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                self.infer(lhs)?;
+                self.check(rhs, expected)
+            }
+            // A lambda applied on the spot (`x |> \ | p => e` is one): the
+            // expected result checks its body, so a literal in a match arm is
+            // read against what the application produces.
+            Expr::BinOp { op, lhs, rhs } if op.as_str() == "|>" && self.is_lambda(*rhs) => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                self.check_applied_lambda(rhs, lhs, expected)
+            }
+            Expr::BinOp { op, lhs, rhs } if op.as_str() == "<|" && self.is_lambda(*lhs) => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                self.check_applied_lambda(lhs, rhs, expected)
             }
             // `[..]` where a sized tensor `[n]T` is expected: the literal's length
             // fixes `n`, and every element is checked against `T`. Lowering builds
@@ -645,6 +697,24 @@ impl<'a> Checker<'a> {
 
             Expr::App(..) => self.infer_app(e),
 
+            // With no expected type to choose by, the default reading: `@Str`.
+            Expr::Interp { default, .. } => {
+                let default = *default;
+                self.infer(default)
+            }
+
+            Expr::Splice(arg) => {
+                let arg = *arg;
+                if let Some(span) = self.ast.expr_span(e) {
+                    let locals = self.locals_in_scope();
+                    self.splice_locals.push((span, locals));
+                }
+                Ok(match self.infer_splice(arg)? {
+                    Spliced::Data(t) => t,
+                    Spliced::Code => self.unifier.fresh(),
+                })
+            }
+
             Expr::Slice { recv, slots } => {
                 let (recv, slots) = (*recv, *slots);
                 let slots = self.ast.slice(slots);
@@ -654,8 +724,6 @@ impl<'a> Checker<'a> {
             Expr::BinOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (*op, *lhs, *rhs);
                 match op.as_str() {
-                    "<|" if self.is_meta_e(lhs) => return self.infer_meta_e(rhs),
-                    "|>" if self.is_meta_e(rhs) => return self.infer_meta_e(lhs),
                     "|>" if self.is_lambda(rhs) => return self.infer_applied_lambda(rhs, lhs),
                     "<|" if self.is_lambda(lhs) => return self.infer_applied_lambda(lhs, rhs),
                     _ => {}
@@ -1177,14 +1245,20 @@ impl<'a> Checker<'a> {
     /// multi-arm lambda's match (and an `@absurd`) sees the scrutinee's type
     /// while its arms are typed and its coverage is decided.
     fn infer_applied_lambda(&mut self, f: Aol<Expr>, x: Aol<Expr>) -> Result<Type> {
-        let tx = self.infer(x)?;
         let result = self.unifier.fresh();
+        self.check_applied_lambda(f, x, result)?;
+        Ok(result)
+    }
+
+    /// `f x` with `f` a lambda, producing `result`: the argument's type and the
+    /// result check the lambda, so its body (a match's arms) sees both.
+    fn check_applied_lambda(&mut self, f: Aol<Expr>, x: Aol<Expr>, result: Type) -> Result<()> {
+        let tx = self.infer(x)?;
         let eff = self.unifier.fresh();
         let want = self.unifier.types.arrow_eff(tx, result, eff);
         self.check(f, want)?;
         let amb = self.ambient;
-        self.unifier.subrow(eff, amb, "in an application")?;
-        Ok(result)
+        self.unifier.subrow(eff, amb, "in an application")
     }
 
     pub(super) fn infer_app(&mut self, e: Aol<Expr>) -> Result<Type> {
@@ -1232,20 +1306,10 @@ impl<'a> Checker<'a> {
             ));
         }
 
-        if self.is_meta_e(head) {
-            if args.len() != 1 {
-                return Err(diag!(
-                    Code::TypeMismatch, Span::at(0), 0,
-                    "`@e` takes exactly one argument"
-                ));
-            }
-            return self.infer_meta_e(args[0]);
-        }
-
         if let Expr::Var { module: None, name } = self.node(head) {
             let name = *name;
             if is_blessed_interface(name.as_str()) {
-                return self.infer_blessed_app(head, name, &args);
+                return self.infer_blessed_app(head, name, &args, None);
             }
         }
 
@@ -1526,42 +1590,87 @@ impl<'a> Checker<'a> {
         self.scopes[1..].iter().any(|s| s.contains_key(&name))
     }
 
-    pub(super) fn is_meta_e(&self, e: Aol<Expr>) -> bool {
-        matches!(self.node(e), Expr::Var { module: None, name } if *name == "@e")
-    }
-
-    /// `@e X` runs the `@Code`-valued X at compile time and splices the code in
-    /// at this site. What the code denotes is only known once the driver has
-    /// spliced it and re-checked, so the site is a fresh variable here (which
-    /// the context binds).
-    pub(super) fn infer_meta_e(&mut self, arg: Aol<Expr>) -> Result<Type> {
+    /// The operand of an expression or pattern splice `&X`, run at compile time.
+    /// First-order data is inserted as a literal of its own type. Anything else
+    /// must be `@Code`, which denotes something only known once the driver has
+    /// spliced it and re-checked, so the caller leaves that site unconstrained.
+    pub(super) fn infer_splice(&mut self, arg: Aol<Expr>) -> Result<Spliced> {
         let ambient = self.meta_ambient();
         let saved = std::mem::replace(&mut self.ambient, ambient);
         let arg_ty = self.infer(arg);
         self.ambient = saved;
-        self.require_code(arg_ty?)?;
-        Ok(self.unifier.fresh())
+        let arg_ty = arg_ty?;
+        if self.is_literal_data(arg_ty) {
+            return Ok(Spliced::Data(arg_ty));
+        }
+        self.require_code(arg_ty)?;
+        Ok(Spliced::Code)
     }
 
-    /// The ambient an `@e` operand runs under: a closed `<@Meta>`, so meta ops
+    /// Whether an interpolated string expected as `expected` builds through an
+    /// `@IInterp` instance. The target must already have a constructor at its head:
+    /// with it still open, resolving would DECIDE what the string is rather than
+    /// read it. The probe commits nothing; the builder chain resolves for real.
+    fn builds_interp(&mut self, expected: Type) -> bool {
+        let zonked = self.unifier.zonk(expected);
+        if self.ctx_head(zonked).is_none() {
+            return false;
+        }
+        let save = self.unifier.save();
+        let builder = self.unifier.fresh();
+        let found = self.blessed(StrId::intern(ty::IF_INTERP), &[builder, expected]).is_some();
+        self.unifier.restore(save);
+        found
+    }
+
+    /// Whether `ty` is CORE's `Template`, so an interpolated string built as one
+    /// quotes its holes.
+    fn is_template(&self, ty: Type) -> bool {
+        self.ctx_head(self.unifier.zonk(ty)).is_some_and(|h| {
+            h.as_str() == ty::TEMPLATE && self.type_home.get(&h).is_some_and(|m| m.as_str() == "CORE")
+        })
+    }
+
+    /// Whether `ty` is `@Code`, so a string literal built as one is a quotation.
+    pub(super) fn is_code(&self, ty: Type) -> bool {
+        self.ctx_head(self.unifier.zonk(ty)).is_some_and(|h| h.as_str() == ty::CODE)
+    }
+
+    /// Whether a value of `ty` has a literal the driver can write back into the
+    /// source: a number, a `@Bool` or a `@Str`.
+    fn is_literal_data(&self, ty: Type) -> bool {
+        if self.is_numeric(ty) {
+            return true;
+        }
+        match self.unifier.head(ty) {
+            TypeNode::Con(name) => {
+                let name = self.unifier.types.name(name);
+                is_numeric_type(name) || name == ty::BOOL || name == ty::STR
+            }
+            _ => false,
+        }
+    }
+
+    /// The ambient a splice operand runs under: a closed `<@Meta>`, so meta ops
     /// discharge there and any other effect is rejected.
     pub(super) fn meta_ambient(&mut self) -> Type {
         let empty = self.unifier.types.row_empty();
         self.unifier.types.row_extend("@Meta", empty)
     }
 
-    /// Require an `@e` operand to be `@Code`: `@e` inserts code and nothing else.
+    /// Require a splice operand to be `@Code`.
     pub(super) fn require_code(&mut self, found: Type) -> Result<()> {
         let code = self.unifier.types.con("@Code");
-        if self.unifier.unify(found, code, "in an `@e` operand").is_ok() {
+        if self.unifier.unify(found, code, "in a `&` operand").is_ok() {
             return Ok(());
         }
         let shown = self.unifier.show(found);
         Err(diag!(
             Code::TypeMismatch, Span::at(0), 0,
-            "`@e` inserts code, but its operand is `{shown}`, not `@Code`";
-            help: "build the code with `@parse_str`/`@parse_items`; a site run only for \
-                   its effect returns empty code (`@parse_items \"\"`)"
+            "`&` inserts code or a literal, but its operand is `{shown}`";
+            note: "a literal is a number, a `@Bool` or a `@Str`; anything else must be `@Code`";
+            help: "write the code as a string literal expected as `@Code`; a site run only \
+                   for its effect returns empty code (`\"\"`)"
         ))
     }
 }
@@ -2276,7 +2385,6 @@ pub(super) fn sig_var_sites(
             sig_var_sites(ast, *size, span, out, tails);
             sig_var_sites(ast, *elem, span, out, tails);
         }
-        Ty::Row(r) => row(r, out, tails),
         Ty::Con { .. } | Ty::Nat(_) | Ty::Unit | Ty::MetaE(..) => {}
     }
 }
@@ -2333,4 +2441,11 @@ pub(super) fn is_numeric_type(name: &str) -> bool {
             | "@Nat8" | "@Nat16" | "@Nat32" | "@Nat64"
             | "@Float32"
     )
+}
+
+/// What a splice operand produces: data inserted as a literal of the given
+/// type, or `@Code`.
+pub(super) enum Spliced {
+    Data(Type),
+    Code,
 }

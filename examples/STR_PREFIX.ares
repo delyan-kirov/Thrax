@@ -45,4 +45,4 @@ $ test : @Int =
     ck_get + ck_put + ck_other + ck_empty_prefix + ck_too_long + ck_exact + ck_partial + ck_nomatch
         + ck_nested + ck_nested_no
 
-$ @e <| assert (test == 0) "STR_PREFIX: a check failed"
+$ &assert (test == 0) "STR_PREFIX: a check failed"

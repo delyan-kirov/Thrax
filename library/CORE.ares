@@ -4,9 +4,9 @@ $ @mod CORE
 # \info CORE is implicitly imported in every module with no namespace
 
 # ---- the blessed interfaces ----
-# These ten interface types are the compiler's own: a desugar site (a literal, a
-# range, `.[i]`, `xs.[lo ... hi]`, a sequence pattern) resolves a value of the
-# applied type and calls its single field. Their names carry the `@` sigil and only
+# These interface types are the compiler's own: a desugar site (a literal, a
+# range, `.[i]`, `xs.[lo ... hi]`, a sequence pattern, an interpolated string)
+# resolves a value of the applied type and calls its single field. Their names carry the `@` sigil and only
 # CORE declares them, but an implementation is an ordinary value, so a type joins
 # any of these surfaces from user space with no compiler support.
 $ @IIntLit : @struct t = of_int: @Int -> t,
@@ -21,12 +21,22 @@ $ @IIndex : @struct s i t = index: s -> i -> t,
 $ @ISeqView : @struct s e = view: s -> SeqView s e,
 $ @ISeqViewBack : @struct s e = view_back: s -> SeqView s e,
 
+# An interpolated string `"a ?(x) b"` expected as a type `t` with an `@IInterp`
+# instance builds through a builder `b` instead of concatenating text: `interp`
+# hands an empty builder to the chain and finishes it, `text` appends a literal
+# piece, and `hole` appends one hole, resolved by the builder AND the hole's type,
+# so `@Int` and `@Str` holes mix. The holes are evaluated first, left to right.
+# Any other expected type gets the `@Str` default: `to_string` each hole and
+# concatenate.
+$ @IInterp : @struct b t = interp: (b -> b) -> t,
+$ @IInterpText : @struct b = text: b -> @Str -> b,
+$ @IInterpHole : @struct b h = hole: b -> h -> b,
+
 # ---- builtins ----
 # The primitives the compiler and runtime implement. `@extern "ares"` declares one:
 # the definition's name IS the builtin, so a reference compiles to a direct call
 # with no wrapper. Only CORE may declare them. A few stay inside the compiler
-# because their types have no surface syntax: `@e` and `@cast` are checked
-# specially, and the `@tensor_*` primitives are polymorphic over axis variance.
+# because their types have no surface syntax: `@cast` is checked specially, and the `@tensor_*` primitives are polymorphic over axis variance.
 
 $ not : @Bool -> @Bool = @extern "ares"
 
@@ -179,18 +189,25 @@ $ @parse : @Vec Token -> @Code = @extern "ares"
 $ @unparse : @Code -> @Str = @extern "ares"
 # An expression fragment.
 $ @parse_str : @Str -> @Code = @extern "ares"
-# Top-level items, for an `$ @e` that injects definitions.
-$ @parse_items : @Str -> @Code = @extern "ares"
-# A type, for a type-position `@e` (`{ x: @Int }` is a type but no expression).
-$ @parse_type : @Str -> @Code = @extern "ares"
-# The entries of an effect row, for `<@e (X)>`: `"Log, State @Int"`.
-$ @parse_row : @Str -> @Code = @extern "ares"
-# A struct's fields, for an `@e` entry of a `@struct`: `"x: @Int, y: @Int"`.
-$ @parse_fields : @Str -> @Code = @extern "ares"
-# A union's variants, for an `@e` entry of a `@union`: `"Red, Rgb: {@Int, @Int, @Int}"`.
-$ @parse_variants : @Str -> @Code = @extern "ares"
+# Source text as `@Code`, unchecked: the `&` that splices it decides what it
+# must parse as (an expression, items, a type, a row, a pattern, fields or
+# variants) and checks it there. A string literal expected as `@Code` is a
+# quotation and needs no call (see "quotations" below).
+$ @code : @Str -> @Code = @extern "ares"
+# The string literal spelling a string: `@str_literal "say \"hi\""` is the
+# text `"say \"hi\""`, quotes and escapes included.
+$ @str_literal : @Str -> @Str = @extern "ares"
+# What a quotation is built from (see "quotations" below). `@quote_open`
+# starts empty code in a fresh scope, `@code_text` appends text written in that
+# scope, and `@code_cat` appends code as it is, keeping the scopes its text
+# was written in. `@quote "M"` records that the scope was written in module
+# `M`; lowering applies it, so code never needs to.
+$ @quote_open : {} -> @Code = @extern "ares"
+$ @code_text : @Code -> @Str -> @Code = @extern "ares"
+$ @code_cat : @Code -> @Code -> @Code = @extern "ares"
+$ @quote : @Str -> @Code -> @Code = @extern "ares"
 # Top-level items in canonical layout, exactly as `ares fmt` writes them. Text
-# the formatter refuses (it does not lex, or would change meaning) traps.
+# that does not parse as items, or that the formatter refuses, traps.
 $ @format : @Str -> @Str = @extern "ares"
 # Compiles and runs a fragment, checked as a pure definition body. The result is
 # embedded as-is, so a mismatch with the use site is a fault when it runs, not a
@@ -233,7 +250,7 @@ $ Token : @union =
     Comment: @Str,
 
 # The `<@Meta>` operations, usable only where the compiler handles `@Meta`
-# (inside `@e`). `@abort` fails the build with its message, and `@emit` prints one
+# (inside `&`). `@abort` fails the build with its message, and `@emit` prints one
 # and continues. `@fresh prefix` mints a unique identifier for hygienic generated
 # binders. `@link` / `@link_path` add a library or a search path to the link line
 # and insert nothing. `@import_path` adds a directory to the module search, and
@@ -261,7 +278,7 @@ $ @type_of : @Str -> <@Meta> @Str = @extern "ares"
 # union with its `{tag, payload}` variants (the payload empty for a bare tag), a
 # global value with its type as source, or nothing. Types are source text, over
 # the declaration's own `params`. A generator matches `Missing` to handle a name
-# nobody declared; a type whose own `@e` entries have not been spliced in yet
+# nobody declared; a type whose own `&` entries have not been spliced in yet
 # faults, so the generator runs again once they are.
 $ Decl : @union =
     Struct: { params: @Vec @Str, fields: @Vec { @Str, @Str } },
@@ -270,21 +287,22 @@ $ Decl : @union =
     Missing: {},
 $ @lookup : @Str -> <@Meta> Decl = @extern "ares"
 
-# Every name a bare reference at the running `@e` can resolve to (its module's
+# Every name a bare reference at the running `&` can resolve to (its module's
 # own globals, then what it imports), each with its type as source, by name.
 $ @scope : {} -> <@Meta> @Vec { @Str, @Str } = @extern "ares"
 
-# Where the running `@e` is: its file, line and column (both from 1).
+# Where the running `&` is: its file, line and column (both from 1).
 $ Site : @struct = file: @Str, line: @Int, column: @Int
 $ @here : {} -> <@Meta> Site = @extern "ares"
 
-# Type-check an expression fragment as if written at the running `@e`, seeing
-# that module's imports, and give its type as source. An ill-typed fragment fails
+# Type-check an expression fragment as if written at the running `&`, seeing
+# that module's imports and, at an expression `&`, the locals in scope there,
+# and give its type as source. An ill-typed fragment fails
 # the build with the checker's error.
 $ @check : @Code -> <@Meta> @Str = @extern "ares"
 
 # A compile-time diagnostic: the message, then a `note:` line per note and a
-# `help:` line per help, shown at the running `@e`. `@fail` is an error that fails
+# `help:` line per help, shown at the running `&`. `@fail` is an error that fails
 # the build (`META_ABORT`); `@warn` a warning, after which the build goes on
 # (`META_WARNING`). `diag msg` is one with no notes or helps.
 $ Diag : @struct = message: @Str, notes: @Vec @Str, helps: @Vec @Str
@@ -1039,11 +1057,48 @@ $ list_formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs f =>
 
 $ impl_IFormap_for_List : IFormap (List a) a (List b) b e = .{ .mapping = list_formap }
 
-# A compile-time check, run as `$ @e <| assert ok msg`. A false condition aborts
+# ---- quotations ----
+# A string literal expected as `@Code` is a quotation: its text is source code,
+# checked where it is spliced. Its holes are evaluated in the generator: a
+# `@Code` hole pastes its source as is, and a number, `@Bool` or `@Str` hole
+# pastes the literal that spells its value. With `n = 3` and `s = "hi"`, the
+# quotation `"f ?(n) ?(s)"` is the code `f 3 "hi"`. A name is code, so a
+# generator pastes a computed one with `?(@code name)`.
+#
+# A quotation is hygienic. A name its text spells means what it means where the
+# quotation is written, and a binder its text spells binds only names the same
+# quotation spells. Hole code keeps its own meaning, and so does `@code` text,
+# which reads as if written where it is spliced.
+$ impl_IStrLit_for_code : @IStrLit @Code = .{ .of_str = \s => @code_text (@quote_open {}) s }
+$ impl_IInterp_for_code : @IInterp @Code @Code = .{ .interp = \build => build (@quote_open {}) }
+$ impl_IInterpText_for_code : @IInterpText @Code = .{ .text = @code_text }
+$ impl_IInterpHole_for_code_code : @IInterpHole @Code @Code = .{ .hole = @code_cat }
+$ impl_IInterpHole_for_code_int : @IInterpHole @Code @Int =
+    .{ .hole = \c n => @code_text c (to_string n) }
+$ impl_IInterpHole_for_code_nat : @IInterpHole @Code @Nat =
+    .{ .hole = \c n => @code_text c (to_string n) }
+$ impl_IInterpHole_for_code_float64 : @IInterpHole @Code @Float64 =
+    .{ .hole = \c x => @code_text c (to_string x) }
+$ impl_IInterpHole_for_code_bool : @IInterpHole @Code @Bool =
+    .{ .hole = \c b => @code_text c (if b => "@true" else "@false") }
+$ impl_IInterpHole_for_code_str : @IInterpHole @Code @Str =
+    .{ .hole = \c s => @code_text c (@str_literal s) }
+
+# ---- macro arguments ----
+# A string literal expected as a `Template` is a macro argument: its pieces stay
+# text and its holes are quoted, not evaluated, since they name what is in scope
+# where the literal is written. For `&sql "WHERE id = ?(id)"` the macro gets
+# `pieces = ["WHERE id = ", ""]` and `holes` holding the code `id`, which it
+# can splice back or type with `@check`.
+$ Template : @struct = pieces: @Vec @Str, holes: @Vec @Code
+$ impl_IStrLit_for_Template : @IStrLit Template =
+    .{ .of_str = \s => .{ .pieces = [s], .holes = [] } }
+
+# A compile-time check, run as `$ &assert ok msg`. A false condition aborts
 # the build with `msg`, so a module states its own invariants and checking it is
 # testing it. It returns empty code, so the directive inserts nothing. `@abort`
 # carries `<@Meta>`, so `assert` does too and cannot run at run time by accident.
-$ assert : @Bool -> @Str -> <@Meta> @Code = \ok msg => if ok => @parse_items "" else @abort msg
+$ assert : @Bool -> @Str -> <@Meta> @Code = \ok msg => if ok => "" else @abort msg
 
 # ---- internal recursion workers ----
 # The accumulator loops the public `to_string` / `from_string` / `vcons` / `range`

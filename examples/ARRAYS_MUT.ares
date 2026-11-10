@@ -30,4 +30,4 @@ $ ck_ext : @Int = if (@array_len grown) == 2 => 0 else 1
 $ test : @Int =
     ck_len + ck_0 + ck_2 + ck_set + ck_set1 + ck_slice_len + ck_slice_0 + ck_base_unchanged + ck_ext
 
-$ @e <| assert (test == 0) "ARRAYS_MUT: a check failed"
+$ &assert (test == 0) "ARRAYS_MUT: a check failed"

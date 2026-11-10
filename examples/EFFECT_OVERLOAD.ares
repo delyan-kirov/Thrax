@@ -22,4 +22,4 @@ $ cfg : @Str =
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = readEnv; cfg; 0
 
-$ @e <| assert (test == 0) "EFFECT_OVERLOAD: a check failed"
+$ &assert (test == 0) "EFFECT_OVERLOAD: a check failed"

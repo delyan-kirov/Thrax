@@ -36,4 +36,4 @@ $ scheduled : @Int = rr (spawn t1) (spawn t2)
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = scheduled; 0
 
-$ @e <| assert (test == 0) "COROUTINES: a check failed"
+$ &assert (test == 0) "COROUTINES: a check failed"

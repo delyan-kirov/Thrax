@@ -153,7 +153,7 @@ impl Ast {
     }
 
     /// A declared type rendered back to source that parses as the same type, or
-    /// None while it still holds an `@e` splice. Reflection reports field and
+    /// None while it still holds a `&` splice. Reflection reports field and
     /// payload types this way, for a generator to copy them into a declaration.
     pub fn ty_source(&self, ty: Aol<Ty>) -> Option<String> {
         self.ty_src(ty, 0)
@@ -185,7 +185,6 @@ impl Ast {
                 };
                 wrap(format!("{} -> {row}{}", self.ty_src(*from, 1)?, self.ty_src(*to, 0)?), 0)
             }
-            Ty::Row(row) => self.row_src(row)?,
             Ty::Unit => "{}".to_string(),
             Ty::Tuple(items) => {
                 let items: Option<Vec<String>> = self.slice(*items).iter().map(|t| self.ty_src(*t, 0)).collect();
@@ -277,7 +276,7 @@ pub enum Item {
     },
     /// `$ Name : @struct [@extern "abi"] [a b ...] = field, ...`. `params` are the
     /// declared type parameters, in order; when omitted they are inferred from the
-    /// free type variables in the fields. `splices` are the `@e X` entries whose
+    /// free type variables in the fields. `splices` are the `&X` entries whose
     /// generated fields the expand loop splices in before the final compile. `abi` is set when
     /// the struct is a C-layout foreign type (`@struct @extern "C"`): its runtime
     /// representation is a flat, unboxed C struct, so it can cross the `@extern`
@@ -295,7 +294,7 @@ pub enum Item {
     },
     /// `$ Name : @union [a b ...] = Tag : payload, ...`. `params` are the declared
     /// type parameters (inferred from the variants when omitted). `splices` are
-    /// `@e X` entries generating variants, as for structs.
+    /// `&X` entries generating variants, as for structs.
     Union {
         name: StrId,
         params: Slice<StrId>,
@@ -305,8 +304,6 @@ pub enum Item {
     /// `$ Name : @alias [a b ...] = ty`. `params` are the declared type parameters
     /// (mandatory: every type variable used in `ty` must be listed). An alias may
     /// partially instantiate another generic type, e.g. `MapInt : @alias v = Map Int v`.
-    /// A row alias has a [`Ty::Row`] body (`App : @alias = <Gpu, Log>`) and is
-    /// usable only inside another effect row.
     Alias {
         name: StrId,
         params: Slice<StrId>,
@@ -331,7 +328,7 @@ pub enum Item {
     /// module-private (not exported). Symbols are public by default; there is no
     /// `@public` counterpart, so a module's public interface sits above the marker.
     Private,
-    /// `$ @e expr`: run the `@Code`-valued expression at compile time and insert
+    /// `$ &expr`: run the `@Code`-valued expression at compile time and insert
     /// the code it returns in place of the directive (see the driver). Also an
     /// expression/type intrinsic; this is the item form. The `Span` is the whole
     /// directive, which the driver replaces.
@@ -345,9 +342,9 @@ pub struct FieldDecl {
     pub ty: Aol<Ty>,
 }
 
-/// One `@e X` entry of a struct or union declaration: `X` builds the `@Code` of
-/// a list of fields (`@parse_fields`) or variants (`@parse_variants`), which the
-/// driver splices in place of the entry. `span` covers the whole entry.
+/// One `&X` entry of a struct or union declaration: `X` builds the `@Code` of
+/// a list of fields or variants, which the driver checks and splices in place
+/// of the entry. `span` covers the whole entry.
 #[derive(Clone, Copy, Debug)]
 pub struct EntrySplice {
     pub expr: Aol<Expr>,
@@ -415,7 +412,7 @@ pub enum Ty {
     },
     /// Type application `Head Arg` (left-associative at use sites).
     App(Aol<Ty>, Aol<Ty>),
-    /// A compile-time type splice `@e X`: `X` is a compile-time expression that
+    /// A compile-time type splice `&X`: `X` is a compile-time expression that
     /// produces an `@Code` denoting a type, spliced into this annotation. Erased
     /// before the final (strict) compile: the driver's expand loop runs `X`,
     /// substitutes the resulting type source at this node's span, and re-parses.
@@ -426,8 +423,6 @@ pub enum Ty {
         effect: Option<EffectRow>,
         to: Aol<Ty>,
     },
-    /// An effect row standing alone: only the body of a row alias.
-    Row(EffectRow),
     /// The unit type `{}`.
     Unit,
     /// A tuple type `{ A, B, ... }` (n >= 1).
@@ -457,10 +452,9 @@ pub struct EffectRow {
 }
 
 /// One comma-separated entry of an effect row: an effect label with its type
-/// arguments (`<Chan @Int e>`), or a row alias applied to its parameters
-/// (`<WithLog e, @IO>`). `args` are type atoms, empty for a bare label. `meta`
-/// holds `X` for a compile-time splice `<@e (X)>`, whose code supplies the
-/// entries; its `name` is `@e` and it has no `args`.
+/// arguments (`<Chan @Int e>`). `args` are type atoms, empty for a bare label. `meta`
+/// holds `X` for a compile-time splice `<&X>`, whose code supplies the
+/// entries; its `name` is `&` and it has no `args`.
 #[derive(Clone, Copy, Debug)]
 pub struct RowEntry {
     pub name: StrId,
@@ -521,7 +515,7 @@ pub enum Pattern {
         tag: StrId,
         fields: Slice<FieldPat>,
     },
-    /// `@e (X)`: a pattern a generator produces. `X` builds the `@Code`, and the
+    /// `&X`: a pattern a generator produces. `X` builds the `@Code`, and the
     /// driver splices its source here before the final compile.
     MetaE(Aol<Expr>),
 }
@@ -576,6 +570,24 @@ pub enum Expr {
         op: StrId,
         operand: Aol<Expr>,
     },
+    /// An interpolated string `"a ?(x) b"`, as two readings the checker chooses
+    /// between by the expected type. `default` is the `@Str` concatenation
+    /// `"a " ++ to_string x ++ " b"`. `target` binds the holes in order, then
+    /// builds through the blessed interpolation interfaces:
+    /// `let #h0 = x in @IInterp (\#b => @IInterpText (@IInterpHole (@IInterpText
+    /// #b "a ") #h0) " b")`. Both share the hole expressions. `quoted` is the
+    /// reading as a CORE `Template`, whose holes are not evaluated but quoted:
+    /// `.{ .pieces = ["a ", " b"], .holes = [@code "x"] }`. Only the chosen one is
+    /// checked and lowered.
+    Interp {
+        default: Aol<Expr>,
+        target: Aol<Expr>,
+        quoted: Aol<Expr>,
+    },
+    /// The build-time splice `&e`: `e` runs at compile time and its result
+    /// replaces the site, spliced in when it is `@Code` and inserted as a literal
+    /// when it is first-order data.
+    Splice(Aol<Expr>),
     /// `{ a, b, ... }` (n >= 1).
     Tuple(Slice<Aol<Expr>>),
     /// `[ a, b, ... ]` / `[]`.

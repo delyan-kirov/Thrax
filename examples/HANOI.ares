@@ -15,4 +15,4 @@ $ hanoi10 : @Int = hanoi 10
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = hanoi1; hanoi3; hanoi5; hanoi10; 0
 
-$ @e <| assert (test == 0) "HANOI: a check failed"
+$ &assert (test == 0) "HANOI: a check failed"

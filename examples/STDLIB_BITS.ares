@@ -58,4 +58,4 @@ $ test : @Int =
         + ck_bits1 + ck_bits2 + ck_bits3 + ck_minus + ck_wide + ck_neg_count + ck_ext + ck_len
         + ck_pow2 + ck_round + ck_nan + ck_ops + ck_shr + ck_narrow
 
-$ @e <| assert (test == 0) "STDLIB_BITS: a check failed"
+$ &assert (test == 0) "STDLIB_BITS: a check failed"

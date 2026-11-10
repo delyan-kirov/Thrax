@@ -1,0 +1,7 @@
+$ @mod META_HYGIENE_BINDER
+
+$ @import OPT
+
+# A binder a generator's quotation spells binds only the names it spells.
+$ some_pat : @Code = "Option.Some.{x}"
+$ g : Option @Int -> @Int = \ | &some_pat => x | _ => 0 #~ error[TYPE_UNBOUND]: unbound name `x`

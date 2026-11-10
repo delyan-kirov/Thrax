@@ -244,10 +244,9 @@ $ run_gpu : ({} -> <Gpu | e> a) -> <@IO | e> a = \body =>
 ```
 
 It is precise (`<Gpu>` code can only draw), handleable (a test swaps the
-handler), and needs no special rule for `@main`. Aliases of `@IO` such as
-`$ Console : @alias = <@IO>` are rejected for the library: an alias is
-transparent, so `<Console>` would check nothing while reading as a
-restriction.
+handler), and needs no special rule for `@main`. A row has no
+alias, so nothing can rename `@IO` into a name that reads as a restriction
+while checking nothing.
 
 A builtin label comes back only when the compiler or runtime consumes it, for
 example `@build` rejecting nondeterminism, or `@spawn` rejecting thread-unsafe

@@ -80,6 +80,6 @@ $ sorted_from : @Vec @Str -> @Int -> @Int = \names i =>
         sorted_from names (i + 1)
 
 # These checks touch the filesystem, so they run at run time rather than under a
-# `$ @e` compile-time assert like the rest of the corpus: this module is a
+# `$ &` compile-time assert like the rest of the corpus: this module is a
 # program, and `$ @main` is what makes it one.
 $ @main : @Vec @Str -> <@IO> @Int = \args => test {}

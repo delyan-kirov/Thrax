@@ -75,4 +75,4 @@ $ test : @Int =
         + chk_clone_age + chk_bumped_name + chk_bumped_age + chk_v_x + chk_v_y + chk_v_z
         + chk_call_x + chk_call_z + chk_lazy_v + chk_lazy_next + chk_payload_tag + chk_payload_e
 
-$ @e <| assert (test == 0) "RECORD_UPDATE: a check failed"
+$ &assert (test == 0) "RECORD_UPDATE: a check failed"

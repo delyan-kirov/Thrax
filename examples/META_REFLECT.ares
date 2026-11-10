@@ -6,9 +6,9 @@ $ @mod META_REFLECT
 #       under a name, as a CORE `Decl` to match: a struct with its fields and
 #       their types, a union with its variants and their payloads, a global
 #       value with its type, or `Missing`. Types are source text. `@here {}` is where
-#       the running `@e` is. `@check code` type-checks a fragment as if written
-#       at that `@e` and gives its type. `@fail` and `@warn` report a `Diag`
-#       (a message with `note:` and `help:` lines) at the `@e`: `@fail` fails
+#       the running `&` is. `@check code` type-checks a fragment as if written
+#       at that `&` and gives its type. `@fail` and `@warn` report a `Diag`
+#       (a message with `note:` and `help:` lines) at the `&`: `@fail` fails
 #       the build, `@warn` lets it go on.
 
 $ @import STR
@@ -30,27 +30,27 @@ $ describe : @Str -> <@Meta> @Str = \name =>
         | Decl.Value.{ ty }         => ty
         | Decl.Missing              => "nothing"
 
-# Bake the descriptions into the program as string literals.
-$ quote : @Str -> @Code = \s => @parse_str <| "\"" ++ s ++ "\""
-$ rgb_text : @Str = @e <| quote <| describe "Rgb"
-$ shape_text : @Str = @e <| quote <| describe "Shape"
-$ area_text : @Str = @e <| quote <| describe "area"
-$ nothing_text : @Str = @e <| quote <| describe "Nobody"
+# Bake the descriptions into the program: a `@Str` result is inserted as a
+# string literal.
+$ rgb_text : @Str = &describe "Rgb"
+$ shape_text : @Str = &describe "Shape"
+$ area_text : @Str = &describe "area"
+$ nothing_text : @Str = &describe "Nobody"
 
 # A generator that refuses a type it cannot handle, with a note and a help.
 $ needs_struct : @Str -> <@Meta> @Code = \name =>
     @lookup name |> \
-        | Decl.Struct.{ _, _ } => @parse_items ""
+        | Decl.Struct.{ _, _ } => ""
         | _                    => @fail {
             .message = "`" ++ name ++ "` is not a struct",
             .notes = ["this generator reads a struct's fields"],
             .helps = ["pass the name of a `@struct`"],
         }
-$ @e <| needs_struct "Rgb"
+$ &needs_struct "Rgb"
 
-# Where this `@e` is, and what a fragment's type would be here.
-$ here_line : @Int = @e <| @parse_str <| to_string (@here {}).line
-$ area_type : @Str = @e <| quote <| @check (@parse_str "area (Shape.Square.{ 3 })")
+# Where this `&` is, and what a fragment's type would be here.
+$ here_line : @Int = &((@here {}).line)
+$ area_type : @Str = &@check "area (Shape.Square.{ 3 })"
 
 $ ck1 : @Int = if rgb_text == "struct of r: @Int, g: @Int, b: @Int" => 0 else 1
 $ ck2 : @Int = if shape_text == "union of Dot, Square, Rect" => 0 else 2
@@ -61,4 +61,4 @@ $ ck6 : @Int = if area_type == "@Int" => 0 else 32
 
 $ test : @Int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6
 
-$ @e <| assert (test == 0) "META_REFLECT: a check failed"
+$ &assert (test == 0) "META_REFLECT: a check failed"

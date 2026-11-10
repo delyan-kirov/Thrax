@@ -55,4 +55,4 @@ $ test : @Int =
         + ck_cmp_pfx + ck_byte + ck_concat + ck_padl + ck_padr + ck_padno + ck_repl + ck_replgrow
         + ck_count + ck_count0
 
-$ @e <| assert (test == 0) "STDLIB_STR: a check failed"
+$ &assert (test == 0) "STDLIB_STR: a check failed"

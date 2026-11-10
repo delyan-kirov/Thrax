@@ -1537,15 +1537,64 @@ static Value *compiler_builtin(int id, Value **a) {
     ares_value_free(v);
     return r;
   }
-  case ARESxB_PARSE_STR: case ARESxB_PARSE_ITEMS: case ARESxB_PARSE_TYPE: case ARESxB_PARSE_ROW:
-  case ARESxB_PARSE_FIELDS: case ARESxB_PARSE_VARIANTS: {
+  case ARESxB_PARSE_STR: case ARESxB_CODE: {
+    /* `@code` is unchecked: the syntax category is decided where the code is
+     * spliced. */
     Value *s = ARESxVALUE_force(a[0]);
     if (s->tag != T_STR) ares_fault("expected a string");
-    int kind = id == ARESxB_PARSE_ITEMS ? 1 : id == ARESxB_PARSE_TYPE ? 2 : id == ARESxB_PARSE_ROW ? 3
-             : id == ARESxB_PARSE_FIELDS ? 4 : id == ARESxB_PARSE_VARIANTS ? 5 : 0;
-    if (ares_parse(s->u.str.data, s->u.str.len, kind, &err) != 0)
+    if (id == ARESxB_PARSE_STR && ares_parse(s->u.str.data, s->u.str.len, 0, &err) != 0)
       compiler_fault(name, err);
     return code_value((const char *)s->u.str.data, s->u.str.len);
+  }
+  case ARESxB_QUOTE_OPEN: return code_value("", 0);
+  case ARESxB_QUOTE: return ARESxVALUE_force(a[1]);
+  case ARESxB_CODE_TEXT: case ARESxB_CODE_CAT: {
+    /* A quotation's pieces. A program's `@Code` is only its text: which
+     * quotation wrote which bytes matters where code is spliced, at compile
+     * time. */
+    Value *code = ARESxVALUE_force(a[0]);
+    if (code->tag != T_STRUCT || strcmp(code->u.strct.name, "@Code") != 0)
+      ares_fault("expected an @Code");
+    Value *head = struct_field(code, "src");
+    Value *tail = ARESxVALUE_force(a[1]);
+    if (id == ARESxB_CODE_CAT) {
+      if (tail->tag != T_STRUCT || strcmp(tail->u.strct.name, "@Code") != 0)
+        ares_fault("expected an @Code");
+      tail = struct_field(tail, "src");
+    }
+    if (!head || head->tag != T_STR || !tail || tail->tag != T_STR) ares_fault("malformed @Code value");
+    size_t len = head->u.str.len + tail->u.str.len;
+    char *buf = xmalloc(len + 1);
+    memcpy(buf, head->u.str.data, head->u.str.len);
+    memcpy(buf + head->u.str.len, tail->u.str.data, tail->u.str.len);
+    Value *r = code_value(buf, len);
+    free(buf);
+    return r;
+  }
+  case ARESxB_STR_LITERAL: {
+    /* The source literal spelling a string, as the interpreter's `str_literal`. */
+    Value *s = ARESxVALUE_force(a[0]);
+    if (s->tag != T_STR) ares_fault("expected a string");
+    char *buf = xmalloc(s->u.str.len * 4 + 3);
+    size_t at = 0;
+    buf[at++] = '"';
+    for (size_t i = 0; i < s->u.str.len; i++) {
+      unsigned char b = s->u.str.data[i];
+      const char *esc = b == '"' ? "\\\"" : b == '\\' ? "\\\\" : b == '?' ? "\\?"
+                      : b == '\n' ? "\\n" : b == '\t' ? "\\t" : b == '\r' ? "\\r" : NULL;
+      if (esc) {
+        memcpy(buf + at, esc, 2);
+        at += 2;
+      } else if (b >= 0x20 && b <= 0x7e) {
+        buf[at++] = (char)b;
+      } else {
+        at += (size_t)snprintf(buf + at, 5, "\\x%02x", b);
+      }
+    }
+    buf[at++] = '"';
+    Value *r = ARESxRT_str(buf, at);
+    free(buf);
+    return r;
   }
   case ARESxB_PARSE: {
     /* `@Code` is text-backed: the lexemes rejoined with a space, as the

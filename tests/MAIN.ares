@@ -54,4 +54,4 @@ $ @build : {} -> <@Meta, @IO> @Code = \_ =>
     let main = "$ @main : @Vec @Str -> <@IO> @Int = \\args => 0"
         ++ concat (map (\m => " + \n\t" ++ check_call m) ms)
         ++ concat (map (\e => " + \n\t" ++ skip_call e) (EXCEPTIONS.on TARGET.os)) in
-    @parse_items <| includes ++ "\n" ++ main
+    @code <| includes ++ "\n" ++ main

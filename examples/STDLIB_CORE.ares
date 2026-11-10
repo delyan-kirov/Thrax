@@ -59,4 +59,4 @@ $ test : @Int =
         + ck_cmp + ck_sqrt + ck_floor + ck_ceil + ck_round + ck_rpow + ck_fmod + ck_trig + ck_explog
         + ck_rmin + ck_rabs + ck_rclamp
 
-$ @e <| assert (test == 0) "STDLIB_CORE: a check failed"
+$ &assert (test == 0) "STDLIB_CORE: a check failed"

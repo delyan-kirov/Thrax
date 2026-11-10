@@ -36,4 +36,4 @@ $ ck_more : @Int = if (@array_len more) == 6 => 0 else 1
 $ test : @Int =
     ck_cat + ck_len + ck_byte + ck_eq + ck_ne + ck_blen + ck_b1 + ck_mid + ck_set + ck_more
 
-$ @e <| assert (test == 0) "STR_OPS: a check failed"
+$ &assert (test == 0) "STR_OPS: a check failed"

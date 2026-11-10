@@ -32,4 +32,4 @@ $ ck_range : @Int =
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @Int = ck_first + ck_second + ck_neg + ck_zero + ck_below + ck_spread + ck_range
 
-$ @e <| assert (test == 0) "STDLIB_RANDOM: a check failed"
+$ &assert (test == 0) "STDLIB_RANDOM: a check failed"

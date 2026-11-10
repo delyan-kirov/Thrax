@@ -16,7 +16,7 @@ fn project(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     write(
         &dir.join("BUILD.ares"),
-        "$ @mod BUILD\n\n$ @build : {} -> <@Meta, @IO> @Code = \\_ => @import_path \"source\"; @parse_items \"\"\n",
+        "$ @mod BUILD\n\n$ @build : {} -> <@Meta, @IO> @Code = \\_ => @import_path \"source\"; \"\"\n",
     );
     write(&dir.join("source/GREET.ares"), "$ @mod GREET\n\n$ greeting : @Str = \"hi from source\"\n");
     let main = |m: &str| {
@@ -61,7 +61,7 @@ const LONG: &str = "$ @mod F\n\n$ f : @Int -> @Int = \\x => x |> \\ | 0 => 1 | 1
 #[test]
 fn fmt_takes_its_style_from_the_build_script() {
     let options = "@option \"format.width\" \"40\"; @option \"format.indent\" \"2\"";
-    let dir = configured("fmt", &format!("{options}; @parse_items \"\""));
+    let dir = configured("fmt", &format!("{options}; \"\""));
     write(&dir.join("sub/F.ares"), LONG);
     let out = ares(&dir.join("sub"), &["fmt", "F.ares"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -74,7 +74,7 @@ fn fmt_takes_its_style_from_the_build_script() {
 #[test]
 fn a_failing_build_script_leaves_fmt_on_the_defaults() {
     let options = "@option \"format.indent\" \"2\"; @option \"format.width\" \"narrow\"";
-    let dir = configured("fmt-broken", &format!("{options}; @parse_items \"\""));
+    let dir = configured("fmt-broken", &format!("{options}; \"\""));
     write(&dir.join("F.ares"), LONG);
     let out = ares(&dir, &["fmt", "F.ares"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -86,7 +86,7 @@ fn a_failing_build_script_leaves_fmt_on_the_defaults() {
 
 #[test]
 fn check_caps_errors_at_the_build_script_option() {
-    let dir = configured("check", "@option \"check.max_errors\" \"1\"; @parse_items \"\"");
+    let dir = configured("check", "@option \"check.max_errors\" \"1\"; \"\"");
     write(&dir.join("MAIN.ares"), "$ @mod MAIN\n\n$ a : @Int = \"one\"\n$ b : @Int = \"two\"\n");
     let out = ares(&dir, &["check", "MAIN.ares"]);
     let stderr = String::from_utf8_lossy(&out.stderr);

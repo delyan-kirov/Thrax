@@ -219,17 +219,8 @@ impl Unifier {
         let TypeNode::RowExtend(label, a_args, a_rest) = self.types.node(a) else {
             unreachable!("unify_row without a row extension")
         };
-        let outermost = self.performed.is_none();
-        if outermost {
-            self.performed = Some(self.row_labels(a));
-        }
-        let r = self
-            .rewrite_row(b, label, a_args, where_)
-            .and_then(|b_rest| self.unify(a_rest, b_rest, where_));
-        if outermost {
-            self.performed = None;
-        }
-        r
+        let b_rest = self.rewrite_row(b, label, a_args, where_)?;
+        self.unify(a_rest, b_rest, where_)
     }
 
     /// Bring an occurrence of effect `label` to the head of `row`, unify its
@@ -260,33 +251,15 @@ impl Unifier {
     /// Effect subsumption: require `sub` to be a subrow of `super_`. Every effect
     /// the callee performs (`sub`) must be permitted by the ambient (`super_`).
     pub fn subrow(&mut self, sub: Type, super_: Type, where_: &str) -> Result<()> {
-        let saved = self.performed.replace(self.row_labels(sub));
-        let r = self.subrow_go(sub, super_, where_);
-        self.performed = saved;
-        r
-    }
-
-    pub(super) fn subrow_go(&mut self, sub: Type, super_: Type, where_: &str) -> Result<()> {
         match self.head(sub) {
             TypeNode::RowEmpty => Ok(()),
             TypeNode::Var(_) => self.unify(sub, super_, where_),
             TypeNode::RowExtend(label, args, rest) => {
                 let super_rest = self.rewrite_row(super_, label, args, where_)?;
-                self.subrow_go(rest, super_rest, where_)
+                self.subrow(rest, super_rest, where_)
             }
             _ => self.unify(sub, super_, where_),
         }
-    }
-
-    /// The labels of a row, in order, up to its tail.
-    pub(super) fn row_labels(&self, row: Type) -> Vec<StrId> {
-        let mut labels = Vec::new();
-        let mut cur = row;
-        while let TypeNode::RowExtend(label, _, rest) = self.head(cur) {
-            labels.push(label);
-            cur = rest;
-        }
-        labels
     }
 
     /// Unify the type arguments of two occurrences of one effect label. Unknown
@@ -299,10 +272,7 @@ impl Unifier {
         {
             return Ok(());
         }
-        let saved = self.performed.take();
-        let r = self.unify(a, b, where_);
-        self.performed = saved;
-        r.map_err(|d| {
+        self.unify(a, b, where_).map_err(|d| {
             let note = format!(
                 "effect `{label}` is used here at `{}` and at `{}`; one handler serves one instance",
                 self.show_args(a),
@@ -327,20 +297,11 @@ impl Unifier {
     }
 
     pub(super) fn effect_not_handled(&self, label: StrId, where_: &str) -> Diagnostic {
-        let part_of = self.performed.as_ref().and_then(|performed| {
-            self.row_folds.iter().find(|(_, members)| {
-                members.contains(&label) && members.iter().all(|m| performed.contains(m))
-            })
-        });
-        let effect = match part_of {
-            Some((alias, _)) => format!("effect `{label}` (part of `{alias}`)"),
-            None => format!("effect `{label}`"),
-        };
         Diagnostic::error(
             Code::TypeMismatch,
             Span::at(0),
             0,
-            format!("{effect} is performed but not handled {where_}"),
+            format!("effect `{label}` is performed but not handled {where_}"),
         )
     }
 }

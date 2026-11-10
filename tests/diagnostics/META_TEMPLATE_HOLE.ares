@@ -1,0 +1,11 @@
+$ @mod META_TEMPLATE_HOLE
+
+# A macro over a `Template` types a quoted hole with `@check`, which sees the
+# locals at the `&`, and may refuse it.
+$ bind_int : Template -> <@Meta> @Code = \t =>
+    t.holes |> \
+        | [h] => (@check h |> \ | "@Int" => h | ty => @fail (diag ("needs an @Int, not " ++ ty)))
+        | _   => @fail (diag "needs one hole")
+
+$ ok : @Int -> @Int = \n => &bind_int "?(n + 1)"
+$ bad : @Bool -> @Int = \b => &bind_int "?(b)" #~ error[META_ABORT]: needs an @Int, not @Bool

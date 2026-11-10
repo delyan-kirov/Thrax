@@ -26,4 +26,4 @@ $ ck_def : @Int = if (sum deflist) == 15 => 0 else 1
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @Int = ck_alen + ck_a1 + ck_sum + ck_ea + ck_el + ck_def
 
-$ @e <| assert (test == 0) "SEQ_INFER: a check failed"
+$ &assert (test == 0) "SEQ_INFER: a check failed"

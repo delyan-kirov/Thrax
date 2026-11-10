@@ -99,4 +99,4 @@ $ test : @Int =
     chk_classify + chk_sign + chk_small + chk_yes_no + chk_warm + chk_sum + chk_count_down
         + chk_both_zero + chk_take + chk_quadrant + chk_swap_sum + chk_first_zero
 
-$ @e <| assert (test == 0) "MULTI_ARM_LAMBDA: a check failed"
+$ &assert (test == 0) "MULTI_ARM_LAMBDA: a check failed"

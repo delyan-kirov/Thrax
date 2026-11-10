@@ -63,4 +63,4 @@ $ test : @Int =
     let ok = r_normal == 103 && r_abort == 9 && r_nested == 6 in
     if ok && r_stored == 2 && r_first_class == 10 && r_order == 31 => 0 else 1
 
-$ @e <| assert (test == 0) "FINALE: a check failed"
+$ &assert (test == 0) "FINALE: a check failed"

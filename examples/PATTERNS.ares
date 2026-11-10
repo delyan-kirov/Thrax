@@ -62,4 +62,4 @@ $ sx : @Int = line_start_x seg
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = p_name; p_age; n_age; n_both; pun; just_x; who1; a1; start_x; end_y; sx; 0
 
-$ @e <| assert (test == 0) "PATTERNS: a check failed"
+$ &assert (test == 0) "PATTERNS: a check failed"

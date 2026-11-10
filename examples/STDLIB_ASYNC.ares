@@ -132,4 +132,4 @@ $ test : @Int =
     ck_pipeline + ck_fan_in + ck_interleaved + ck_child + ck_deadlock + ck_words + ck_tally
         + ck_wait_blocked
 
-$ @e <| assert (test == 0) "STDLIB_ASYNC: a check failed"
+$ &assert (test == 0) "STDLIB_ASYNC: a check failed"

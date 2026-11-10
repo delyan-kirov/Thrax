@@ -1,0 +1,11 @@
+$ @mod INTERP_HOLE_NO_INSTANCE
+
+# A hole resolves its own `@IInterpHole` instance by the builder and its type;
+# `Html` takes `@Str` holes only, so an `@Int` hole is reported where it stands.
+$ Html : @struct = src: @Str
+$ impl_IInterp_for_Html : @IInterp Html Html = .{ .interp = \build => build Html.{ .src = "" } }
+$ impl_IInterpText_for_Html : @IInterpText Html = .{ .text = \h s => Html.{ .src = h.src ++ s } }
+$ impl_IInterpHole_for_Html_Str : @IInterpHole Html @Str =
+    .{ .hole = \h s => Html.{ .src = h.src ++ s } }
+$ count : @Int -> Html = \n =>
+    "<p>?(n)</p>" #~ error[TYPE_MISMATCH]: `impl_IInterpHole_for_Html_Str` does not fit this use of `@IInterpHole`

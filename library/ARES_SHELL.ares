@@ -39,7 +39,7 @@ $ help_text : @Vec @Str = [
     "  $ _= <expr>       evaluate an expression and print its value and type",
     "  $ name : T = <e>  add (or redefine) a binding (silent, like a file)",
     "  $ @import MOD        import a standard-library module (e.g. VEC, STR, MATH)",
-    "  $ @e <| <code>    run compile-time code, and add the items it returns",
+    "  $ &<code>         run compile-time code, and add the items it returns",
     "",
     "Every session imports ARES_SHELL:",
     "  $ _= type \"1 + 2\"    print an expression's type (or a name's declared type)",

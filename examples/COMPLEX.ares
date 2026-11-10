@@ -145,7 +145,7 @@ $ test : @Int =
         + ck_sqrt + ck_sqr + ck_powi + ck_pow + ck_powneg + ck_hatc + ck_hatint + ck_trig + ck_tan
         + ck_hyp + ck_tanh + ck_polar + ck_rou + ck_roots + ck_dot
 
-$ @e <| assert (test == 0) "COMPLEX: a check failed"
+$ &assert (test == 0) "COMPLEX: a check failed"
 
 $ @private
 

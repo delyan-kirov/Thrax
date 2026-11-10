@@ -202,6 +202,12 @@ pub const OPERATORS: &[OpDef] = &[
         lexeme: "~~~",
         role: OpRole::Prefix,
     },
+    // The build-time splice `&e`. Syntax, not a function: the parser rewrites it
+    // into an `Expr::Splice`, so it has no global and no section.
+    OpDef {
+        lexeme: "&",
+        role: OpRole::Prefix,
+    },
     // Comparison (all one precedence, left-associative). `<` and `>` are also the
     // effect-row brackets, but a row only ever appears in TYPE position, which is
     // parsed by lexeme (`parse_effect_row_opt`) and never consults these roles.

@@ -25,6 +25,10 @@ pub const APP: Bp = bp(50, 51);
 /// Binding power of the unary prefix operators (`-`, `!`, `~~~`).
 pub const PREFIX: u8 = 40;
 
+/// The build-time splice `&X`. A prefix operator at [`PREFIX`] that names no
+/// global: the parser rewrites it into a splice node in every position.
+pub const SPLICE: &str = "&";
+
 /// Binding power of `op` as an infix operator, or `None` if it is not infix.
 pub fn infix(op: &str) -> Option<Bp> {
     match op_role(op)? {

@@ -32,4 +32,4 @@ $ test : @Int =
     ck_length + ck_map + ck_filter + ck_rev + ck_append + ck_nth + ck_last + ck_vec + ck_back
         + ck_stream + ck_find
 
-$ @e <| assert (test == 0) "STDLIB_LAZY_LIST: a check failed"
+$ &assert (test == 0) "STDLIB_LAZY_LIST: a check failed"

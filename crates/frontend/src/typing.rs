@@ -190,11 +190,14 @@ pub struct Checker<'a> {
     instances: HashMap<StrId, Vec<Inst>>,
     /// This module's own instances, re-exported to importers.
     own_instances: Vec<(StrId, Inst)>,
-    /// This module's types that still hold `@e` entry splices. A lenient round
+    /// This module's types that still hold `&` entry splices. A lenient round
     /// holds back a global whose body fails while any remain, since the entries a
     /// generator has yet to splice in may be what it is missing.
     pending_types: HashSet<StrId>,
-    /// Whether a module this one imports awaits `@e` entry splices, itself or
+    /// The operands of this module's `&` entries in `@struct`/`@union` bodies,
+    /// checked once the module's globals are in scope, as `$ &` directives are.
+    entry_splices: Vec<Aol<Expr>>,
+    /// Whether a module this one imports awaits `&` entry splices, itself or
     /// through its own imports: their types reach this module incomplete too.
     imported_pending: bool,
     /// Type variables introduced by integer literals, which may be Int or Real;
@@ -245,6 +248,19 @@ pub struct Checker<'a> {
     /// shape no hook can build, since the payload cannot carry the static size.
     /// Lowering flattens the collected elements with `@tensor_stack`.
     tensor_exprs: HashSet<Aol<Expr>>,
+    /// Interpolated strings that build through an `@IInterp` instance; lowering
+    /// takes their builder reading instead of the `@Str` default.
+    interp_targets: HashSet<Aol<Expr>>,
+    /// Interpolated strings built as a `Template`; lowering takes their quoted
+    /// reading.
+    interp_quoted: HashSet<Aol<Expr>>,
+    /// The locals in scope at each expression splice `&X`, by the splice's span,
+    /// so `@check` there sees them.
+    splice_locals: Vec<(Span, Vec<(StrId, Type)>)>,
+    /// String literals and interpolations built as `@Code`: the quotations.
+    /// Lowering marks the code a generator's quotation writes with its module, so
+    /// the splice site can resolve its names there.
+    quotations: HashSet<Aol<Expr>>,
     /// Argument sites promoted to a record: a bare scalar `1` or a positional
     /// `{1, 2}` passed where a record is expected, mapped to the target record's
     /// field names (in order). Lowering wraps the value into a name-keyed record.
@@ -339,7 +355,7 @@ pub struct Checker<'a> {
     /// type variable is a lowercase name, so an unknown capitalized name is a
     /// typo, surfaced at the end of the check.
     unknown_type: Option<Diagnostic>,
-    /// Set during a metaprogram-expansion round (`$ @e` codegen not yet run): an
+    /// Set during a metaprogram-expansion round (`$ &` codegen not yet run): an
     /// unbound value name is treated as a fresh type variable rather than an error,
     /// so a module that forward-references an about-to-be-injected definition still
     /// checks well enough to run its generators. The final round checks strictly.
@@ -349,7 +365,7 @@ pub struct Checker<'a> {
     deferred: bool,
     /// The expression sites a lenient check deferred (an unbound name, an
     /// unresolved context or overload). Lowering marks the globals that contain
-    /// one, so the driver does not run an `@e` that would reach them.
+    /// one, so the driver does not run a `&` that would reach them.
     /// See Note [Deferred sites hold back generators].
     deferred_sites: HashSet<Aol<Expr>>,
     /// Set for the interactive shell: a top-level body is checked under an open
@@ -449,6 +465,20 @@ enum Match {
 
 // ## Construction
 
+/// Where a module's bare names are defined, from [`Checker::homes`].
+#[derive(Clone, Debug, Default)]
+pub struct Homes {
+    /// Each value name reached bare, to the module that defines it.
+    pub values: HashMap<StrId, StrId>,
+    /// Each type name reached bare, to the module that declares it.
+    pub types: HashMap<StrId, StrId>,
+    /// Each qualifier in scope (an imported module's name, an alias), to its module.
+    pub modules: HashMap<StrId, StrId>,
+    /// Each module reached qualified, to the qualifier that reaches it, its own
+    /// name over an alias.
+    pub qualifiers: HashMap<StrId, StrId>,
+}
+
 impl<'a> Checker<'a> {
     pub fn new(ast: &'a Ast, types: Rc<Types>) -> Checker<'a> {
         let unifier = Unifier::new(types);
@@ -484,6 +514,7 @@ impl<'a> Checker<'a> {
             instances: HashMap::new(),
             own_instances: Vec::new(),
             pending_types: HashSet::new(),
+            entry_splices: Vec::new(),
             imported_pending: false,
             numeric: Vec::new(),
             own_values: Vec::new(),
@@ -501,6 +532,10 @@ impl<'a> Checker<'a> {
             alias_types: HashMap::new(),
             module_name: StrId::intern(""),
             tensor_exprs: HashSet::new(),
+            interp_targets: HashSet::new(),
+            interp_quoted: HashSet::new(),
+            splice_locals: Vec::new(),
+            quotations: HashSet::new(),
             promotions: HashMap::new(),
             struct_lit_names: HashMap::new(),
             literal_hooks: HashMap::new(),
@@ -539,7 +574,7 @@ impl<'a> Checker<'a> {
     /// Enable lenient checking for a metaprogram-expansion round: an unbound value
     /// name becomes a fresh variable instead of an error, so a module that
     /// forward-references an about-to-be-injected definition still type-checks
-    /// enough to run its `$ @e` generators. The final round leaves this off.
+    /// enough to run its `$ &` generators. The final round leaves this off.
     pub fn set_lenient(&mut self, lenient: bool) {
         self.lenient = lenient;
     }
@@ -556,7 +591,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Whether some type this module sees, its own or an imported one, still
-    /// waits for its `@e` entries, so a body failing against it may only be early.
+    /// waits for its `&` entries, so a body failing against it may only be early.
     pub fn awaits_splices(&self) -> bool {
         !self.pending_types.is_empty() || self.imported_pending
     }
@@ -645,7 +680,6 @@ impl<'a> Checker<'a> {
         self.check_import_aliases(program);
         self.finalize_imports();
         self.register_types(program)?;
-        self.register_row_folds();
         self.validate_crepr_structs()?;
         // Row registration elaborates struct field types only to cache their rows
         // for the bridge; it must not report type errors (a field may reference a
@@ -820,7 +854,7 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
-        // Type-check `$ @e <expr>` directives. All globals are in scope now, so
+        // Type-check `$ &<expr>` directives. All globals are in scope now, so
         // the expression resolves like a top-level body. The directive runs under
         // a closed `<@Meta>` handler and nothing else, so a stray `@IO` in a
         // generator is rejected (hermetic); `@build` is the one context that also
@@ -834,6 +868,9 @@ impl<'a> Checker<'a> {
                 _ => None,
             })
             .collect();
+        for e in std::mem::take(&mut self.entry_splices) {
+            self.meta_splice_operand(e);
+        }
         for e in runs {
             self.ambient = self.meta_ambient();
             let checked = self.check_run(e);
@@ -848,12 +885,12 @@ impl<'a> Checker<'a> {
         Ok(out)
     }
 
-    /// Check a `$ @e` directive's operand builds `@Code`. A directive is its own
-    /// boundary: whatever it planned (an overload, a context) is resolved here,
-    /// since no definition encloses it.
+    /// Check a `$ &` directive's operand builds `@Code`, so a string literal
+    /// there is a quotation. A directive is its own boundary: whatever it planned
+    /// (an overload, a context) is resolved here, since no definition encloses it.
     fn check_run(&mut self, e: Aol<Expr>) -> Result<()> {
-        let t = self.infer(e)?;
-        self.require_code(t)?;
+        let code = self.unifier.types.con("@Code");
+        self.check(e, code)?;
         self.solve_pending()?;
         self.resolve_pending_ctx()
     }
@@ -1082,6 +1119,31 @@ impl<'a> Checker<'a> {
         out
     }
 
+    /// Where the names this module reaches bare are defined, and how it
+    /// qualifies each module it reaches. The code a quotation written here spells
+    /// resolves through these wherever it is spliced.
+    pub fn homes(&self) -> Homes {
+        let mut values: HashMap<StrId, StrId> = self.value_module.clone();
+        values.extend(self.own_values.iter().map(|(n, _)| (*n, self.module_name)));
+        values.retain(|n, _| !n.as_str().starts_with('@'));
+        let types = self
+            .type_home
+            .iter()
+            .filter(|(n, _)| !self.hidden_types.contains_key(*n) && !self.alias_types.contains_key(*n))
+            .map(|(n, m)| (*n, *m))
+            .collect();
+        let mut modules: HashMap<StrId, StrId> = HashMap::from([(self.module_name, self.module_name)]);
+        let mut qualifiers: HashMap<StrId, StrId> = HashMap::from([(self.module_name, self.module_name)]);
+        for &scope in self.qualified.keys() {
+            let module = self.alias_modules.get(&scope).copied().unwrap_or(scope);
+            modules.insert(scope, module);
+            if scope == module || !qualifiers.contains_key(&module) {
+                qualifiers.insert(module, scope);
+            }
+        }
+        Homes { values, types, modules, qualifiers }
+    }
+
     /// The members of a qualified module `name` in scope (`C`, an import), with
     /// their types.
     pub fn qualified_values(&self, module: &str) -> Vec<(String, String)> {
@@ -1103,6 +1165,36 @@ impl<'a> Checker<'a> {
 
     pub fn show(&self, ty: Type) -> String {
         self.unifier.show(ty)
+    }
+
+    /// The locals in scope at each expression splice, by the splice's span, each
+    /// with its type as source. One site's types share their variable names.
+    pub fn splice_locals(&self) -> Vec<(Span, Vec<(String, String)>)> {
+        self.splice_locals
+            .iter()
+            .map(|(span, locals)| {
+                let tys: Vec<Type> = locals.iter().map(|(_, t)| *t).collect();
+                let shown = self.unifier.show_all(&tys);
+                let locals = locals.iter().zip(shown).map(|((n, _), t)| (n.to_string(), t)).collect();
+                (*span, locals)
+            })
+            .collect()
+    }
+
+    /// The locals in scope here, innermost first, without the synthetic ones.
+    fn locals_in_scope(&self) -> Vec<(StrId, Type)> {
+        let mut out: Vec<(StrId, Type)> = Vec::new();
+        for scope in self.scopes[1..].iter().rev() {
+            let mut names: Vec<(StrId, Type)> = scope.iter().map(|(n, t)| (*n, *t)).collect();
+            names.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+            for (name, ty) in names {
+                let synthetic = name.as_str().starts_with(['#', '@', '%']);
+                if !synthetic && !out.iter().any(|(n, _)| *n == name) {
+                    out.push((name, ty));
+                }
+            }
+        }
+        out
     }
 
     /// The declared type of a global `name` in scope, as a user reads it (with any
@@ -1208,13 +1300,6 @@ impl<'a> Checker<'a> {
         // Most builtins are declared in CORE with `@extern "ares"`. These stay here
         // because their types have no surface syntax.
         let int = self.unifier.types.con(ty::INT);
-
-        // `@e X` runs the `@Code` X at compile time and splices the code in.
-        // Special-cased in `infer_app`/`ty_of_ast`; this binding is the
-        // first-class fallback.
-        let e_ty = self.unifier.fresh_generic();
-        let t = self.unifier.types.arrow(self.unifier.types.con("@Code"), e_ty);
-        self.bind(StrId::intern("@e"), t);
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@Int64`), the minimal set the runtime provides; every nice name
@@ -1408,7 +1493,11 @@ fn free_globals(
             free_globals(ast, *lhs, globals, bound, out);
             free_globals(ast, *rhs, globals, bound, out);
         }
-        Expr::UnOp { operand, .. } => free_globals(ast, *operand, globals, bound, out),
+        Expr::Interp { default, target, .. } => {
+            free_globals(ast, *default, globals, bound, out);
+            free_globals(ast, *target, globals, bound, out);
+        }
+        Expr::UnOp { operand, .. } | Expr::Splice(operand) => free_globals(ast, *operand, globals, bound, out),
         Expr::Tuple(items) | Expr::List(items) => ast
             .slice(*items)
             .iter()
@@ -1539,7 +1628,7 @@ fn free_globals_field_inits(
     }
 }
 
-/// The globals the `@e (X)` patterns' operands use. An operand runs at compile
+/// The globals the `&X` patterns' operands use. An operand runs at compile
 /// time, so it sees globals only, never a local in scope where it is written.
 fn free_globals_meta_patterns(
     ast: &Ast,
@@ -1553,7 +1642,7 @@ fn free_globals_meta_patterns(
 }
 
 /// Push every name a pattern binds onto `bound`, and the operand of every
-/// `@e (X)` in it onto `metas`.
+/// `&X` in it onto `metas`.
 fn collect_pattern_binders(ast: &Ast, pat: Aol<Pattern>, bound: &mut Vec<StrId>, metas: &mut Vec<Aol<Expr>>) {
     match ast.pat(pat) {
         Pattern::MetaE(e) => metas.push(*e),
