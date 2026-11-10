@@ -37,7 +37,7 @@ use std::rc::Rc;
 
 use crate::inductive::{field_type, param_type, ConstructorVal};
 use crate::level::Level;
-use crate::nbe::{apply, fst, snd, BindingVal, Closure, Neutral, Val};
+use crate::nbe::{apply, fst, snd, BindingVal, Closure, Lvl, Neutral, Val};
 use crate::signature::Signature;
 use crate::term::mentions;
 
@@ -278,7 +278,11 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
 
 /// `@cast a b e t`: `t : a` seen at `b`, along `e : a ~ b`.
 pub fn cast(sig: &Signature, a: Val, b: Val, e: Val, t: Val) -> Val {
+    // See Note [A cast between identical types is the identity].
     if let Val::Irrelevant = t {
+        return t;
+    }
+    if identical(sig, &a, &b, IDENTITY_PROBE) {
         return t;
     }
     match (&a, &b) {
@@ -331,6 +335,77 @@ pub fn cast(sig: &Signature, a: Val, b: Val, e: Val, t: Val) -> Val {
     }
 }
 
+// ## Identical types
+
+/// The de Bruijn level of the first variable [`identical`] opens a binder
+/// with: far above any context the checker builds, so a probe never meets a
+/// real variable.
+const IDENTITY_PROBE: Lvl = Lvl::MAX / 2;
+
+/// Whether two values are the same, up to the names of bound variables:
+/// closures are compared on a fresh variable, neutrals by head and spine.
+/// No unfolding and no eta, so this is conversion's syntactic core and never
+/// needs the types of variables.
+fn identical(sig: &Signature, a: &Val, b: &Val, fresh: Lvl) -> bool {
+    let closures = |x: &Closure, y: &Closure| {
+        let v = Val::var(fresh);
+        identical(sig, &x.apply(sig, v.clone()), &y.apply(sig, v), fresh + 1)
+    };
+    let all = |xs: &[Val], ys: &[Val]| xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| identical(sig, x, y, fresh));
+    match (a, b) {
+        (Val::Neutral(x), Val::Neutral(y)) => identical_neutral(sig, x, y, fresh),
+        (Val::Sort(l), Val::Sort(m)) => l.equal(m),
+        (Val::Pi(p), Val::Pi(q)) | (Val::Sigma(p), Val::Sigma(q)) => {
+            identical(sig, &p.dom, &q.dom, fresh) && closures(&p.cod, &q.cod)
+        }
+        (Val::Lam(_, x), Val::Lam(_, y)) => closures(x, y),
+        (Val::Pair(x), Val::Pair(y)) => identical(sig, &x.0, &y.0, fresh) && identical(sig, &x.1, &y.1, fresh),
+        (Val::Top, Val::Top) | (Val::Tt, Val::Tt) | (Val::Bottom, Val::Bottom) | (Val::Irrelevant, Val::Irrelevant) => true,
+        (Val::Data(x), Val::Data(y)) => x.data == y.data && levels_identical(&x.levels, &y.levels) && all(&x.params, &y.params),
+        (Val::Constructor(x), Val::Constructor(y)) => {
+            x.data == y.data && x.index == y.index && all(&x.params, &y.params) && all(&x.fields, &y.fields)
+        }
+        (Val::Quot(x), Val::Quot(y)) => {
+            identical(sig, &x.carrier, &y.carrier, fresh) && identical(sig, &x.relation, &y.relation, fresh)
+        }
+        (Val::QIn(x), Val::QIn(y)) => identical(sig, x, y, fresh),
+        _ => false,
+    }
+}
+
+fn levels_identical(a: &[Level], b: &[Level]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(l, m)| l.equal(m))
+}
+
+fn identical_neutral(sig: &Signature, a: &Neutral, b: &Neutral, fresh: Lvl) -> bool {
+    let same = |x: &Val, y: &Val| identical(sig, x, y, fresh);
+    match (a, b) {
+        (Neutral::Var(x), Neutral::Var(y)) => x == y,
+        (Neutral::Axiom(x, l), Neutral::Axiom(y, m)) => x == y && levels_identical(l, m),
+        (Neutral::App(f, x), Neutral::App(g, y)) => identical_neutral(sig, f, g, fresh) && same(x, y),
+        (Neutral::Fst(x), Neutral::Fst(y)) | (Neutral::Snd(x), Neutral::Snd(y)) => identical_neutral(sig, x, y, fresh),
+        (Neutral::Absurd(x, _), Neutral::Absurd(y, _)) => same(x, y),
+        (Neutral::Recursor(r, x), Neutral::Recursor(s, y)) => {
+            r.data == s.data
+                && levels_identical(&r.levels, &s.levels)
+                && r.args.len() == s.args.len()
+                && r.args.iter().zip(&s.args).all(|(a, b)| same(a, b))
+                && identical_neutral(sig, x, y, fresh)
+        }
+        (Neutral::Eq { level: l, ty: t, a: a1, b: b1 }, Neutral::Eq { level: m, ty: u, a: a2, b: b2 }) => {
+            l.equal(m) && same(t, u) && same(a1, a2) && same(b1, b2)
+        }
+        (Neutral::Cast { from: f1, to: t1, value: v1, .. }, Neutral::Cast { from: f2, to: t2, value: v2, .. }) => {
+            same(f1, f2) && same(t1, t2) && same(v1, v2)
+        }
+        (
+            Neutral::QElim { motive: p1, method: f1, quotient: q1, .. },
+            Neutral::QElim { motive: p2, method: f2, quotient: q2, .. },
+        ) => same(p1, p2) && same(f1, f2) && identical_neutral(sig, q1, q2, fresh),
+        _ => false,
+    }
+}
+
 fn stuck_cast(a: Val, b: Val, e: Val, t: Val) -> Val {
     Val::neutral(Neutral::Cast { from: a, to: b, proof: e, value: t })
 }
@@ -359,10 +434,25 @@ fn stuck_cast(a: Val, b: Val, e: Val, t: Val) -> Val {
 // Eliminating the witness gives the witness again: applying or projecting
 // it, and casting it to another proposition.
 // See Note [Proof irrelevance is decided by the type].
+
+// Note [A cast between identical types is the identity]
 //
-// One rule of the paper's presentation is missing: `@cast A A e t` reduces to
-// `t` only when `A` has a head the cast rules know (a universe, a Pi or Sigma
-// type, an inductive type), not for a neutral `A`.
+// `@cast A B e t` reduces to `t` when `A` and `B` are the same value. This
+// is not one of the TT^obs reductions by head: those reach `t` only by going
+// through the structure of `t` (a lambda, a pair, a constructor, a class),
+// so on a neutral `t` (a variable of a quotient type, say) a cast from a type
+// to itself would be stuck. The rule matters for quotient elimination: the
+// respect obligation of a non-dependent motive is stated with a cast from
+// `P (@qin x)` to `P (@qin y)`, both the same type, and without the rule a
+// binary operation on a quotient could not be defined, since its outer
+// respect proof meets a cast of the inner eliminator on a variable.
+//
+// The rule is sound: `@cast A A e t ~ t` holds in the setoid model that
+// justifies TT^obs, where a cast along a proof of `A ~ A` is related to the
+// identity. It is checked syntactically (see `identical`), so it fires on
+// types that are equal without unfolding or eta, which is when the respect
+// obligations above need it. What it does to the decidability argument of
+// the paper is not settled here.
 
 #[cfg(test)]
 mod tests;

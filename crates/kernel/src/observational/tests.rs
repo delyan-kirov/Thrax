@@ -89,7 +89,7 @@ $ fn : Nat -> Nat = @cast (Nat -> Nat) (Nat -> Nat) (@tt, \_ => @tt) (\n => succ
     ));
     assert_eq!(normal_form(&sig, "moved").unwrap(), "succ (succ (succ (succ zero)))");
     assert_eq!(normal_form(&sig, "pair").unwrap(), "(succ (succ zero), succ (succ (succ (succ zero))))");
-    assert_eq!(normal_form(&sig, "fn").unwrap(), r"\_ => succ _");
+    assert_eq!(normal_form(&sig, "fn").unwrap(), r"\n => succ n");
 }
 
 #[test]
@@ -103,6 +103,18 @@ $ n : Nat = @cast A Nat e a
 "
     ));
     assert_eq!(normal_form(&sig, "n").unwrap(), "@cast A Nat e a");
+}
+
+#[test]
+fn a_cast_between_identical_types_is_the_identity() {
+    let sig = accept(&format!(
+        r"{NAT}{PARITY}
+$ q : Parity
+$ e : Parity ~ Parity
+$ same : Parity = @cast Parity Parity e q
+"
+    ));
+    assert_eq!(normal_form(&sig, "same").unwrap(), "q");
 }
 
 #[test]
