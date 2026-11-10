@@ -1,13 +1,13 @@
 use crate::{check_script, normal_form, Signature};
 
-fn accept(src: &str) -> Signature {
+pub(crate) fn accept(src: &str) -> Signature {
     match check_script(src) {
         Ok(sig) => sig,
         Err(e) => panic!("rejected:\n{}", e.render(src, "test.ott")),
     }
 }
 
-fn reject(src: &str, needle: &str) {
+pub(crate) fn reject(src: &str, needle: &str) {
     match check_script(src) {
         Ok(_) => panic!("accepted, expected an error containing `{needle}`"),
         Err(e) => {
@@ -214,7 +214,7 @@ $ contradiction : (P: @Type 0) -> P -> Not P -> @Bottom = \P p n => n p
     reject("$ A : @Type 1\n$ a : A\n$ bad : A = @absurd A @tt\n", "expected `@Bottom`, found `@Top`");
 }
 
-const NAT: &str = r"
+pub(crate) const NAT: &str = r"
 $ Nat : @Type 1 = @data | zero | succ Nat
 $ add : Nat -> Nat -> Nat = \m n => Nat.elim @ctx {.m = 1} (\_ => Nat) n (\_ r => succ r) m
 $ two : Nat = succ (succ zero)

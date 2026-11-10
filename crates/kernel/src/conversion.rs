@@ -65,6 +65,8 @@ impl ConversionChecker<'_> {
             },
             Neutral::Absurd(ty, _) => ty.clone(),
             Neutral::Recursor(rec, major) => apply(self.sig, rec.motive(self.sig).clone(), Val::Neutral(major.clone())),
+            Neutral::Eq { .. } => Val::Sort(Level::Zero),
+            Neutral::Cast { to, .. } => to.clone(),
         }
     }
 
@@ -80,7 +82,7 @@ impl ConversionChecker<'_> {
                 Val::Sort(l) => Some(l),
                 _ => None,
             },
-            Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) => None,
+            Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) | Val::Irrelevant => None,
         }
     }
 
@@ -116,7 +118,7 @@ impl ConversionChecker<'_> {
             Val::Sort(_) => self.conv_type(a, b, false),
             Val::Neutral(_) | Val::Data(_) => self.conv_by_structure(a, b),
             Val::Top | Val::Bottom => unreachable!("propositions were handled above"),
-            Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) => unreachable!("not a type"),
+            Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) | Val::Irrelevant => unreachable!("not a type"),
         }
     }
 
@@ -124,6 +126,9 @@ impl ConversionChecker<'_> {
     /// constructor, neutrals by head and spine.
     fn conv_by_structure(&mut self, a: &Val, b: &Val) -> bool {
         match (a, b) {
+            // Only a proposition has the witness as a value, whatever its sort
+            // looked like.
+            (Val::Irrelevant, _) | (_, Val::Irrelevant) => true,
             (Val::Neutral(x), Val::Neutral(y)) => self.conv_neutral(x, y).is_some(),
             (Val::Constructor(x), Val::Constructor(y)) => {
                 x.data == y.data
@@ -174,6 +179,15 @@ impl ConversionChecker<'_> {
                 }
                 self.conv_neutral(x, y)?;
                 Some(apply(self.sig, r.motive(self.sig).clone(), Val::Neutral(x.clone())))
+            }
+            (Neutral::Eq { level: l, ty: t, a: a1, b: b1 }, Neutral::Eq { level: m, ty: u, a: a2, b: b2 }) => {
+                let same = l.equal(m) && self.conv_type(t, u, false) && self.conv(t, a1, a2) && self.conv(t, b1, b2);
+                same.then_some(Val::Sort(Level::Zero))
+            }
+            // The proofs are irrelevant.
+            (Neutral::Cast { from: f1, to: t1, value: v1, .. }, Neutral::Cast { from: f2, to: t2, value: v2, .. }) => {
+                let same = self.conv_type(f1, f2, false) && self.conv_type(t1, t2, false) && self.conv(f1, v1, v2);
+                same.then(|| t1.clone())
             }
             _ => None,
         }

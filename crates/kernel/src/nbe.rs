@@ -24,6 +24,7 @@ use std::rc::Rc;
 
 use crate::inductive::{constructor_value, data_value, recursor_value, ConstructorVal, DataVal, RecursorArgs};
 use crate::level::Level;
+use crate::observational::{cast, eq};
 use crate::signature::{GlobalId, GlobalKind, Signature};
 use crate::term::{Binding, Index, Name, Term};
 
@@ -45,6 +46,8 @@ pub enum Val {
     Bottom,
     Data(Rc<DataVal>),
     Constructor(Rc<ConstructorVal>),
+    /// Any proof. See Note [Proofs evaluate to an irrelevant witness].
+    Irrelevant,
 }
 
 /// A Pi or Sigma type's value, with the sorts of both sides.
@@ -67,6 +70,10 @@ pub enum Neutral {
     Absurd(Val, Val),
     /// A recursor stuck on its major premise.
     Recursor(Rc<RecursorArgs>, Rc<Neutral>),
+    /// An equality whose type or sides have no head its rules know.
+    Eq { level: Level, ty: Val, a: Val, b: Val },
+    /// A cast between types whose heads differ or are neutral.
+    Cast { from: Val, to: Val, proof: Val, value: Val },
 }
 
 /// A binder's body, waiting for the value of its variable.
@@ -171,6 +178,12 @@ pub fn eval(sig: &Signature, env: &Env, t: &Term) -> Val {
         Term::Tt => Val::Tt,
         Term::Bottom => Val::Bottom,
         Term::Absurd(ty, e) => Val::neutral(Neutral::Absurd(eval(sig, env, ty), eval(sig, env, e))),
+        Term::Eq(level, ty, a, b) => eq(sig, env.level(level), eval(sig, env, ty), eval(sig, env, a), eval(sig, env, b)),
+        Term::Cast(from, to, proof, value) => {
+            let (from, to) = (eval(sig, env, from), eval(sig, env, to));
+            cast(sig, from, to, eval(sig, env, proof), eval(sig, env, value))
+        }
+        Term::Irrelevant => Val::Irrelevant,
     }
 }
 
@@ -206,6 +219,7 @@ pub fn apply(sig: &Signature, f: Val, a: Val) -> Val {
     match f {
         Val::Lam(_, body) => body.apply(sig, a),
         Val::Neutral(n) => Val::neutral(Neutral::App(n, a)),
+        Val::Irrelevant => Val::Irrelevant,
         _ => unreachable!("applied a non-function: the checker let an ill-typed term through"),
     }
 }
@@ -214,6 +228,7 @@ pub fn fst(p: Val) -> Val {
     match p {
         Val::Pair(pair) => pair.0.clone(),
         Val::Neutral(n) => Val::neutral(Neutral::Fst(n)),
+        Val::Irrelevant => Val::Irrelevant,
         _ => unreachable!("projected from a non-pair: the checker let an ill-typed term through"),
     }
 }
@@ -222,6 +237,7 @@ pub fn snd(p: Val) -> Val {
     match p {
         Val::Pair(pair) => pair.1.clone(),
         Val::Neutral(n) => Val::neutral(Neutral::Snd(n)),
+        Val::Irrelevant => Val::Irrelevant,
         _ => unreachable!("projected from a non-pair: the checker let an ill-typed term through"),
     }
 }
@@ -240,6 +256,7 @@ pub fn quote(sig: &Signature, depth: Lvl, v: &Val) -> Term {
         Val::Top => Term::Top,
         Val::Tt => Term::Tt,
         Val::Bottom => Term::Bottom,
+        Val::Irrelevant => Term::Irrelevant,
         Val::Data(d) => {
             let head = Term::Global(sig.data(d.data).global, d.levels.clone());
             quote_spine(sig, depth, head, &d.params)
@@ -286,6 +303,14 @@ fn quote_neutral(sig: &Signature, depth: Lvl, n: &Neutral) -> Term {
         Neutral::Recursor(rec, major) => {
             let head = Term::Global(sig.data(rec.data).recursor, rec.levels.clone());
             Term::app(quote_spine(sig, depth, head, &rec.args), quote_neutral(sig, depth, major))
+        }
+        Neutral::Eq { level, ty, a, b } => {
+            let q = |v| Rc::new(quote(sig, depth, v));
+            Term::Eq(level.clone(), q(ty), q(a), q(b))
+        }
+        Neutral::Cast { from, to, proof, value } => {
+            let q = |v| Rc::new(quote(sig, depth, v));
+            Term::Cast(q(from), q(to), q(proof), q(value))
         }
     }
 }

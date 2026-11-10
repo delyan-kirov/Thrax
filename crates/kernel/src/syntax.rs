@@ -50,6 +50,8 @@ pub enum RawKind {
     /// `e.1`, `e.2`.
     Fst(Box<Raw>),
     Snd(Box<Raw>),
+    /// `a ~ b`.
+    Eq(Box<Raw>, Box<Raw>),
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +77,13 @@ pub enum Primitive {
     Tt,
     Bottom,
     Absurd,
+    /// `@Eq A a b`, the equality with its type given.
+    Eq,
+    Refl,
+    /// `@transp t B u t' e`: from `u : B t` and `e : t ~ t'`, a proof of
+    /// `B t'` (transport into a proposition).
+    Transp,
+    Cast,
 }
 
 /// Every primitive's spelling and argument count.
@@ -83,6 +92,10 @@ pub const PRIMITIVES: &[(&str, Primitive, usize)] = &[
     ("tt", Primitive::Tt, 0),
     ("Bottom", Primitive::Bottom, 0),
     ("absurd", Primitive::Absurd, 2),
+    ("Eq", Primitive::Eq, 3),
+    ("refl", Primitive::Refl, 1),
+    ("transp", Primitive::Transp, 5),
+    ("cast", Primitive::Cast, 4),
 ];
 
 #[derive(Clone, Debug)]
@@ -133,6 +146,7 @@ enum Tok {
     Pipe,
     Plus,
     Star,
+    Tilde,
     Let,
     In,
     Eof,
@@ -161,6 +175,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Pipe => "|",
                 Tok::Plus => "+",
                 Tok::Star => "*",
+                Tok::Tilde => "~",
                 Tok::Let => "let",
                 Tok::In => "in",
                 _ => unreachable!(),
@@ -255,6 +270,7 @@ fn lex(src: &str) -> Result<Vec<(Tok, Span)>> {
                         b'|' => Tok::Pipe,
                         b'+' => Tok::Plus,
                         b'*' => Tok::Star,
+                        b'~' => Tok::Tilde,
                         _ => {
                             let end = start + src[start..].chars().next().map_or(1, char::len_utf8);
                             return Err(error(src, Code::UnknownSymbol, Span::new(start, end), "unexpected character"));
@@ -498,7 +514,7 @@ impl Parser<'_> {
                 self.raw(RawKind::Sigma(name, Box::new(ty), Box::new(cod)), start)
             }));
         }
-        let first = self.app()?;
+        let first = self.equality()?;
         if self.eat(&Tok::Star) {
             let rest = self.product()?;
             Ok(self.raw(RawKind::Sigma("_".into(), Box::new(first), Box::new(rest)), start))
@@ -581,6 +597,18 @@ impl Parser<'_> {
         self.expect(Tok::In)?;
         let body = self.expr()?;
         Ok(self.raw(RawKind::Let(name, ty, Box::new(val), Box::new(body)), start))
+    }
+
+    /// `a ~ b`, non-associative, binding tighter than `*`.
+    fn equality(&mut self) -> Result<Raw> {
+        let start = self.span().start;
+        let a = self.app()?;
+        if self.eat(&Tok::Tilde) {
+            let b = self.app()?;
+            Ok(self.raw(RawKind::Eq(Box::new(a), Box::new(b)), start))
+        } else {
+            Ok(a)
+        }
     }
 
     fn starts_atom(&self) -> bool {

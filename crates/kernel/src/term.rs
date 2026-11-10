@@ -56,6 +56,13 @@ pub enum Term {
     /// The false proposition, and its elimination into any type.
     Bottom,
     Absurd(Rc<Term>, Rc<Term>),
+    /// `a ~ b` at type `ty`, where `ty : @Type level`.
+    Eq(Level, Rc<Term>, Rc<Term>, Rc<Term>),
+    /// `@cast from to proof value`.
+    Cast(Rc<Term>, Rc<Term>, Rc<Term>, Rc<Term>),
+    /// A proof, whose value is irrelevant.
+    /// See Note [Proofs evaluate to an irrelevant witness].
+    Irrelevant,
 }
 
 impl Term {
@@ -184,6 +191,23 @@ impl Printer<'_> {
                 self.print(out, Precedence::Atom, e);
                 out.push_str(if matches!(t, Term::Fst(_)) { ".1" } else { ".2" });
             }
+            Term::Eq(_, _, a, b) => {
+                open(out, Precedence::Product);
+                self.print(out, Precedence::App, a);
+                out.push_str(" ~ ");
+                self.print(out, Precedence::App, b);
+                close(out, Precedence::Product);
+            }
+            Term::Cast(from, to, proof, value) => {
+                open(out, Precedence::App);
+                out.push_str("@cast");
+                for t in [from, to, proof, value] {
+                    out.push(' ');
+                    self.print(out, Precedence::Atom, t);
+                }
+                close(out, Precedence::App);
+            }
+            Term::Irrelevant => out.push_str("@irrelevant"),
             Term::Top => out.push_str("@Top"),
             Term::Tt => out.push_str("@tt"),
             Term::Bottom => out.push_str("@Bottom"),
@@ -236,7 +260,9 @@ pub fn shift(t: &Term, cutoff: Index, by: Index) -> Term {
     };
     match t {
         Term::Var(i) if *i >= cutoff => Term::Var(i + by),
-        Term::Var(_) | Term::Global(..) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom => t.clone(),
+        Term::Var(_) | Term::Global(..) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom | Term::Irrelevant => t.clone(),
+        Term::Eq(l, ty, a, b) => Term::Eq(l.clone(), go(ty, cutoff), go(a, cutoff), go(b, cutoff)),
+        Term::Cast(x, y, e, v) => Term::Cast(go(x, cutoff), go(y, cutoff), go(e, cutoff), go(v, cutoff)),
         Term::Pi(b) => Term::Pi(binding(b)),
         Term::Sigma(b) => Term::Sigma(binding(b)),
         Term::Lam(name, body) => Term::Lam(name.clone(), go(body, cutoff + 1)),
@@ -253,7 +279,9 @@ pub fn shift(t: &Term, cutoff: Index, by: Index) -> Term {
 pub fn mentions_global(t: &Term, id: GlobalId) -> bool {
     match t {
         Term::Global(g, _) => *g == id,
-        Term::Var(_) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom => false,
+        Term::Var(_) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom | Term::Irrelevant => false,
+        Term::Eq(_, ty, a, b) => [ty, a, b].iter().any(|t| mentions_global(t, id)),
+        Term::Cast(x, y, e, v) => [x, y, e, v].iter().any(|t| mentions_global(t, id)),
         Term::Pi(b) | Term::Sigma(b) => mentions_global(&b.dom, id) || mentions_global(&b.cod, id),
         Term::Lam(_, e) | Term::Fst(e) | Term::Snd(e) => mentions_global(e, id),
         Term::App(a, b) | Term::Pair(a, b) | Term::Absurd(a, b) => mentions_global(a, id) || mentions_global(b, id),
@@ -265,7 +293,9 @@ pub fn mentions_global(t: &Term, id: GlobalId) -> bool {
 pub fn mentions(t: &Term, ix: Index) -> bool {
     match t {
         Term::Var(i) => *i == ix,
-        Term::Global(..) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom => false,
+        Term::Global(..) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom | Term::Irrelevant => false,
+        Term::Eq(_, ty, a, b) => [ty, a, b].iter().any(|t| mentions(t, ix)),
+        Term::Cast(x, y, e, v) => [x, y, e, v].iter().any(|t| mentions(t, ix)),
         Term::Pi(b) | Term::Sigma(b) => mentions(&b.dom, ix) || mentions(&b.cod, ix + 1),
         Term::Pair(a, b) | Term::Absurd(a, b) => mentions(a, ix) || mentions(b, ix),
         Term::Fst(e) | Term::Snd(e) => mentions(e, ix),

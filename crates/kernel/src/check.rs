@@ -24,7 +24,8 @@ use utilities::{Code, Diagnostic, Result, Span};
 
 use crate::conversion::ConversionChecker;
 use crate::level::Level;
-use crate::nbe::{eval, fst, global_type, quote, BindingVal, Closure, Env, Lvl, Neutral, Val};
+use crate::nbe::{apply, eval, fst, global_type, quote, BindingVal, Closure, Env, Lvl, Neutral, Val};
+use crate::observational::eq;
 use crate::inductive::{constructor_type, recursor_type};
 use crate::signature::{ConstructorDecl, DataDecl, DataId, Global, GlobalId, GlobalKind, Param, Signature};
 use crate::syntax::{error, parse_script, Item, ItemBody, LevelArg, Primitive, Raw, RawConstructor, RawKind, RawLevel};
@@ -479,6 +480,25 @@ impl Checker<'_> {
                 Ok((self.check(ctx, e, &ty_val)?, ty_val))
             }
             RawKind::Prim(prim, args) => self.infer_primitive(ctx, *prim, args),
+            RawKind::Eq(a, b) => {
+                let (a, ty) = self.infer(ctx, a)?;
+                let level = self.sort_of(ctx, &ty, raw.span)?;
+                let b = self.check(ctx, b, &ty)?;
+                let ty = quote(&self.sig, ctx.depth(), &ty);
+                Ok((Term::Eq(level, Rc::new(ty), Rc::new(a), Rc::new(b)), Val::Sort(Level::Zero)))
+            }
+        }
+    }
+
+    /// The sort of a type a term was inferred to have.
+    fn sort_of(&self, ctx: &mut Context, ty: &Val, span: Span) -> Result<Level> {
+        match self.conversion(ctx).sort_of(ty) {
+            Some(level) => Ok(level),
+            None => Err(self.error(
+                Code::TypeAnnotationRequired,
+                span,
+                format!("cannot tell which universe `{}` lives in", self.show(ctx, ty)),
+            )),
         }
     }
 
@@ -507,6 +527,49 @@ impl Checker<'_> {
                 let proof = self.check(ctx, &args[1], &Val::Bottom)?;
                 let ty_val = self.eval(ctx, &ty);
                 (Term::Absurd(Rc::new(ty), Rc::new(proof)), ty_val)
+            }
+            Primitive::Eq => {
+                let (ty, level) = self.check_type(ctx, &args[0])?;
+                let ty_val = self.eval(ctx, &ty);
+                let a = self.check(ctx, &args[1], &ty_val)?;
+                let b = self.check(ctx, &args[2], &ty_val)?;
+                (Term::Eq(level, Rc::new(ty), Rc::new(a), Rc::new(b)), proposition)
+            }
+            Primitive::Refl => {
+                let (a, ty) = self.infer(ctx, &args[0])?;
+                let level = self.sort_of(ctx, &ty, args[0].span)?;
+                let a = self.eval(ctx, &a);
+                (Term::Irrelevant, eq(&self.sig, level, ty, a.clone(), a))
+            }
+            Primitive::Transp => {
+                let (t, ty) = self.infer(ctx, &args[0])?;
+                let level = self.sort_of(ctx, &ty, args[0].span)?;
+                let motive_ty = Val::Pi(Rc::new(BindingVal {
+                    name: "_".into(),
+                    dom: ty.clone(),
+                    cod: Closure::Native(Rc::new(|_, _| Val::Sort(Level::Zero))),
+                    dom_level: level.clone(),
+                    cod_level: Level::constant(1),
+                }));
+                let motive = self.check(ctx, &args[1], &motive_ty)?;
+                let motive = self.eval(ctx, &motive);
+                let t = self.eval(ctx, &t);
+                self.check(ctx, &args[2], &apply(&self.sig, motive.clone(), t.clone()))?;
+                let t2 = self.check(ctx, &args[3], &ty)?;
+                let t2 = self.eval(ctx, &t2);
+                self.check(ctx, &args[4], &eq(&self.sig, level, ty, t, t2.clone()))?;
+                (Term::Irrelevant, apply(&self.sig, motive, t2))
+            }
+            Primitive::Cast => {
+                let (from, level) = self.check_type(ctx, &args[0])?;
+                let universe = Val::Sort(level.clone());
+                let to = self.check(ctx, &args[1], &universe)?;
+                let (from_val, to_val) = (self.eval(ctx, &from), self.eval(ctx, &to));
+                let along = eq(&self.sig, level.succ(), universe, from_val.clone(), to_val.clone());
+                let proof = self.check(ctx, &args[2], &along)?;
+                let value = self.check(ctx, &args[3], &from_val)?;
+                let term = Term::Cast(Rc::new(from), Rc::new(to), Rc::new(proof), Rc::new(value));
+                (term, to_val)
             }
         })
     }
@@ -586,4 +649,4 @@ impl Checker<'_> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
