@@ -1,10 +1,9 @@
 $ @mod TYPE_SPLICE
 
 # \file TYPE_SPLICE.ares
-# \info Copying members between declarations with an `@e` entry. A `@struct` or
-#       `@union` entry `@e X` runs `X` at build time, and the fields
-#       (`@parse_fields`) or variants (`@parse_variants`) it builds take the
-#       entry's place. DERIVE's `fields_of "Point"` and `variants_of "Base"`
+# \info Copying members between declarations with a `&` entry. A `@struct` or
+#       `@union` entry `&X` runs `X` at build time, and the fields or variants
+#       its `@Code` spells take the entry's place. DERIVE's `fields_of "Point"` and `variants_of "Base"`
 #       build them from a declared type, so a type can repeat another's members
 #       ahead of (or among) its own. It is a copy, no relationship: `Point3` is
 #       not a `Point`. A copied type may itself be generated, and a generic one
@@ -16,20 +15,21 @@ $ @import VEC
 $ @import TYPE_SPLICE_LIB
 
 $ Point : @struct = x: @Int, y: @Int
-$ Point3 : @struct = @e <| DERIVE.fields_of "Point", z: @Int     # x, y, then z
-$ Located : @struct = @e <| DERIVE.fields_of "Point3", tag: @Int # x, y, z, tag
+$ Point3 : @struct = &DERIVE.fields_of "Point", z: @Int     # x, y, then z
+$ Located : @struct = &DERIVE.fields_of "Point3", tag: @Int # x, y, z, tag
 
 $ Base : @union = Red: {}, Green: {}
-$ Color : @union = @e <| DERIVE.variants_of "Base", Blue: {} # Red, Green, then Blue
+$ Color : @union = &DERIVE.variants_of "Base", Blue: {} # Red, Green, then Blue
 
 # A generic struct, copied over the new type's own parameter.
 $ Pair : @struct a = fst: a, snd: a
-$ Labeled : @struct b = label: @Str, @e <| DERIVE.fields_of "Pair b"
+$ Labeled : @struct b = label: @Str, &DERIVE.fields_of "Pair b"
 
-# Any generator can build the entries: here, one field per name.
+# Any generator can build the entries: here, one field per name. `@code`
+# turns computed text into code; the struct checks it spells fields.
 $ counters : @Vec @Str -> @Code = \names =>
-    @parse_fields <| DERIVE.join ", " <| VEC.map (\n => n ++ ": @Int") names
-$ Stats : @struct = @e <| counters ["hits", "misses"]
+    @code <| DERIVE.join ", " <| VEC.map (\n => n ++ ": @Int") names
+$ Stats : @struct = &counters ["hits", "misses"]
 
 $ rank : Color -> @Int = \c =>
     c |> \
@@ -55,4 +55,4 @@ $ ck_import : @Int = if box.w * box.h * box.depth == 24 => 0 else 16
 
 $ test : @Int = ck_struct + ck_union + ck_generic + ck_gen + ck_import
 
-$ @e <| assert (test == 0) "TYPE_SPLICE: a check failed"
+$ &assert (test == 0) "TYPE_SPLICE: a check failed"

@@ -116,6 +116,10 @@ impl Layout<'_, '_> {
     fn unary(&self, i: usize) -> bool {
         let t = &self.toks[i];
         let next_glued = self.toks.get(i + 1).is_some_and(|n| !n.gap);
+        if matches!(t.kind, Kind::Op) && t.text == "&" {
+            // A splice has no infix form, so it always hugs its operand.
+            return next_glued;
+        }
         matches!(t.kind, Kind::Op) && matches!(t.text, "-" | "!" | "~~~") && next_glued
             && (i == 0
                 || t.gap
@@ -987,11 +991,11 @@ impl Layout<'_, '_> {
         }
         let eq = ts.iter().position(|t| matches!(self.tok_of(t).map(|t| t.kind), Some(Kind::Eq)));
         let second = ts.get(1).and_then(|t| self.tok_of(t)).copied();
-        let is_meta_e = second.is_some_and(|t| matches!(t.kind, Kind::At) && t.text == "@e");
+        let is_splice = second.is_some_and(|t| matches!(t.kind, Kind::Op) && t.text == "&");
         let is_import = second.is_some_and(|t| matches!(t.kind, Kind::At) && t.text == "@import");
-        let Some(eq) = eq.filter(|_| !is_meta_e && !is_import) else {
-            // `$ @e expr`, `$ @import [A =] M`, `$ @private`, `$ @mod M`.
-            let split = if is_meta_e { 2 } else { ts.len() };
+        let Some(eq) = eq.filter(|_| !is_splice && !is_import) else {
+            // `$ &expr`, `$ @import [A =] M`, `$ @private`, `$ @mod M`.
+            let split = if is_splice { 1 } else { ts.len() };
             let head_ps: Vec<P> = ts[..split].iter().map(|t| self.tree(t)).collect();
             let head = self.join(&head_ps).expect("non-empty");
             if split == ts.len() {
@@ -1000,6 +1004,12 @@ impl Layout<'_, '_> {
             let mut pos = split;
             let body = self.expr(ts, &mut pos, &|_| false, false);
             let rest = self.leftovers(ts, pos, body);
+            if is_splice {
+                // `$ &f a b` stays on the `$` line; a long one breaks inside the
+                // application, its arguments one level in.
+                let space = self.docs.text(" ");
+                return self.docs.cat(vec![head.d, space, rest.d]);
+            }
             return self.hang(head, rest).d;
         };
         let eq_tok = Self::first_tok(&ts[eq]);

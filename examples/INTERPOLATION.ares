@@ -1,0 +1,74 @@
+$ @mod INTERPOLATION
+
+# \file INTERPOLATION.ares
+# \info Type-directed string interpolation. `"a ?(x) b"` means what its expected
+#       type says. A `@Str` (or no expectation at all) gets the default:
+#       `to_string` each hole and concatenate. A type with an `@IInterp`
+#       instance builds the string through a builder instead, so its holes stay
+#       structured: a SQL statement keeps them as bound parameters, HTML escapes
+#       them. Each hole resolves its own `@IInterpHole` instance, keyed on the
+#       builder AND the hole's type, so `@Int` and `@Str` holes mix with no
+#       overloading. No macro is involved: these are ordinary values.
+
+$ @import STR
+
+# --- a prepared statement ----------------------------------------------------
+# The text carries `$1`, `$2`, ... where the holes were, and the values travel
+# beside it, so a hole can never change the statement.
+$ Param : @union = PInt: @Int, PStr: @Str
+$ Sql : @struct = text: @Str, params: @Vec Param
+
+$ impl_IInterp_for_Sql : @IInterp Sql Sql =
+    .{ .interp = \build => build Sql.{ .text = "", .params = [] } }
+$ impl_IInterpText_for_Sql : @IInterpText Sql = .{ .text = \q s => Sql.{ .text = q.text ++ s | q } }
+
+# Append a placeholder for `p` and bind it.
+$ bind : Sql -> Param -> Sql = \q p =>
+    let params = @vec_push q.params p in
+    Sql.{ .text = q.text ++ "$" ++ to_string (@vec_len params), .params = params }
+
+$ impl_IInterpHole_for_Sql_Int : @IInterpHole Sql @Int =
+    .{ .hole = \q n => bind q (Param.PInt.{ n }) }
+$ impl_IInterpHole_for_Sql_Str : @IInterpHole Sql @Str =
+    .{ .hole = \q s => bind q (Param.PStr.{ s }) }
+
+# The literal is a `Sql` because the result type says so.
+$ by_name : @Str -> @Int -> Sql = \name age =>
+    "SELECT id FROM users WHERE name = ?(name) AND age > ?(age)"
+
+# An argument position chooses the same way.
+$ placeholders : Sql -> @Int = \q => @vec_len q.params
+$ two : @Int = placeholders "UPDATE t SET a = ?(1), b = ?("x")"
+
+# --- escaped HTML ------------------------------------------------------------
+$ Html : @struct = src: @Str
+
+$ escape : @Str -> @Str = \s =>
+    STR.replace (STR.replace (STR.replace s "&" "&amp;") "<" "&lt;") ">" "&gt;"
+
+$ impl_IInterp_for_Html : @IInterp Html Html = .{ .interp = \build => build Html.{ .src = "" } }
+$ impl_IInterpText_for_Html : @IInterpText Html = .{ .text = \h s => Html.{ .src = h.src ++ s } }
+$ impl_IInterpHole_for_Html_Str : @IInterpHole Html @Str =
+    .{ .hole = \h s => Html.{ .src = h.src ++ escape s } }
+
+$ para : @Str -> Html = \body => "<p>?(body)</p>"
+
+# --- the default ---------------------------------------------------------------
+$ plain : @Str = "n = ?(6 * 7), ok = ?(@true)"
+
+# --- checks ----------------------------------------------------------------------
+$ evil : Sql = by_name "x'; DROP TABLE users; --" 30
+
+$ ck_text : @Int = if evil.text == "SELECT id FROM users WHERE name = $1 AND age > $2" => 0 else 1
+$ ck_params : @Int =
+    evil.params |> \
+        | [Param.PStr.{ s }, Param.PInt.{ n }] =>
+            if s == "x'; DROP TABLE users; --" && n == 30 => 0 else 2
+        | _                                    => 2
+$ ck_arg : @Int = if two == 2 => 0 else 4
+$ ck_html : @Int = if (para "a<b & c").src == "<p>a&lt;b &amp; c</p>" => 0 else 8
+$ ck_plain : @Int = if plain == "n = 42, ok = true" => 0 else 16
+
+$ test : @Int = ck_text + ck_params + ck_arg + ck_html + ck_plain
+
+$ &assert (test == 0) "INTERPOLATION: a check failed"

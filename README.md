@@ -44,12 +44,12 @@ $ @main : @Vec @Str -> <@IO> @Int = \args => C.puts "hello"; 0
 ```
 
 Every other module is a library. Checking one runs its compile-time
-assertions (`$ @e <| assert ..`), so a module states its own invariants and
+assertions (`$ &assert ..`), so a module states its own invariants and
 type-checking it is testing it.
 
 ```sh
 ares run     MAIN.ares          # run under the interpreter
-ares check   examples/FIB.ares  # type-check, print types, run `$ @e` checks
+ares check   examples/FIB.ares  # type-check, print types, run `$ &` checks
 ares expand  MAIN.ares          # the source after metaprogram expansion
 ares emit-c  MAIN.ares          # print the generated C (native backend)
 ares build   MAIN.ares          # compile to a native executable
@@ -75,14 +75,14 @@ out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.
 
 ## Features
 
-- **Algebraic data types**: structs and sum types, generic by default; a declaration can copy another's members with an `@e` splice.
+- **Algebraic data types**: structs and sum types, generic by default; a declaration can copy another's members with a `&` splice.
 - **Pattern matching**: nested, literal, string, and range patterns, `++` sequence patterns that match a prefix, a suffix, or both ends, and fall-through guards.
 - **Typed algebraic effects with handlers**: the effect row is part of the type; continuations are first-class and resumable.
 - **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.
 - **C FFI with no ceremony**: `@extern "C" "sym" "lib"` binds a foreign function; C structs pass by value both ways.
 - **WebAssembly**: cross-compile with `--target=wasm32-wasi`, or run the whole compiler in the browser.
 - **Interfaces resolved by type**: an interface is a struct, an implementation is a value of it, and a function takes one as a named `@use` field the compiler infers. One mechanism; no overloading, so a name's printed type is its contract.
-- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`@e` inserts generated code, plus a `@build` entry that generates part of a module from what is on disk).
+- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`&` inserts generated code, plus a `@build` entry that generates part of a module from what is on disk).
 
 ## Example: exact probabilistic inference
 

@@ -6,7 +6,7 @@ $ @mod FIELD_SCOPE
 #       in a `let`, or in a lambda's parameter. Every name a body uses has a
 #       binder you can see. A metaprogram can still write the bindings for you:
 #       `open_fields` reflects on the struct and generates one `let` per field,
-#       which `@e` splices in, so the names are spelled out in the generated
+#       which `&` splices in, so the names are spelled out in the generated
 #       code rather than appearing from the type.
 
 $ @import VEC
@@ -40,9 +40,9 @@ $ open_fields : @Str -> @Str -> @Str -> <@Meta> @Code = \subject ty body =>
             @parse_str <| VEC.foldl bind "" fields ++ body
         | _ => @fail <| diag <| "`" ++ ty ++ "` is not a struct"
 
-$ scoped : Point -> @Int = \q => @e <| open_fields "q" "Point" "x * y"
+$ scoped : Point -> @Int = \q => &open_fields "q" "Point" "x * y"
 $ chk_open : @Int = if scoped p == 12 => 0 else 1
 
 $ test : @Int = chk_access + chk_match + chk_let + chk_param + chk_open
 
-$ @e <| assert (test == 0) "FIELD_SCOPE: a check failed"
+$ &assert (test == 0) "FIELD_SCOPE: a check failed"

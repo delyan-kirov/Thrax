@@ -95,21 +95,55 @@ $ emoji: Str = "\u{1F600} café"      # code point + raw UTF-8
 ```
 
 ## 1.6 String interpolation
-`"... {expr} ..."` splices an expression, stringified through `to_string` over its
-`Ito_string` instance. Surface sugar for `chunk ++ to_string expr ++ chunk`. `\{`
-and `\}` are literal braces.
+`"... ?(expr) ..."` splices an expression into a string. `\?` is a literal `?`, so
+`\?(` is not a hole; braces are ordinary characters, so JSON, SQL or JS embed as
+written.
+
+What the literal builds is decided by its expected type, as for `[..]`, ranges
+and numeric literals. A `@Str`, or no expectation at all, gets the default:
+each hole is stringified through `to_string` over its `IToString` instance and
+the pieces are concatenated, `chunk ++ to_string expr ++ chunk`.
 
 Simple:
 ```ares
-$ greet : Str -> Str = \who => "hello {who}!"
+$ greet : @Str -> @Str = \who => "hello ?(who)!"
 ```
 
-Involved (a user type interpolates by defining an `Ito_string` instance):
+Involved (a user type interpolates by defining an `IToString` instance):
 ```ares
 $ Point : @struct = x: @Int, y: @Int
-$ impl_IToString_for_Point : Ito_string Point = .{ .show = \p => "({p.x}, {p.y})" }
-$ msg : Str = "at {Point.{ .x = 3, .y = 4 }}, n={40 + 2}"   # "at (3, 4), n=42"
+$ impl_IToString_for_Point : IToString Point = .{ .show = \p => "(?(p.x), ?(p.y))" }
+$ msg : @Str = "at ?(Point.{ .x = 3, .y = 4 }), n=?(40 + 2)"   # "at (3, 4), n=42"
 ```
+
+**Building another type.** A type with an `@IInterp` instance builds the string
+through a builder instead, so its holes stay structured: bound parameters,
+escaping, quoting. Three blessed CORE interfaces make up the protocol:
+
+```ares
+$ @IInterp     : @struct b t = interp: (b -> b) -> t,   # start a builder, finish it
+$ @IInterpText : @struct b   = text: b -> @Str -> b,    # append a literal piece
+$ @IInterpHole : @struct b h = hole: b -> h -> b,       # append one hole
+```
+
+`"a ?(x) b"` expected as `t` is `@IInterp`'s `interp` applied to a chain that
+appends `"a "`, then `x` through the `@IInterpHole b h` instance for its type `h`,
+then `" b"`. Each hole resolves its own instance, keyed on the builder and the
+hole's type, so `@Int` and `@Str` holes mix with no overloading. The holes are
+evaluated first, left to right, and empty pieces are skipped. The expected type
+must be known at the literal (a signature, a parameter, an annotation); a string
+whose type is still open is a `@Str`.
+
+```ares
+$ Sql : @struct = text: @Str, params: @Vec Param
+# ... the @IInterp, @IInterpText and @IInterpHole instances for Sql ...
+$ by_name : @Str -> Sql = \name =>
+    "SELECT id FROM users WHERE name = ?(name)"   # text `... = $1`, params [name]
+```
+
+`examples/INTERPOLATION.ares` builds a prepared statement and escaped HTML this
+way. Expected as `@Code`, a string is a quotation: source for a compile-time
+splice (section 11.2).
 
 ---
 
@@ -185,7 +219,7 @@ $ helper : @Int -> @Int = \x => x * x    # module-private
 ## 2.5 Entry point
 The program entry is `@main`, the one name the compiler knows, and it has exactly
 one accepted signature: it takes the argument vector and returns the `@Int` exit
-code, performing `@IO`. Together with `@build` (section 11.3), the compile-time
+code, performing `@IO`. Together with `@build` (section 11.4), the compile-time
 entry, those are the only `@`-names a program may define, besides the blessed
 `@I*` interface types, which only `CORE` declares.
 
@@ -195,7 +229,7 @@ $ @main : @Vec @Str -> <@IO> @Int = \args => 0      # args[0] is the program pat
 
 A module without `@main` is a library: `ares check` type-checks it and runs its
 compile-time assertions, and `ares run`/`build` reject it. Nothing else is
-special, so a test harness is ordinary code: a check under `$ @e` (section 11)
+special, so a test harness is ordinary code: a check under `$ &` (section 11)
 or a global some tool evaluates by name.
 
 ---
@@ -331,8 +365,8 @@ $ IntPair : @alias b = Pair @Int b               # fix the first arg, keep the s
 $ ip : IntPair Str = .{ .fst = 3, .snd = "z" }  # same as Pair @Int Str
 ```
 
-An alias whose body is an effect row is a row alias. It names effects, not a
-type, so it is used inside a row (section 8.6).
+An alias names a type. A row has no alias: an effect row or a record row is
+written out where it is used.
 
 ---
 
@@ -816,9 +850,9 @@ $ Tree : @union a = Leaf: a, Node: { Tree a, Tree a }
 $ t : Tree @Int = Tree.Node.{ Tree.Leaf.{ 1 }, Tree.Leaf.{ 2 } }
 ```
 
-## 6.4 Generated members `@e`
-An entry `@e X` of a `@struct` or `@union` runs `X` at build time and splices the
-fields (`@parse_fields`) or variants (`@parse_variants`) it builds in its place.
+## 6.4 Generated members `&`
+An entry `&X` of a `@struct` or `@union` runs `X` at build time and splices the
+fields or variants its `@Code` spells in its place.
 DERIVE's `fields_of` and `variants_of` copy another declaration's members, a
 copy with no subtyping relationship. A copied type may itself be generated; a
 generic one is applied to the new type's parameters (`fields_of "Pair b"`). A
@@ -827,9 +861,9 @@ duplicate member is an error.
 ```ares
 $ @import DERIVE
 $ Point  : @struct = x: @Int, y: @Int
-$ Point3 : @struct = @e <| DERIVE.fields_of "Point", z: @Int   # x, y, then z
+$ Point3 : @struct = &DERIVE.fields_of "Point", z: @Int   # x, y, then z
 $ Base   : @union  = Red: {}, Green: {}
-$ Color  : @union  = @e <| DERIVE.variants_of "Base", Blue: {} # Red, Green, then Blue
+$ Color  : @union  = &DERIVE.variants_of "Base", Blue: {} # Red, Green, then Blue
 ```
 
 ## 6.5 Recursive types are lazy
@@ -1101,39 +1135,7 @@ $ map : (a -> <e> b) -> @Vec a -> <e> @Vec b = \f xs =>
 	xs |> \ | [] => [] | h :: t => f h :: map f t
 ```
 
-## 8.6 Row aliases
-`$ Name : @alias = <...>` names a row of effects. Inside another row the alias
-stands for its labels, so with `App` below, `<App>` is `<Gpu, Log>` and
-`<App, Net>` is `<Gpu, Log, Net>`. A row alias may name other row aliases. It
-is transparent, like a type alias: it checks exactly what its labels check, and
-a label that both an alias and the rest of the row name is kept once.
-
-```ares
-$ Log : @effect = log : @Int -> {},
-$ Gpu : @effect = draw : @Int -> {},
-$ Net : @effect = fetch : @Int -> @Int,
-$ App : @alias = <Gpu, Log>
-$ Online : @alias = <App, Net>
-$ frame : @Int -> <App> @Int = \x => draw x; log x; x
-$ sync : @Int -> <Online> @Int = \x => frame (fetch x)
-```
-
-A row variable in the body makes the alias parameterized, and it is applied to
-row variables inside a row. Left unapplied, its tail is a fresh variable, as for
-an under-applied type alias.
-
-```ares
-$ WithLog : @alias e = <Log | e>
-$ traced : (@Int -> <WithLog e> @Int) -> @Int -> <WithLog e> @Int = \f x => log x; f x
-```
-
-A printed row that holds every label of a closed, parameterless alias of two or
-more labels shows the alias name in their place (`<App, Net>`). An unhandled
-label that the performed row holds through such an alias names it:
-``effect `Log` (part of `App`) is performed but not handled``. A row alias in
-type position, or a type alias in a row, is an error.
-
-## 8.7 `@finale`
+## 8.6 `@finale`
 `@finale cleanup body` runs `body {}`, then `cleanup {}` when the body's scope
 exits: on normal completion, on an abort by an outer non-resuming handler, or
 when a stored continuation holding it completes. Nested finales run
@@ -1370,90 +1372,173 @@ and a reference compiles to a direct call with no wrapper. Unlike a C extern, a
 builtin is curried. Only CORE may declare one, and no module may redefine one.
 The operators the parser rewrites (`;`, `|>`, `<|`) are declared the same way, for
 their types: `$ (|>) : a -> (a -> <e> b) -> <e> b = @extern "ares"`. A few primitives stay inside the
-compiler because their types have no surface syntax: `@e` and `@cast` are
-checked specially, and the `@tensor_*` primitives are polymorphic over axis
+compiler because their types have no surface syntax: `@cast` is checked
+specially, and the `@tensor_*` primitives are polymorphic over axis
 variance.
 
 ---
 
 # 11. Compile-time evaluation
 
-## 11.1 `@e`, compile-time code insertion
-`@e X` runs `X` at build time and inserts the code it returns in its place. `X`
-must be an `@Code`: `@parse_str` builds an expression and `@parse_items` builds
-top-level items from a string. The inserted source is then checked like
-hand-written code. `@e` works in expression, type, pattern, and item position,
-and composes with the pipes like any one-argument function.
+## 11.1 `&`, the splice
+`&X` runs `X` at build time and replaces itself with the result:
+
+- an `@Code` is spliced in as source, usually written as a quotation
+  (section 11.2);
+- first-order data (a number, a `@Bool` or a `@Str`) is inserted as a literal.
+
+The inserted source is then checked like hand-written code. Any other result,
+such as a function, is an error at the `&`. In type, row, member and item
+position only code makes sense, so there the operand is expected as `@Code`
+and a string literal is a quotation; in expression and pattern position a
+string is data.
+
+`&` is syntax, not a function: there is no `(&)` section, no `x |> &`, and no
+`$ (&)` definition. It binds like the other prefix operators, so it scopes over
+an application: `&f a b` splices `f a b`, `&f a ++ b` is `(&(f a)) ++ b`, and a
+pipe chain is parenthesized, `&(x |> f)`. It works in every position:
 
 ```ares
-$ lit : @Int -> @Code = \n => @parse_str <| to_string n
-
-$ fib10 : @Int = @e <| lit <| fib 10                    # inserts `55`
-$ n     : @e <| @parse_str "@Int64" = 1024              # inserts the type
-$ @e <| @parse_items "$ injected : @Int = 99"           # inserts an item
-$ is55 : @Int -> @Bool = \ | @e (lit (fib 10)) => @true | _ => @false
+$ fib10 : @Int = &fib 10                            # expression: inserts `55`
+$ n     : &"@Int64" = 1024                          # type
+$ &"$ injected : @Int = 99"                         # item
+$ is55  : @Int -> @Bool = \ | &fib 10 => @true | _ => @false   # pattern
 ```
 
 A type splice may stand at any type position: a signature, a struct field, a
 union payload, an alias body, an effect operation, an effect-row argument, a
 `@use` field, or an annotation inside a body (`let x : T`, `\(x : T)`,
-`(e : T)`). Effect-row entries themselves can be spliced too, as `<@e (X)>`.
+`(e : T)`). Effect-row entries themselves can be spliced too, as `<&X>`; a
+`&` right after an operator lexes on its own, so `<&X>` is `<` then `&X`.
 
 ```ares
-$ Point : @struct = x: @e (pick {}), y: @e (pick {})
+$ Point : @struct = x: &pick {}, y: &pick {}
 ```
 
-In a pattern the operand is always parenthesized, `@e (X)`, so it ends at `)`
-and never runs into the `=>` or `|` after it. This is how a value the compiler
-can compute stands in a pattern: the generator renders it, and the arm matches
-it like a hand-written literal. The spliced pattern may bind names, and its
-coverage is checked once it is spliced.
+In a pattern, `&X` is how a value the compiler can compute stands as a
+constant: `&answer` matches the value of the global `answer`, while a bare
+`answer` would bind. Because the value is inserted as a real literal,
+exhaustiveness and `UNREACHABLE_ARM` treat it like a hand-written `42`. The
+operand ends before the `=>`, `|` or `::` after it. A generator may also build
+a pattern as `@Code`; that pattern may bind names, and its coverage is checked
+once it is spliced.
 
-A generator never runs code the checker could not yet resolve. While `@e` sites
+A generator never runs code the checker could not yet resolve. While `&` sites
 remain, a missing name or instance is left open, since a generator may still
-supply it; an `@e` whose code reaches one waits for a later round, and if no
+supply it; a `&` whose code reaches one waits for a later round, and if no
 round supplies it the error is reported as written.
 
 `X` may perform the compile-time operations (`@emit`, `@abort`, `@fresh`,
 `@link`, `@link_path`, and the reflection `@type_kind`, `@type_params`,
 `@type_fields`, `@type_variants`, `@type_of`). They carry the `<@Meta>` effect,
-which `@e` discharges. The richer ones speak CORE types:
+which `&` discharges. The richer ones speak CORE types:
 
 - `@lookup name` is a `Decl`: `Struct`, `Union` (each with its shape), `Value`
   (a global's type as source) or `Missing`.
-- `@here {}` is the running `@e`'s `Site` (`file`, `line`, `column`).
-- `@check code` type-checks an expression fragment as if written at the `@e`
+- `@here {}` is the running `&`'s `Site` (`file`, `line`, `column`).
+- `@check code` type-checks an expression fragment as if written at the `&`
   and gives its type as source; an ill-typed fragment fails the build.
 - `@fail d` and `@warn d` report a `Diag` (`message`, `notes`, `helps`; `diag
-  msg` has none) at the `@e`: `@fail` as `META_ABORT`, ending the build, `@warn`
+  msg` has none) at the `&`: `@fail` as `META_ABORT`, ending the build, `@warn`
   as a `META_WARNING` warning.
 
-A type splice builds its code with `@parse_type`, and an effect-row splice
-`<@e (X)>`, which stands for one or more entries, with `@parse_row`: a type or a
-row is not an expression, so `@parse_str` would reject `{ x: @Int }` or
-`Log, State @Int`. It discharges nothing else, so `@e` is **hermetic**: a generator
-cannot perform `@IO`. Compile-time IO lives in `@build` alone (section 11.3).
+`@Code` is source text with no syntax category of its own: the site that
+splices it decides what it must parse as (an expression, a type, the entries of
+a row, a pattern, fields, variants or items) and checks it there. An effect-row
+splice `<&X>` stands for one or more entries.
+
+`&` discharges `<@Meta>` and nothing else, so it is **hermetic**: a generator
+cannot perform `@IO`. Compile-time IO lives in `@build` alone (section 11.4).
 
 Empty code inserts nothing. A site that runs only for its effect returns it, so
 the directive disappears once it has run.
 
 A syntax error in a fragment points into the string literal that spells it,
-escapes accounted for, even when that literal is in a helper the `@e` calls. A
-fragment built at compile time (`"a" ++ b`) has no such literal, so the error
-points at the `@e` and quotes the fragment.
+escapes accounted for, even when that literal is in a helper the `&` calls. A
+fragment built at compile time (`"a" ++ b`, or a quotation with holes) has no
+such literal, so the error points at the `&` and quotes the fragment.
 
-## 11.2 Compile-time assertions and build directives
+## 11.2 Quotations
+A string literal expected as `@Code` is a **quotation**: its text is source. It
+is the `@Code` case of the type-directed literal (section 1.6), resolved through
+CORE's `@IStrLit @Code` and `@IInterp @Code @Code` instances, so no call builds
+it. Its holes run in the generator, and what a hole pastes depends on its type:
+
+| Hole type | Pasted |
+|---|---|
+| `@Code` | its source, as is |
+| a number, `@Bool`, `@Str` | the literal spelling its value: `3`, `@true`, `"hi"` |
+
+```ares
+$ times : @Int -> @Code -> @Code = \n c => "(?(c)) * ?(n)"
+$ sum   : @Code = "1 + 2 * 3"
+$ x     : @Int = &times 3 sum                   # inserts `(1 + 2 * 3) * 3`
+$ greet : @Str -> @Code = \s => "?(s) ++ \"!\""
+$ hi    : @Str = &greet "hi"                    # inserts `"hi" ++ "!"`
+```
+
+A hole pastes code bare, so the quotation decides precedence: write `(?(c))`
+where it matters. A `@Str` hole is always a string literal; to paste a computed
+name or other text as code, convert it with `@code : @Str -> @Code`, as in
+`"$ ?(@code name) : @Int = 1"`. `@code` is also how a generator turns text it
+built (`join ", " fields`) into code. Neither checks syntax: the splice site
+does. `@parse_str` remains for code that only exists at run time; it checks the
+text as an expression on the spot.
+
+A quotation is **hygienic**. A name it spells means what it means where the
+quotation is written: a generator's `scale` is its own module's `scale`, even
+where the code lands in a module with a `scale` of its own. A binder it spells
+binds only names the same quotation spells, so a generator's `let tmp` never
+captures the caller's `tmp`. Code the site hands in keeps the site's meaning: a
+quotation written in the `&` operand itself, and `@code` text.
+
+```ares
+$ plus_one : @Code -> @Code = \c => "let tmp = 1 in tmp + ?(c)"
+$ add_one  : @Int -> @Int = \tmp => &plus_one "tmp"      # tmp + 1, the caller's tmp
+$ some_of  : @Code -> @Code = \v => "Option.Some.{?(v)}"
+$ or_zero  : Option @Int -> @Int = \ | &some_of "x" => x | _ => 0
+```
+
+So a generated pattern binds a name for the arm body only when the site names
+it, as `&some_of "x"` does. The splice site renames a generator's binders apart
+(`tmp__6`) and qualifies the names it reaches (`GEN.scale`), which `ares expand`
+shows; operators and effect operations resolve at the site.
+
+A string literal expected as CORE's `Template` is a **macro argument**:
+
+```ares
+$ Template : @struct = pieces: @Vec @Str, holes: @Vec @Code
+```
+
+Its pieces stay text and its holes are **quoted**, not evaluated, since they
+name what is in scope where the literal is written, which at a `&` is often a
+run-time parameter. `@check` at that `&` sees the locals in scope there, so a
+macro learns a hole's type:
+
+```ares
+$ sql : Template -> <@Meta> @Code = ...   # numbers the holes `$1`, `$2`, ...
+$ by_name : @Str -> @Int -> Query = \name age =>
+    &sql "SELECT id FROM users WHERE name = ?(name) AND age > ?(age)"
+```
+
+`sql` receives `pieces = ["SELECT id FROM users WHERE name = ", " AND age > ", ""]`
+and the code `name` and `age`, whose types `@check` reports as `@Str` and
+`@Int`. A hole is pasted back as the site's code, so it keeps the site's
+meaning. A literal with no holes is a `Template` of one piece.
+`examples/META_TEMPLATE.ares` is the whole macro.
+
+## 11.3 Compile-time assertions and build directives
 There is no `@assert` builtin. `CORE.assert : @Bool -> @Str -> <@Meta> @Code` is
 one line of ordinary Ares over `@abort` that returns empty code, so a module
 states its own invariants and checking it is testing it.
 
 ```ares
-$ @e <| assert (fib 10 == 55) "fib 10 should be 55"
-$ @e <| assert (fact 5 == 120) "fact 5 should be 120"
+$ &assert (fib 10 == 55) "fib 10 should be 55"
+$ &assert (fact 5 == 120) "fact 5 should be 120"
 ```
 
 A failing assertion, like any `@abort`, is an `error[META_ABORT]` carrying the
-message, pointed at the `@e` site. A fault the code runs into on its own (a
+message, pointed at the `&` site. A fault the code runs into on its own (a
 division by zero, a failed match) stays a `RUNTIME_FAULT`.
 
 `@link` / `@link_path` steer the compilation itself: they add a library to the
@@ -1461,11 +1546,11 @@ link line and the dlopen set, or a directory to the search path. Both return
 empty code.
 
 ```ares
-$ @e <| @link "m"             # link/preload libm
-$ @e <| @link_path "/opt/lib"
+$ &@link "m"             # link/preload libm
+$ &@link_path "/opt/lib"
 ```
 
-## 11.3 `@build`, the compile-time entry
+## 11.4 `@build`, the compile-time entry
 `@build` is to compiling what `@main` is to running: the one name the *build*
 starts from. The compiler runs it during compilation and adds the items of the
 `@Code` it returns to the module that declared it. Like the entry, it has exactly
@@ -1473,7 +1558,7 @@ one accepted signature.
 
 ```ares
 $ @build : {} -> <@Meta, @IO> @Code = \_ =>
-	@parse_items "$ answer : @Int = 42"
+	"$ answer : @Int = 42"
 
 $ @main : @Vec @Str -> <@IO> @Int = \args => answer      # 42
 ```
@@ -1487,9 +1572,9 @@ running program opens. `IO.read_dir` (a directory's entry names, sorted) is the
 listing a `@build` usually wants.
 
 Rules: every module may have one (not just the root, unlike `@main`), it runs
-once, and it runs before any `$ @e` of that round, so code it generates is
+once, and it runs before any `$ &` of that round, so code it generates is
 available to the rest of the compile-time code. Anything it injects is itself
-expanded, so a generated `$ @e` still runs and a generated `$ @import M` loads M.
+expanded, so a generated `$ &` still runs and a generated `$ @import M` loads M.
 Note what "every module" implies: importing a module lets its `@build` perform IO
 during *your* build, the same trust an imported `build.rs` carries.
 
@@ -1499,11 +1584,11 @@ adding a file. See `examples/META_BUILD.ares` and
 documentation/metaprogramming.md.
 
 To see what a metaprogram produced, `ares expand <file> [MODULE]` prints the
-source as the checker finally saw it: every `@e` spliced and every
+source as the checker finally saw it: every `&` spliced and every
 `@build`'s items appended. That is the view to debug a generator from, since
 nothing else shows the generated text.
 
-## 11.4 `BUILD.ares`, the project file
+## 11.5 `BUILD.ares`, the project file
 A program's own modules are found beside it (section 2). A project that keeps
 them elsewhere says so in a `BUILD.ares`: the module `BUILD`, whose `@build` calls
 `@import_path` once per directory to add to the module search, and `@option`
@@ -1516,7 +1601,7 @@ $ @build : {} -> <@Meta, @IO> @Code = \_ =>
     @import_path "source";
     @option "format.width" "120";
     @option "lints.unreachable_arm" "deny";
-    @parse_items ""
+    ""
 ```
 
 `@option "section.name" "value"` takes the value as text, read in the option's
@@ -1632,13 +1717,13 @@ A quick index of the `@`-forms and where each is documented above.
 | `@ctx` | reserved for dependent types | 7.4 |
 | `@absurd` | the empty match | 5.1 |
 | `@private` | visibility | 2.4 |
-| `@e` `@abort` | compile-time code insertion | 11 |
+| `&` `@abort` | compile-time splice | 11 |
 | `@link` `@link_path` | build directives | 11.2 |
 | `@import_path` | module search, in `BUILD.ares` | 11.4 |
 | `@cast` | integer-width reinterpret | 4.11 |
 | `@true` `@false` `@Bool` | boolean | 12.1 |
 | `@Int8..64` `@Nat8..64` `@Float32/64` | sized numerics | 3.2 |
-| `@I*` | blessed literal / indexing / range interfaces | 1.4, 9.5 |
+| `@I*` | blessed literal / indexing / range / interpolation interfaces | 1.4, 1.6, 9.5 |
 | `@Ptr` `@Array` `@Vec` | built-in containers/pointer | 3.3, 12 |
 | `@co` `@contra` | tensor axis variance | 9.4 |
 | `@array_len/get/set/push/slice/alloc` | array primitives | 12.2 |
@@ -1656,7 +1741,7 @@ is `MAIN.ares` in the current directory (or the sole `.ares` file there).
 | --- | --- |
 | `run` | run a program (needs `$ @main`) on the interpreter; extra args pass to it |
 | `build` | compile a program to a native executable beside the source |
-| `check` | run `@build`, expand metaprograms, run `$ @e` checks, print inferred types |
+| `check` | run `@build`, expand metaprograms, run `$ &` checks, print inferred types |
 | `expand` | print the source after expansion, to inspect what a metaprogram made |
 | `emit-c` | emit standalone C to stdout |
 | `parse` | print the parsed syntax tree |

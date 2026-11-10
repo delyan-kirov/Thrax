@@ -1,0 +1,4 @@
+$ @mod META_SPLICE_CATEGORY
+
+# A quotation's syntax is checked where it is spliced: here it must spell fields.
+$ R : @struct = &"x = 1" #~ error[UNEXPECTED_TOKEN]: expected ':' after the field name, found '='

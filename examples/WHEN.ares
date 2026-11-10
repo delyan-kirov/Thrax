@@ -45,4 +45,4 @@ $ ck_break : @Int =
 
 $ test : @Int = ck_bool + ck_option + ck_result + ck_break
 
-$ @e <| assert (test == 0) "WHEN: a check failed"
+$ &assert (test == 0) "WHEN: a check failed"

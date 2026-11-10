@@ -429,6 +429,17 @@ impl<'a> Lexer<'a> {
         } else {
             self.scan_while(|c| crate::lexer::data::is_operator_char(c) && c != b'\\');
         }
+        // A splice `&` glues to the operator before it (`<&Logging>`, `!&x`). When
+        // the whole run is unknown but the run before a trailing `&` is an
+        // operator, that operator ends here and the `&` lexes on its own.
+        let run = self.slice_from(start);
+        let split = run.len() > 1
+            && run.ends_with('&')
+            && crate::lexer::data::operator(run).is_none()
+            && crate::lexer::data::operator(&run[..run.len() - 1]).is_some();
+        if split {
+            self.cursor -= 1;
+        }
         let lexeme = self.slice_from(start);
         match crate::lexer::data::operator(lexeme) {
             Some(kind) => Ok(self.mk(kind, start, line)),

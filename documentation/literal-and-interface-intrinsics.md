@@ -57,6 +57,10 @@ Construction / access:
 - `@IRange b t  = range: b -> b -> t,`          (`[lo ... hi]`)
 - `@IRangeFrom b t = range_from: b -> t,`       (`[lo ...]`)
 - `@ISlice s t  = slice: s -> @Int -> @Int -> t,`  (`.[lo ... hi]`)
+- `@IInterp b t = interp: (b -> b) -> t,`, `@IInterpText b = text: b -> @Str -> b,`
+  and `@IInterpHole b h = hole: b -> h -> b,` (an interpolated string expected as
+  a type with an `@IInterp` instance; a `@Str` keeps the `to_string` default).
+  CORE's instances for `@Code` make such a string a quotation
 
 Matching:
 

@@ -1,12 +1,27 @@
 # Ares Metaprogramming Design
 
-**Status:** design draft. Nothing implemented yet. This records the model, the
-decisions taken during design, and the intended build order.
+**Status:** design draft, largely implemented; the build log in sections 11 and
+12 records what landed when.
 **Date:** 2026-09-12.
 **Scope:** compile-time metaprogramming: exposing the compiler pipeline
 (tokens -> AST -> value) as a library, macro expansion, compiler messages, and
 compile-time IO. Builds directly on the effect system
-(documentation/effect-system-design.md) and CTFE (`$ @e`).
+(documentation/effect-system-design.md) and CTFE (`$ &`).
+
+**Spelling (#457, 2026-11-10).** The splice is the prefix operator `&`, which
+replaced the intrinsic `@e` in every position: `$ @e <| assert ..` is now
+`$ &assert ..`, the pattern `@e (X)` is `&X`, the row entry `<@e (X)>` is
+`<&X>`. The design notes and build log below predate the change and keep the
+old spelling where they record history; section 2 describes the current form.
+Since step 3 of #457 a string literal expected as `@Code` is a quotation
+(section 7), checked where it is spliced, and the per-category parsers
+`@parse_items`, `@parse_type`, `@parse_row`, `@parse_fields` and
+`@parse_variants` are gone; `@code` turns computed text into code. Since step 4
+a quotation is hygienic (section 9). Step 5 made row aliases `@Code`
+globals and #458 removed them: a row is written out, and `@alias` takes a type
+only (section 2).
+Since step 6 a literal expected as a `Template` is a macro argument whose holes
+are quoted (section 7).
 
 ---
 
@@ -31,9 +46,9 @@ enter or leave at any level:
 You can build tokens and parse them yourself, build a typed AST directly, or
 build code and run it. All three representations interconvert.
 
-Non-goals for v1: full hygiene (gensym only at first), a stable public AST node
-set (`@Code` is opaque), and reproducible-build guarantees for compile-time IO
-(see section 7).
+Non-goals for v1: a stable public AST node set (`@Code` is opaque), and
+reproducible-build guarantees for compile-time IO (see section 7). Hygiene was
+one too, and landed with #457 step 4 (section 9).
 
 ---
 
@@ -65,17 +80,21 @@ operations:
 @token_kind : Token     -> @Str          -- LANDED. "Word" | "Op" | "Int" | ...
 @token_text : Token     -> @Str          -- LANDED. the lexeme
 @parse_str  : @Str      -> @Code         -- LANDED. parses an expr fragment; a syntax error traps
-@parse_items: @Str      -> @Code         -- LANDED. parses top-level item(s), for `$ @e` injection
-@parse_type : @Str      -> @Code         -- LANDED. parses a type, for a type-position `@e`
-@parse_row  : @Str      -> @Code         -- LANDED. parses effect-row entries, for `<@e (X)>`
+@code       : @Str      -> @Code         -- #457. text as code, unchecked; the splice site checks it
+@str_literal: @Str      -> @Str          -- #457. the string literal spelling a string
+@quote_open : {}        -> @Code         -- #457. empty code in a fresh quotation scope
+@code_text  : @Code -> @Str -> @Code     -- #457. append text written in the code's scope
+@code_cat   : @Code -> @Code -> @Code    -- #457. append code, keeping its scopes
+@quote      : @Str -> @Code -> @Code     -- #457. record the module a scope was written in
 @parse      : @Vec Token -> @Code        -- LANDED. detokenizes + validates like @parse_str
 @unparse    : @Code     -> @Str          -- LANDED. the fragment's source
 @format     : @Str      -> @Str          -- LANDED. items in `ares fmt` layout; a refusal traps
 ```
 
-`@Code` is opaque; it currently carries the fragment's source text (enough for
-the future `@eval`/splice). `@parse_str` validates syntax now (a bad fragment
-fails the build); type-checking and evaluation come with the consumers below.
+`@Code` is opaque; it carries the fragment's source text and no syntax
+category. A `&` site decides the category (expression, type, row entries,
+pattern, fields, variants or items) and checks the text there; `@parse_str`
+checks an expression on the spot, for code that only exists at run time.
 
 **Effect row**
 
@@ -134,7 +153,7 @@ the live compiler state; nothing a generator can observe depends on which.
 handler.
 
 **Runtime use (#187).** `@lex`, `@token_kind`/`@token_text`, `@parse`,
-`@parse_str`, `@parse_items`, `@format` and `@eval` are pure, so ordinary code may
+`@parse_str`, `@code`, `@format` and `@eval` are pure, so ordinary code may
 call them (`examples/META_RUNTIME.ares`). `tools/README_GEN.ares` runs `@format`
 under `$ @e` to lay out the README's snippets at compile time. `@eval` is pure
 because its fragment is checked as a pure def body (a closed effect row, unlike
@@ -280,58 +299,82 @@ a token. Both engines build and read it as a plain variant (the native runtime's
 
 ---
 
-## 2. `@e` inserts code
+## 2. `&` splices code or data
 
-**Decision (revised again, reverting #159).** There is no dedicated
-macro-invocation syntax (`foo!(...)`) and there is one compile-time construct:
-**`@e X` runs `X` at build time and inserts the code it returns at its site.**
-`X` must be an `@Code`; any other operand is a type error.
-Computing at build time is not a feature of its own: a generator computes
-whatever it likes, then renders the result to code (`@parse_str (to_string n)`)
-or builds code from data. `X` runs under a closed `<@Meta>` ambient, so the meta
-ops (`@abort`, `@emit`, `@fresh`, `@link`, `@link_path`) discharge there and any
-other effect, `@IO` included, is rejected. Compile-time IO lives solely in
-`@build` (sections 6 and 10).
+**Decision (#457, after #159).** There is no dedicated macro-invocation syntax
+(`foo!(...)`) and there is one compile-time construct: **`&X` runs `X` at build
+time and replaces itself with the result.** An `@Code` result is spliced in as
+source (and expanded again while it holds `&` sites); first-order data (a
+number, a `@Bool` or a `@Str`) is inserted as a literal. Any other result, such
+as a function, is a type error at the `&`. `X` runs under a closed `<@Meta>`
+ambient, so the meta ops (`@abort`, `@emit`, `@fresh`, `@link`, `@link_path`)
+discharge there and any other effect, `@IO` included, is rejected. Compile-time
+IO lives solely in `@build` (sections 6 and 10).
 
 Empty code inserts nothing, and that is the escape hatch for a site run only for
 its effect. `CORE.assert` and `@link`/`@link_path` return empty code, so
-`$ @e <| assert ok msg` and `$ @e <| @link "m"` are statements that vanish once
-they have run.
+`$ &assert ok msg` and `$ &@link "m"` are statements that vanish once they have
+run.
 
-A short-lived split (#159) had `@e` run a PURE operand and embed its value, and a
-sibling `@run` discharge `<@Meta>`. Both did the same thing apart from the
-ambient, and value embedding duplicated what a generator already does by
-returning code, so `@run` is gone and `@e` no longer folds values. `$ @run` is a
-parse error that points at `$ @e`.
+**Syntax, not a function.** `&` is a prefix operator at the binding power of
+`-`, `!` and `~~~`, so it scopes over an application: `&f a b` splices `f a b`,
+`&f a ++ b` is `(&(f a)) ++ b`, and a pipe chain is parenthesized, `&(x |> f)`.
+Its result may be an expression, a type, a pattern, members or items, so it has
+no function type: like `&&` and `|>` the parser rewrites it, into an
+`Expr::Splice` node in expression position and the matching splice node
+elsewhere. There is no `(&)` section, no `x |> &` and no `$ (&)` definition. A
+`&` glued to the operator before it lexes on its own when the run would
+otherwise be unknown, so `<&Logging>` is `<` then `&Logging`, and `!&x` is `!`
+then `&x`.
 
-**What `@e X` is, precisely.** `@e` is not an ordinary function. It is a splice
-at a fixed site: `X` is a closed compile-time expression, run once, now, whose
-`@Code` result replaces the site in source. What the code denotes is known only
-once it is spliced and re-checked, so the site types as a fresh variable until
-then. In item position the code holds top-level items; in type position, a type;
-in pattern position (`@e (X)`, always parenthesized), a pattern.
+**Positions.**
 
-**Why.** `$ @e` already exists as CTFE (`Expr::Run` in the parser AST) and
-already drives the CEK machine at compile time. Reusing it means no new parser
-state, no token-tree slurping, and one concept instead of two. Macro expansion
-becomes "`@e` returned a fragment."
+```ares
+$ &assert (fib 10 == 55) "fib 10 should be 55"           # item
+$ fib10 : @Int = &fib 10                                 # expression: inserts `55`
+$ n : &wide {} = 1024                                    # type
+$ Point3 : @struct = &DERIVE.fields_of "Point", z: @Int  # member
+$ run : {} -> <&logging {}, State @Int> @Int = ...      # row
+x |> \ | &answer => a                                   # pattern: a constant
+       | answer  => b                                    # always binds
+```
+
+**Constant patterns** are the zero-argument case. Because the marker is at the
+use site, importing a constant can never turn a binder into a match (the
+footgun of implicit constant patterns, cf. Rust `const` patterns). The value is
+inserted as a real literal, so exhaustiveness and `UNREACHABLE_ARM` treat
+`&answer` like `42`.
+
+**Rows have no aliases.** An effect row or a record row is written out where it
+is used. A `&X` entry in a row is for entries a generator computes, as
+`<&logging {}, State @Int>` above; the spliced entries join the row as if
+written there, so a label it repeats occurs twice. An effect label is keyed by
+its bare name in every module, so hygiene has nothing to qualify in a row.
+
+**What `&X` is, precisely.** `X` is a closed compile-time expression, run once,
+now, whose result replaces the site in source. A data result has the operand's
+type at once; what `@Code` denotes is known only once it is spliced and
+re-checked, so such a site types as a fresh variable until then.
+
+**History.** A short-lived split (#159) had `@e` run a PURE operand and embed its
+value, and a sibling `@run` discharge `<@Meta>`; `@run` went and `@e` inserted
+code only, so a value had to be rendered with a hand-written `lit` helper
+(`@parse_str (to_string n)`). #457 replaced `@e` with `&` and brought data
+insertion back for first-order values, where the driver can write the literal
+itself, which retired those helpers.
 
 **Arguments are ordinary expressions; raw tokens are opt-in.** Because
-`@e (f a b)` is an application, `a` and `b` parse and check as normal Ares
+`&f a b` splices an application, `a` and `b` parse and check as normal Ares
 before `f` runs. Raw-token input is requested explicitly by passing a string
 literal through `@lex` (section 7):
 
 ```
-@e (f x)                -- f sees the value / AST of x   (common case)
-@e (f (@lex "x.y z"))   -- f sees @Vec Token               (DSL / not-valid-Ares case)
+&f x                 -- f sees the value / AST of x   (common case)
+&f (@lex "x.y z")    -- f sees @Vec Token               (DSL / not-valid-Ares case)
 ```
 
 This is more composable than Rust's implicit token slurp: the raw-ness is
 visible at the call site, not hidden in the callee's signature.
-
-**Rejected:** a separate `@splice` keyword alongside a value-only `@e`, and a
-separate `@run` alongside a pure `@e` (#159, reverted). One construct that
-inserts code is enough.
 
 ---
 
@@ -479,38 +522,49 @@ are deferred.
 ## 7. Quotation is a string literal
 
 **Decision.** There is **no dedicated quotation syntax**. Source to be
-metaprogrammed is written as an ordinary **string literal** and fed through the
-pipeline that already exists: `@lex : @Str -> @Vec Token` and
-`@parse : @Vec Token -> @Code`.
+metaprogrammed is written as an ordinary **string literal**, and a literal
+expected as `@Code` is a quotation (#457 step 3): the same type-directed literal
+protocol that makes `"..."` a `Sql` or an `Html` (language reference, section
+1.6) makes it code. CORE's `@IStrLit @Code` instance covers a literal without
+holes, and the `@IInterp @Code @Code` instances one with holes, so the compiler
+has no quotation path of its own.
 
 ```
-@lex   "let x = 1 in x"          : @Vec Token
-@parse (@lex "let x = 1 in x")   : @Code       -- or a combined @parse_str
+$ sum   : @Code = "1 + 2 * 3"
+$ times : @Int -> @Code -> @Code = \n c => "(?(c)) * ?(n)"
+$ x     : @Int = &times 3 sum      -- inserts `(1 + 2 * 3) * 3`
 ```
 
 **Why a string, not a backtick quote.** It adds zero surface syntax: a string is
-already the language's source-carrying literal, so quotation is just "lex/parse a
-string." It composes with everything that produces an `@Str` (a literal, a file
-read at `@build` time, a string built from data), so the same path serves both
-templating and source-in. This is the maximally small compiler surface, and it
-keeps quotation firmly in the "trust the library" escape-hatch tier.
+already the language's source-carrying literal. It composes with everything that
+produces text (a file read at `@build` time, a string built from data, through
+`@code`), so the same path serves templating and source-in, and `@lex`/`@parse`
+remain for working on tokens.
 
-**Splice is string building.** A hole is filled by building the string: ordinary
-concatenation (`++`) or `?(e)` interpolation (which is `to_string e`). So splicing
-is **textual**, and the library author owns precedence, exactly as in any
-string-based code generator:
+**Holes run in the generator.** A `@Code` hole pastes its source; a number, a
+`@Bool` or a `@Str` hole pastes the literal spelling its value (open question 3
+of #457, settled as implicit, matching how `&` inserts data). A computed name is
+pasted as code with `?(@code name)`. Splicing is still **textual**, so the
+author owns precedence, exactly as in any string-based code generator:
 
-- Precedence is not automatic: interpolate a parenthesized sub-expression when it
-  matters (`"?(sub) * 2"` may need `"(?(sub)) * 2"`), since the tree cannot do it
-  for you.
-- Interpolation is `?(e)`, **not** `{e}` (that was changed precisely so quoted
-  code stays clean): braces `{` `}` are ordinary literal characters inside a
-  string, so records/blocks in quoted code need no escaping. Only a literal `?(`
-  needs escaping, written `\?(`. A `"` inside the code still needs `\"` (or build
-  with `++`).
+**Macro arguments (#457 step 6).** A literal expected as CORE's
+`Template` (`pieces: @Vec @Str, holes: @Vec @Code`) keeps its pieces as text and
+quotes its holes instead of evaluating them: `&sql "... ?(name) ..."` hands
+`sql` the code `name`, which names a run-time parameter of the function the
+literal sits in. The parser gives every interpolated literal a third reading for
+this (`Expr::Interp.quoted`, `.{ .pieces = [..], .holes = [@code "name"] }`),
+which the checker takes when the expected type is CORE's `Template`; a literal
+with no holes goes through `impl_IStrLit_for_Template`. Hole code is `@code`
+text, so it reads as written at the site. For a macro to learn a hole's type,
+`@check` at an expression `&` sees the locals in scope there: the checker
+records them per splice (`Checker::splice_locals`), and the check host declares
+each as a global of its type ahead of the fragment. Precedent: C# converting a
+lambda to an `Expression<...>` by target type. `examples/META_TEMPLATE.ares`
+numbers a statement's holes and binds each as the parameter its type picks.
 
-**Spans (LANDED, #151).** A syntax error from `@parse_str` / `@parse_items`
-carries the fragment it was raised in (`Diagnostic::with_fragment`). The driver
+**Spans (LANDED, #151).** A syntax error in a fragment, from `@parse_str` or
+from the check at a splice site, carries the fragment it was raised in
+(`Diagnostic::with_fragment`). The driver
 looks for a string literal that decodes to exactly that fragment, first inside
 the `@e` site and then anywhere in the module (the literal may sit in a helper the
 `@e` calls, which then gets a label at the `@e`), and maps the offset through the
@@ -521,8 +575,6 @@ when it is checked are reported in the expanded source. Acceptable for the escap
 tier; `@emit`/`@abort` (section 5) still let a generator raise a clear message of
 its own.
 
-A convenience `@parse_str : @Str -> <@Meta> @Code` (= `@parse` of `@lex`) can be
-provided so the common case is a single call.
 
 ---
 
@@ -540,11 +592,63 @@ is the constraint `$ @e` already imposes, not a new one.
 
 ## 9. Hygiene
 
-v1 ships **gensym only**: `@fresh` mints fresh `@name`s for macro-introduced
-bindings; identifier capture is a documented footgun. `@Code` carries interned
-names and spans, so a later upgrade tags macro-introduced identifiers with a
-syntax-context id and resolves names within their own context, without changing
-the surface.
+**Decision (#457 step 4, LANDED 2026-11-10).** Hygiene by **scopes**. A name a
+generator's quotation spells means what it means in the generator's module,
+wherever the code is spliced, and a binder it spells binds only the names the
+same quotation spells. Code the site hands in keeps the site's meaning.
+
+```
+$ @mod GEN
+$ scale    : @Int -> @Int = \x => x * 10
+$ scaled   : @Code -> @Code = \c => "scale (?(c))"
+$ plus_one : @Code -> @Code = \c => "let tmp = 1 in tmp + ?(c)"
+
+$ @mod USE
+$ @import GEN
+$ scale   : @Int -> @Int = \x => x + 1
+$ forty   : @Int = &scaled "4"                   -- GEN's scale: 40, not 5
+$ add_one : @Int -> @Int = \tmp => &plus_one "tmp" -- the caller's tmp: 101, not 2
+```
+
+**Why scopes, not resolve-at-write.** Resolving a quotation's names where it is
+written needs a parse, but the syntax category is only known at the splice
+site (section 7), and renaming tokens without one breaks field names. So the
+quotation stays text and remembers *who wrote which bytes*; the splice site,
+which parses anyway, resolves with that.
+
+**Mechanism.** Every evaluation of a quotation opens a fresh scope
+(`@quote_open`). Its text pieces are marked with it (`@code_text`), and a hole
+keeps the marks of the code it pastes (`@code_cat`). Lowering wraps a quotation
+in a function body in `@quote "MODULE"`, which records the scope's module. A
+quotation written in a `&` operand is written where its code lands, so lowering
+leaves it unrecorded, and `@code` text has no scope: both read as written at the
+site. At the splice the driver parses the code in its category and rewrites it:
+
+- a binder of a recorded scope is renamed apart, `tmp` to `tmp__6` (the scope's
+  id), together with the names of the same scope it binds; a field-pattern
+  shorthand `.w` is spelled out as `.w = w__6`;
+- a free name of a recorded scope that the scope's module defines or imports is
+  qualified with its home, `GEN.scale`; a type the site reaches bare as the same
+  one is left bare;
+- the site imports a module it does not reach under its own name only
+  (`$ @import MATH = MATH`), which brings no bare name in;
+- names the fragment's own items declare stay as written, since the items are
+  spliced to define them, and so does a name the quotation's module does not
+  know, which resolves at the site.
+
+**Pattern binders** follow (open question 4): a binder the generator spells is
+invisible to the arm body, so a generator that binds for its caller takes the
+binder as code, `\v => "Option.Some.{?(v)}"` used as `&some_of "x"`. Spelling it
+with `@code` text (`$ it : @Code = @code "it"`) is the deliberate escape: the
+binder then reads as written at the site. An arm body that names a renamed
+binder gets an unbound-name error saying so.
+
+**Limits.** Operators, effect operations and effect names in rows resolve at the
+site. A name that is private to the generator's module is qualified like any
+other and is then rejected as private.
+
+The driver side is `crates/ares/src/driver/hygiene.rs`; Note [Quotation scopes]
+in `interpreter::machine::data` describes the marks.
 
 ---
 
@@ -577,7 +681,7 @@ a fixpoint rather than a manual `while` over `compiler_get_message`.
 ### Status: the function has LANDED; the message loop has not
 
 ```
-$ @build : {} -> <@Meta, @IO> @Code = \_ => @parse_items "$ answer : @Int = 42"
+$ @build : {} -> <@Meta, @IO> @Code = \_ => "$ answer : @Int = 42"
 ```
 
 **One name, one signature**, exactly as for `@main`: `{} -> <@Meta, @IO> @Code`
@@ -775,8 +879,10 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    global reaches one. If a round makes no progress while sites wait, the strict
    check reports the deferred error instead of whatever fault the run would have
    raised. See Note [Deferred sites hold back generators] in `desugar.rs`.
-3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
-   literals (section 7); splice is string building (`++` / `?(e)`).
+3. **DONE (#457 step 3): quotation.** None needed as syntax: a string literal
+   expected as `@Code` is one, its holes paste code or literals (section 7), and
+   the splice site checks the syntax category, which retired the per-category
+   `@parse_*`.
 4. **PARTIALLY DONE: the `<@Meta>` effect.**
    `@abort`/`@emit`/`@fresh`/`@link`/`@link_path` are typed `<@Meta>` (`@eval` was
    too, until #187 made it pure), and `@e` (item/expression/type position)
@@ -798,8 +904,12 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    to the working directory. `IO.read_dir` (a sorted directory listing, over
    `C.popen`) was the one library addition. `tests/MAIN.ares` generates its imports
    and `@main` from `examples/`; `examples/META_BUILD.ares` demonstrates it.
-7. Hygiene upgrade (syntax contexts), then `@build`'s `@msg`/`@add_code`/query
+7. Hygiene (scopes, LANDED with #457 step 4, section 9), then `@build`'s `@msg`/`@add_code`/query
    fixpoint (the function itself is in; the message loop is not).
+8. **DONE (#457 step 5, #458):** `@alias` takes a type only, and rows have no
+   aliases.
+9. **DONE (#457 step 6):** `Template` macro arguments with quoted holes, and
+   `@check` seeing the locals at an expression `&`.
 
 The load-bearing point: the two hard organs already exist. A compile-time
 evaluator (CEK + `$ @e`) and a chainable diagnostic model. The macro system

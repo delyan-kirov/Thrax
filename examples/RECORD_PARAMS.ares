@@ -35,4 +35,4 @@ $ chk_pick : @Int = if pick 9 @true == 9 => 0 else 1
 
 $ test : @Int = chk_add + chk_label + chk_inc + chk_area + chk_pick
 
-$ @e <| assert (test == 0) "RECORD_PARAMS: a check failed"
+$ &assert (test == 0) "RECORD_PARAMS: a check failed"

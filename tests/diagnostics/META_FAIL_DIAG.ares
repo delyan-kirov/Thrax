@@ -1,4 +1,4 @@
 $ @mod META_FAIL_DIAG
 
-# `@fail` fails the build at the `@e` with the generator's own message.
-$ @e <| @fail (diag "this generator always refuses") #~ error[META_ABORT]: this generator always refuses
+# `@fail` fails the build at the `&` with the generator's own message.
+$ &@fail (diag "this generator always refuses") #~ error[META_ABORT]: this generator always refuses

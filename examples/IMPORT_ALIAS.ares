@@ -32,4 +32,4 @@ $ ck_local : @Int = if length == V.length v => 0 else 1
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @Int = ck_len + ck_map + ck_fold + ck_both + ck_type + ck_ctor + ck_none + ck_local
 
-$ @e <| assert (test == 0) "IMPORT_ALIAS: a check failed"
+$ &assert (test == 0) "IMPORT_ALIAS: a check failed"

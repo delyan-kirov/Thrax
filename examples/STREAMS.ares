@@ -29,4 +29,4 @@ $ ck_range : @Int = if nth 3 [7 ...] == 10 => 0 else 8
 
 $ test : @Int = ck_head + ck_nth + ck_map + ck_range
 
-$ @e <| assert (test == 0) "STREAMS: a check failed"
+$ &assert (test == 0) "STREAMS: a check failed"

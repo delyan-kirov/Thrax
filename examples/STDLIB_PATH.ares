@@ -42,4 +42,4 @@ $ test : @Int =
         + ck_dir_r + ck_ext + ck_ext_n + ck_ext_dot + ck_strip + ck_strip_n + ck_join + ck_join_sl
         + ck_join_r + ck_join_ab + ck_join_mt + ck_abs + ck_parts + ck_parts_n
 
-$ @e <| assert (test == 0) "STDLIB_PATH: a check failed"
+$ &assert (test == 0) "STDLIB_PATH: a check failed"

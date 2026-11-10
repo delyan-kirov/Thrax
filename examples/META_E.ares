@@ -1,51 +1,57 @@
 $ @mod META_E
 
 # \file META_E.ares
-# \info The compile-time splice. `@e X` runs X at build time and inserts the code
-#       it returns at its site: X must be an `@Code`, which `@parse_str` (an
-#       expression) and `@parse_items` (top-level items) build from a string. The
-#       inserted source is then checked like hand-written code. `@e` works in
-#       expression, type, and item position, and composes with the pipes `<|` /
-#       `|>` like any one-argument function. X may perform the compile-time
-#       operations (`@emit`, `@abort`, `@fresh`, `@link`, the `@type_*`
-#       reflection), which carry the `<@Meta>` effect that `@e` discharges; any
-#       other effect is an error.
+# \info The compile-time splice. `&X` runs X at build time and replaces itself
+#       with the result: an `@Code` is spliced in as source, and first-order
+#       data (a number, a `@Bool`, a `@Str`) is inserted as a literal. A string
+#       literal expected as `@Code` is a quotation: its text is source, and its
+#       holes `?(e)` paste code, or the literal of a value. The inserted source
+#       is then checked like hand-written code, against what its site needs (an
+#       expression, a type, items, ...). `&` works in expression, type,
+#       member, row, pattern and item position, and binds like the other prefix
+#       operators: `&f a b` splices `f a b`, and a pipe chain is parenthesized,
+#       `&(x |> f)`. X may perform the compile-time operations (`@emit`,
+#       `@abort`, `@fresh`, `@link`, the `@type_*` reflection), which carry the
+#       `<@Meta>` effect that `&` discharges; any other effect is an error.
 #       Empty code inserts nothing, so a site run only for its effect (a check, a
-#       link directive) returns `@parse_items ""`.
+#       link directive) returns `""`.
 
 # Ordinary functions, run here at compile time by the generators below.
 $ fib : @Int -> @Int = \n => if n < 2 => n else fib (n - 1) + fib (n - 2)
 $ dbl : @Int -> @Int = \x => x * 2
 $ inc : @Int -> @Int = \x => x + 1
 
-# A generator that computes at build time and inserts the result as a literal.
-$ lit : @Int -> @Code = \n => @parse_str <| to_string n
-
 # --- expression position ---------------------------------------------------
 $ ten : @Int = 10
-$ fib10 : @Int = @e <| lit <| fib ten               # inserts `55`
-$ via_pipe : @Int = fib ten |> lit |> @e            # the same, left to right
-$ chained : @Int = @e <| lit <| (compose inc dbl) 5 # inc (dbl 5): inserts `11`
+$ fib10 : @Int = &fib ten               # inserts `55`
+$ via_pipe : @Int = &(ten |> fib)       # the same, left to right
+$ chained : @Int = &(compose inc dbl) 5 # inc (dbl 5): inserts `11`
 
 # The code is source, not a value: this inserts `1 + 2 * 3`, which yields 7.
-$ spliced : @Int = @e <| @parse_str "1 + 2 * 3"
+$ sum_code : @Code = "1 + 2 * 3"
+$ spliced : @Int = &sum_code
 
-# --- type position: `@e` computes the annotation ---------------------------
-$ pick_ty : {} -> @Code = \_ => @parse_str "@Int"
-$ typed : @e <| pick_ty {} = 42
+# A quotation's holes run in the generator: a `@Code` hole pastes its source, a
+# number pastes its literal. `&times 3 sum_code` inserts `(1 + 2 * 3) * 3`.
+$ times : @Int -> @Code -> @Code = \n c => "(?(c)) * ?(n)"
+$ tripled : @Int = &times 3 sum_code
 
-# --- item position: `$ @e X` inserts top-level definitions -----------------
-$ gen_def : {} -> @Code = \_ => @parse_items "$ injected : @Int = 99"
-$ @e <| gen_def {}
+# --- type position: `&` computes the annotation ----------------------------
+$ pick_ty : {} -> @Code = \_ => "@Int"
+$ typed : &pick_ty {} = 42
+
+# --- item position: `$ &X` inserts top-level definitions ------------------
+$ gen_def : {} -> @Code = \_ => "$ injected : @Int = 99"
+$ &gen_def {}
 
 # --- compile-time operations -------------------------------------------------
 # `gen_meta` performs `@emit`, a `<@Meta>` op, so it declares `<@Meta>`.
-$ gen_meta : @Int -> <@Meta> @Code = \n => @emit "computing at build time"; lit (n * 2)
-$ from_meta : @Int = @e <| gen_meta 21 # inserts `42`
+$ gen_meta : @Int -> <@Meta> @Int = \n => @emit "computing at build time"; n * 2
+$ from_meta : @Int = &gen_meta 21 # inserts `42`
 
 # --- reflection ---------------------------------------------------------------
 # `@type_of` reads a global's type from the program being compiled, as source.
-$ @e <| assert (@type_of "fib" == "@Int -> @Int") "META_E: `fib` has an unexpected type"
+$ &assert (@type_of "fib" == "@Int -> @Int") "META_E: `fib` has an unexpected type"
 
 # --- checks ----------------------------------------------------------------
 $ ck1 : @Int = if fib10 == 55 => 0 else 1
@@ -55,7 +61,8 @@ $ ck4 : @Int = if spliced == 7 => 0 else 8
 $ ck5 : @Int = if typed == 42 => 0 else 16
 $ ck6 : @Int = if injected == 99 => 0 else 32
 $ ck7 : @Int = if from_meta == 42 => 0 else 64
+$ ck8 : @Int = if tripled == 21 => 0 else 128
 
-$ test : @Int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7
+$ test : @Int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7 + ck8
 
-$ @e <| assert (test == 0) "META_E: a check failed"
+$ &assert (test == 0) "META_E: a check failed"

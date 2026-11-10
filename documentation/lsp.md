@@ -111,10 +111,10 @@ code actions, at most 8 trials per request.
 ## Two tiers: as you type, and on save
 
 - **As you type** (debounced by `debounce_ms`): parse, resolve, type-check and
-  check exhaustiveness. No compile-time code runs. In a module whose `$ @e` or
+  check exhaustiveness. No compile-time code runs. In a module whose `$ &` or
   `@build` may define names, an unbound name is only a hint until saved.
 - **On save**: the whole compile-time pipeline runs as `ares check` would
-  (every `$ @e` expansion, `@build`, the asserts), and its faults show in the
+  (every `$ &` expansion, `@build`, the asserts), and its faults show in the
   editor. Spans in generated code are mapped back to the site that generated
   it. With `check = "save"` everything waits for save, as with rust-analyzer's
   check-on-save.
@@ -155,7 +155,7 @@ re-check that body.
 ## Configuration
 
 A project sets its options with `@option` in its `BUILD.ares` (language
-reference, section 11.4, lists them all):
+reference, section 11.5, lists them all):
 
 ```ares
 $ @mod BUILD
@@ -163,7 +163,7 @@ $ @mod BUILD
 $ @build : {} -> <@Meta, @IO> @Code = \_ =>
     @option "lsp.check" "save";
     @option "lsp.focus" "one";
-    @parse_items ""
+    ""
 ```
 
 The table in `crates/utilities/src/config.rs` is the single source, so adding
@@ -212,7 +212,7 @@ ignored by git. The tree-sitter CLI comes from `tools/editors/flake.nix`, kept
 out of the root dev shell. Generating it also keeps the spec honest: parsing the
 whole corpus with it found the places the spec had drifted from the language.
 Two known divergences remain: the real parser ends a multi-arm lambda's arms at a `| Op.op x`
-handler clause (more lookahead than LR(1) has), and `@e <| ..` inside a type
+handler clause (more lookahead than LR(1) has), and `&..` inside a type
 is not in the spec.
 
 ## Where the code is

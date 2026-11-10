@@ -1,0 +1,5 @@
+$ @mod META_QUOTE_SYNTAX
+
+# A malformed quotation is reported inside the literal, once a `&` splices it.
+$ wide : @Code = "@Vec @Int ->" #~ error[UNEXPECTED_TOKEN]: expected a type
+$ xs : &wide = []

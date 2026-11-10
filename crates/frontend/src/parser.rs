@@ -144,10 +144,13 @@ impl<'a> Parser<'a> {
     }
 
     /// Build a string-literal expression, expanding `?(expr)` interpolations. `t`
-    /// is the `Kind::Str` token. `"a ?(e) b"` desugars to `"a " ++ to_string e ++ " b"`;
-    /// a literal chunk seeds the `++` chain so the whole expression types as `Str`,
-    /// and each interpolant is stringified through `to_string` over its instance.
-    /// Braces are ordinary literal characters; `\?` is a literal `?`.
+    /// is the `Kind::Str` token. An interpolated literal is an [`Expr::Interp`]
+    /// holding both of its readings: the `@Str` default `"a " ++ to_string e ++ " b"`,
+    /// where a literal chunk seeds the `++` chain so the whole expression types as
+    /// `Str` and each interpolant is stringified through `to_string` over its
+    /// instance, and the builder chain over the blessed `@IInterp*` interfaces
+    /// (see [`Self::interp_target`]). Braces are ordinary literal characters; `\?`
+    /// is a literal `?`.
     fn build_string(&mut self, t: Token) -> Result<Aol<Expr>> {
         let raw = self.text(t);
         let bytes = raw.as_bytes();
@@ -155,6 +158,9 @@ impl<'a> Parser<'a> {
         let body_start = t.span.start + 1; // absolute offset of `inner[0]`
 
         let mut segs: Vec<Aol<Expr>> = Vec::new();
+        let mut pieces: Vec<Vec<u8>> = Vec::new();
+        let mut holes: Vec<Aol<Expr>> = Vec::new();
+        let mut hole_srcs: Vec<&'a str> = Vec::new();
         let mut chunk: Vec<u8> = Vec::new();
         let mut interpolated = false;
         let mut i = 0;
@@ -165,7 +171,7 @@ impl<'a> Parser<'a> {
                     interpolated = true;
                     let seg = self.str_expr(&chunk);
                     segs.push(seg);
-                    chunk.clear();
+                    pieces.push(std::mem::take(&mut chunk));
                     // Balance the interpolant's `()` to find its close, skipping
                     // nested strings so their parens don't miscount.
                     let expr_start = i + 2; // past `?(`
@@ -207,6 +213,8 @@ impl<'a> Parser<'a> {
                     let abs_start = body_start + expr_start;
                     let slice = &full[abs_start..body_start + j];
                     let e = self.parse_subexpr(slice, abs_start, t.line)?;
+                    holes.push(e);
+                    hole_srcs.push(slice.trim());
                     // `?(e)` stringifies via `to_string`, so an interpolant of any
                     // type with an `Ito_string` instance (base types ship one in the
                     // auto-imported `CORE`) reads as `Str`. The call
@@ -235,6 +243,7 @@ impl<'a> Parser<'a> {
         if !interpolated {
             return Ok(segs.pop().expect("at least the whole-string chunk"));
         }
+        pieces.push(chunk);
         let concat = self.intern("++");
         let mut acc = segs[0];
         for &rhs in &segs[1..] {
@@ -244,7 +253,88 @@ impl<'a> Parser<'a> {
                 rhs,
             });
         }
-        Ok(acc)
+        let target = self.interp_target(&pieces, &holes, t.span);
+        let quoted = self.interp_quoted(&pieces, &hole_srcs, t.span);
+        Ok(self.expr(Expr::Interp { default: acc, target, quoted }))
+    }
+
+    /// The `Template` reading of an interpolated string: the pieces as they
+    /// are, and each hole's source as code, `@code "x"`, so the hole is never
+    /// evaluated where the literal is.
+    fn interp_quoted(&mut self, pieces: &[Vec<u8>], holes: &[&str], span: Span) -> Aol<Expr> {
+        let pieces: Vec<Aol<Expr>> = pieces.iter().map(|p| self.str_expr(p)).collect();
+        let code = self.intern("@code");
+        let holes: Vec<Aol<Expr>> = holes
+            .iter()
+            .map(|src| {
+                let f = self.expr(Expr::Var { module: None, name: code });
+                let text = self.str_expr(src.as_bytes());
+                self.expr(Expr::App(f, text))
+            })
+            .collect();
+        let mut fields = Vec::new();
+        for (name, items) in [("pieces", pieces), ("holes", holes)] {
+            let items = self.ast.make_slice(items);
+            let value = self.expr(Expr::List(items));
+            self.ast.expr_spans.insert(value, span);
+            fields.push(FieldInit::Named { name: self.intern(name), value });
+        }
+        let fields = self.ast.make_slice(fields);
+        let out = self.expr(Expr::StructLit { ty: None, fields, spread: None });
+        self.ast.expr_spans.insert(out, span);
+        out
+    }
+
+    /// The builder reading of an interpolated string: each hole bound in order,
+    /// then `@IInterp (\#b => ...)` appending every non-empty piece with
+    /// `@IInterpText` and every hole with `@IInterpHole`. Binding the holes first
+    /// keeps their effects outside the builder, in source order. The synthetic
+    /// nodes take the literal's span, and a hole's call the hole's, so a missing
+    /// instance points at the string or at the hole that needs it.
+    fn interp_target(&mut self, pieces: &[Vec<u8>], holes: &[Aol<Expr>], span: Span) -> Aol<Expr> {
+        debug_assert_eq!(pieces.len(), holes.len() + 1, "a piece on each side of every hole");
+        let var = |p: &mut Self, name: &str, at: Span| {
+            let name = p.intern(name);
+            let v = p.expr(Expr::Var { module: None, name });
+            p.ast.expr_spans.insert(v, at);
+            v
+        };
+        let call2 = |p: &mut Self, head: &str, a: Aol<Expr>, b: Aol<Expr>, span: Span| {
+            let f = var(p, head, span);
+            let fa = p.expr(Expr::App(f, a));
+            p.ast.expr_spans.insert(fa, span);
+            let fab = p.expr(Expr::App(fa, b));
+            p.ast.expr_spans.insert(fab, span);
+            fab
+        };
+        let mut acc = var(self, "#b", span);
+        for (k, piece) in pieces.iter().enumerate() {
+            if !piece.is_empty() {
+                let text = self.str_expr(piece);
+                acc = call2(self, "@IInterpText", acc, text, span);
+            }
+            if let Some(&hole) = holes.get(k) {
+                let at = self.ast.expr_span(hole).unwrap_or(span);
+                let h = var(self, &format!("#h{k}"), at);
+                acc = call2(self, "@IInterpHole", acc, h, at);
+            }
+        }
+        let b = self.intern("#b");
+        let param = self.pat(Pattern::Var(b));
+        let params = self.ast.make_slice(vec![LamParam { pat: param, sig: None }]);
+        let lam = self.expr(Expr::Lambda { params, body: acc });
+        self.ast.expr_spans.insert(lam, span);
+        let interp = var(self, "@IInterp", span);
+        let mut out = self.expr(Expr::App(interp, lam));
+        self.ast.expr_spans.insert(out, span);
+        for (k, &hole) in holes.iter().enumerate().rev() {
+            let name = self.intern(&format!("#h{k}"));
+            let pat = self.pat(Pattern::Var(name));
+            let bindings = self.ast.make_slice(vec![Binding { pat, sig: None, value: hole }]);
+            out = self.expr(Expr::Let { bindings, body: out });
+            self.ast.expr_spans.insert(out, span);
+        }
+        out
     }
 
     /// Parse a single expression from a sub-slice of the source (a string
@@ -346,13 +436,20 @@ impl<'a> Parser<'a> {
         }
     }
     /// Is the next token the operator with lexeme `s`?
-    /// The operand of an item- or type-position `@e`, which reads like the
-    /// expression form: `@e X` or `@e <| X`.
-    fn parse_meta_operand(&mut self) -> Result<Aol<Expr>> {
-        if self.at_op("<|")? {
-            self.bump()?;
-        }
-        self.parse_expr(0)
+    /// The operand of a splice `&X`, with the cursor on the `&`. `&` binds like
+    /// the other prefix operators in every position, so `&f a b` splices `f a b`
+    /// and the operand ends before an infix operator, a `,`, `=>` or `>`.
+    fn parse_splice_operand(&mut self) -> Result<Aol<Expr>> {
+        self.bump()?; // '&'
+        self.parse_expr(table::PREFIX)
+    }
+    fn at_splice(&mut self) -> Result<bool> {
+        self.at_op(table::SPLICE)
+    }
+    /// `&` named as a function: a definition `$ (&)` or a section `(&)`.
+    fn splice_not_a_function(&self, t: &Token) -> Diagnostic {
+        Diagnostic::error(Code::UnexpectedToken, t.span, t.line, "`&` is a splice, not a function")
+            .with_note("`&X` runs `X` at compile time and replaces itself with the result")
     }
     fn at_op(&mut self, s: &str) -> Result<bool> {
         let t = self.peek()?;
@@ -524,16 +621,19 @@ impl<'a> Parser<'a> {
         );
         let t = self.peek()?;
         match t.kind {
-            Kind::At => self.parse_directive(t, dollar.span.start),
+            Kind::At => self.parse_directive(t),
+            Kind::Op if self.text(t) == table::SPLICE => {
+                let e = self.parse_splice_operand()?;
+                Ok(Item::Run(e, Span::new(dollar.span.start, self.last_end)))
+            }
             Kind::Word => self.parse_named_global(),
             Kind::LParen => self.parse_operator_global(),
             _ => Err(self.unexpected(&t, "expected a name or directive after '$'")),
         }
     }
 
-    /// A `$ @...` directive: visibility, compile-time run (`@e`), or an operator
-    /// definition.
-    fn parse_directive(&mut self, at: Token, start: usize) -> Result<Item> {
+    /// A `$ @...` directive: visibility, an import, or an `@`-named definition.
+    fn parse_directive(&mut self, at: Token) -> Result<Item> {
         match self.intrinsic_name(at) {
             "import" => self.parse_import(),
             "private" => {
@@ -544,16 +644,6 @@ impl<'a> Parser<'a> {
                 &at,
                 "there is no '@public': symbols are public by default. Use '$ @private' \
                  to hide the declarations below it",
-            )),
-            "e" => {
-                self.bump()?;
-                let e = self.parse_meta_operand()?;
-                Ok(Item::Run(e, Span::new(start, self.last_end)))
-            }
-            "run" => Err(self.unexpected(
-                &at,
-                "there is no '@run': '$ @e X' runs X at compile time and inserts the \
-                 '@Code' it returns",
             )),
             // The two `@`-names bound to a VALUE: `@main`, the program entry, and
             // `@build`, the compile-time entry, whose `@Code` result the driver adds
@@ -652,6 +742,9 @@ impl<'a> Parser<'a> {
     fn parse_operator_global(&mut self) -> Result<Item> {
         self.bump()?; // '('
         let op_tok = expect!(self, Kind::Op, "expected an operator inside '( )'");
+        if self.text(op_tok) == table::SPLICE {
+            return Err(self.splice_not_a_function(&op_tok));
+        }
         let op = self.intern(self.text(op_tok));
         expect!(self, Kind::RParen, "expected ')' after the operator");
         expect!(self, Kind::Colon, "expected ':' and a type for the operator");
@@ -782,14 +875,7 @@ impl<'a> Parser<'a> {
                     self.bump()?;
                     let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@alias'");
-                    let start = self.here()?;
-                    let ty = match self.parse_effect_row_opt()? {
-                        Some(row) => {
-                            let node = self.ty(Ty::Row(row));
-                            self.stamp_ty(start, node)
-                        }
-                        None => self.parse_type()?,
-                    };
+                    let ty = self.parse_type()?;
                     return Ok(Item::Alias { name, params, ty });
                 }
                 "effect" => {
@@ -998,14 +1084,14 @@ impl<'a> Parser<'a> {
         Ok(self.ast.make_slice(ops))
     }
 
-    /// A struct body: comma-separated `name : Type` fields and `@e X` splices
+    /// A struct body: comma-separated `name : Type` fields and `&X` splices
     /// of generated fields, freely interleaved.
     fn parse_struct_body(&mut self) -> Result<(Slice<EntrySplice>, Slice<FieldDecl>)> {
         let mut splices = Vec::new();
         let mut fields = Vec::new();
         loop {
             match self.peek_kind()? {
-                _ if self.at_intrinsic("e")? => splices.push(self.parse_entry_splice()?),
+                _ if self.at_splice()? => splices.push(self.parse_entry_splice()?),
                 Kind::Word => {
                     let name = self.bump_word()?;
                     expect!(self, Kind::Colon, "expected ':' after the field name");
@@ -1026,7 +1112,7 @@ impl<'a> Parser<'a> {
         let mut variants = Vec::new();
         loop {
             match self.peek_kind()? {
-                _ if self.at_intrinsic("e")? => splices.push(self.parse_entry_splice()?),
+                _ if self.at_splice()? => splices.push(self.parse_entry_splice()?),
                 Kind::Word => {
                     let tag = self.bump_word()?;
                     let payload = if self.eat(|k| matches!(k, Kind::Colon))? {
@@ -1045,12 +1131,11 @@ impl<'a> Parser<'a> {
         Ok((self.ast.make_slice(splices), self.ast.make_slice(variants)))
     }
 
-    /// An `@e X` entry in a struct or union declaration. `X` ends at the entry's
+    /// An `&X` entry in a struct or union declaration. `X` ends at the entry's
     /// comma, and the entry's span is what the generated entries replace.
     fn parse_entry_splice(&mut self) -> Result<EntrySplice> {
         let start = self.here()?;
-        self.bump()?; // '@e'
-        let expr = self.parse_meta_operand()?;
+        let expr = self.parse_splice_operand()?;
         Ok(EntrySplice {
             expr,
             span: Span::new(start, self.last_end),
@@ -1143,6 +1228,9 @@ impl<'a> Parser<'a> {
         if self.at_ctx()? || self.at_intrinsic("use")? {
             return Ok(false);
         }
+        if self.at_splice()? {
+            return Ok(true);
+        }
         Ok(matches!(
             self.peek_kind()?,
             Kind::Word | Kind::At | Kind::LParen | Kind::LBrace
@@ -1180,9 +1268,8 @@ impl<'a> Parser<'a> {
                     Ok(self.ty(Ty::Con { module: None, name }))
                 }
             }
-            Kind::At if self.intrinsic_name(t) == "e" => {
-                self.bump()?;
-                let e = self.parse_meta_operand()?;
+            Kind::Op if self.text(t) == table::SPLICE => {
+                let e = self.parse_splice_operand()?;
                 Ok(self.ty(Ty::MetaE(e)))
             }
             Kind::At => {
@@ -1344,8 +1431,8 @@ impl<'a> Parser<'a> {
     /// An optional effect row right after `->`: `<>`, `<e>`, `<A, B>`,
     /// `<A, B | e>`, or `<| e>`. Effect names are Capitalized (user effects) or
     /// `@`-form (builtin effects like `@IO`); a lowercase name is the
-    /// row-polymorphic tail variable. An entry may be a row alias applied to row
-    /// variables, `<WithLog e, @IO>`; what each name denotes is the checker's call.
+    /// row-polymorphic tail variable. An entry may be a splice `<&X, @IO>`; what
+    /// each name denotes is the checker's call.
     fn parse_effect_row_opt(&mut self) -> Result<Option<EffectRow>> {
         if self.at_op("<>")? {
             self.bump()?;
@@ -1378,16 +1465,12 @@ impl<'a> Parser<'a> {
         let mut entries = Vec::new();
         loop {
             let start = self.here()?;
-            // `@e (X)`: parenthesized, so the operand ends before a `,` or the
-            // closing `>`, which an expression would read as a comparison.
-            let t = self.peek()?;
-            if matches!(t.kind, Kind::At) && self.intrinsic_name(t) == "e" {
-                self.bump()?;
-                expect!(self, Kind::LParen, "expected '(' after '@e' in an effect row");
-                let e = self.parse_expr(0)?;
-                expect!(self, Kind::RParen, "expected ')' to close the '@e' row entry");
+            // `&X`: the operand binds tighter than a comparison, so it ends before
+            // the `,` or the closing `>`.
+            if self.at_splice()? {
+                let e = self.parse_splice_operand()?;
                 entries.push(RowEntry {
-                    name: self.intern("@e"),
+                    name: self.intern(table::SPLICE),
                     args: self.ast.make_slice(Vec::new()),
                     span: Span::new(start, self.last_end),
                     meta: Some(e),
@@ -1536,6 +1619,12 @@ impl<'a> Parser<'a> {
 
     fn parse_prefix(&mut self) -> Result<Aol<Expr>> {
         let t = self.peek()?;
+        if self.at_splice()? {
+            let start = t.span.start;
+            let operand = self.parse_splice_operand()?;
+            let node = self.expr(Expr::Splice(operand));
+            return Ok(self.stamp(start, node));
+        }
         if let Kind::Op = t.kind {
             if let Some(name) = table::prefix(self.text(t)) {
                 let start = t.span.start;
@@ -1872,6 +1961,7 @@ impl<'a> Parser<'a> {
         // binary form of the lexeme exists.
         let name = match table::infix(lexeme) {
             Some(_) => self.intern(lexeme),
+            None if lexeme == table::SPLICE => return Err(self.splice_not_a_function(&op_tok)),
             None => {
                 let prefix = table::prefix(lexeme)
                     .ok_or_else(|| self.unexpected(&op_tok, "expected an operator"))?;
@@ -2846,13 +2936,10 @@ impl<'a> Parser<'a> {
                 let name = self.intern(self.text(t));
                 Ok(self.pat(Pattern::Var(name)))
             }
-            // `@e (X)`: parenthesized, so the operand ends at `)` and never runs
-            // into the `=>`, `|` or `::` that follow a pattern.
-            Kind::At if self.intrinsic_name(t) == "e" => {
-                self.bump()?;
-                expect!(self, Kind::LParen, "expected '(' after '@e' in a pattern");
-                let e = self.parse_expr(0)?;
-                expect!(self, Kind::RParen, "expected ')' to close the '@e' pattern");
+            // `&X`: the operand binds tighter than `::` and `++`, so it ends
+            // before them and before the `=>`, `|` or `,` that follow a pattern.
+            Kind::Op if self.text(t) == table::SPLICE => {
+                let e = self.parse_splice_operand()?;
                 Ok(self.pat(Pattern::MetaE(e)))
             }
             Kind::At => {

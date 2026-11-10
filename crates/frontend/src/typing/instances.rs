@@ -90,7 +90,7 @@ impl<'a> Checker<'a> {
             _ => vec![zonked],
         };
         for (i, part) in parts.into_iter().enumerate() {
-            // An unspliced `@e` stands as a fresh variable until expansion.
+            // An unspliced `&` stands as a fresh variable until expansion.
             if fields.get(i).is_some_and(|f| matches!(self.ast.ty(f.ty), Ty::MetaE(_))) {
                 continue;
             }
@@ -334,40 +334,68 @@ impl<'a> Checker<'a> {
     /// solving and numeric defaulting have pinned the types.
     /// See Note [Ctx resolution fixpoint].
     pub(super) fn resolve_pending_ctx(&mut self) -> Result<()> {
-        for p in std::mem::take(&mut self.ctx_pending) {
-            let req = self.unifier.zonk(p.req);
-            let rigid: HashSet<VarId> = match p.sig {
-                Some(sig) => {
-                    let mut vs = HashSet::new();
-                    self.unifier.collect_vars(self.unifier.zonk(sig), &mut vs);
-                    vs
+        // Resolving one requirement can pin the types another one needs (the
+        // builder `@IInterp` fixes is the one every `@IInterpText` of the string
+        // reads), so a requirement that fails is retried while a pass makes
+        // progress. A failed attempt is rolled back, so the retry sees the types
+        // as the successful ones left them.
+        let mut pending = std::mem::take(&mut self.ctx_pending);
+        loop {
+            let mut failed = Vec::new();
+            let mut progress = false;
+            for p in pending {
+                let save = self.unifier.save();
+                match self.resolve_pending_one(&p) {
+                    Ok(val) => {
+                        self.ctx_args.insert(p.site, val);
+                        progress = true;
+                    }
+                    Err(d) => {
+                        self.unifier.restore(save);
+                        failed.push((p, d));
+                    }
                 }
-                None => HashSet::new(),
-            };
-            let resolved = if p.given.is_empty() {
-                self.resolve_ctx(p.fname, req, &p.locals, &rigid, 0)
-            } else {
-                self.resolve_partly_given(p.fname, req, &p.locals, &rigid, &p.given)
-            };
-            // A metaprogram-expansion round: the instance may be injected by a
-            // generator that has not run yet, so leave the site unresolved rather
-            // than failing. The final strict round rejects it if it is still missing.
-            let val = match resolved {
-                Ok(val) => val,
-                Err(_) if self.lenient => {
+            }
+            if failed.is_empty() {
+                return Ok(());
+            }
+            if progress {
+                pending = failed.into_iter().map(|(p, _)| p).collect();
+                continue;
+            }
+            for (p, d) in failed {
+                // A metaprogram-expansion round: the instance may be injected by a
+                // generator that has not run yet, so leave the site unresolved rather
+                // than failing. The final strict round rejects it if it is still missing.
+                if self.lenient {
                     self.defer(Some(p.site));
                     continue;
                 }
-                Err(d) => {
-                    return Err(match self.ast.expr_span(p.site) {
-                        Some(span) => d.fill_span(span),
-                        None => d,
-                    })
-                }
-            };
-            self.ctx_args.insert(p.site, val);
+                return Err(match self.ast.expr_span(p.site) {
+                    Some(span) => d.fill_span(span),
+                    None => d,
+                });
+            }
+            return Ok(());
         }
-        Ok(())
+    }
+
+    /// One attempt at a planned requirement, with the types as they stand now.
+    fn resolve_pending_one(&mut self, p: &PendingCtx) -> Result<CtxVal> {
+        let req = self.unifier.zonk(p.req);
+        let rigid: HashSet<VarId> = match p.sig {
+            Some(sig) => {
+                let mut vs = HashSet::new();
+                self.unifier.collect_vars(self.unifier.zonk(sig), &mut vs);
+                vs
+            }
+            None => HashSet::new(),
+        };
+        if p.given.is_empty() {
+            self.resolve_ctx(p.fname, req, &p.locals, &rigid, 0)
+        } else {
+            self.resolve_partly_given(p.fname, req, &p.locals, &rigid, &p.given)
+        }
     }
 
     /// A several-field `@use` bundle some of whose fields an explicit argument
@@ -770,11 +798,16 @@ impl<'a> Checker<'a> {
     /// method's declared type; the instance resolves here when that is enough, and
     /// otherwise at the enclosing definition's boundary, once the surrounding types
     /// pin what is left.
+    ///
+    /// With an `expected` result, it is pinned first, and an instance it alone
+    /// determines is chosen before the arguments are checked, so they see its
+    /// types: `@IInterp b Html` fixes the builder `b` the string's holes append to.
     pub(super) fn infer_blessed_app(
         &mut self,
         head: Aol<Expr>,
         name: StrId,
         args: &[Aol<Expr>],
+        expected: Option<Type>,
     ) -> Result<Type> {
         let arity = self.structs.get(&name).map(|i| i.params.len()).unwrap_or(0);
         let vars: Vec<Type> = (0..arity).map(|_| self.unifier.fresh()).collect();
@@ -787,6 +820,31 @@ impl<'a> Checker<'a> {
                        CORE declares it as a one-field `@struct`"
             ));
         };
+        if let Some(want) = expected {
+            let save = self.unifier.save();
+            let mut result = Ok(method);
+            for _ in args {
+                result = result.and_then(|t| self.arrow_parts(t)).map(|(_, next, _)| next);
+            }
+            let pinned = result.and_then(|t| self.unifier.unify(t, want, "against the expected type"));
+            let zonked = self.unifier.zonk(req);
+            match pinned.ok().and_then(|_| self.resolve_blessed(name, zonked, field)) {
+                Some(hook) => {
+                    self.ctx_args.insert(head, hook.ctx);
+                    self.blessed_sites.insert(head, hook.field);
+                    let mut rest = method;
+                    for a in args {
+                        let (param, next, eff) = self.arrow_parts(rest)?;
+                        let amb = self.ambient;
+                        self.unifier.subrow(eff, amb, "in a function application")?;
+                        self.check(*a, param)?;
+                        rest = next;
+                    }
+                    return Ok(self.unifier.zonk(rest));
+                }
+                None => self.unifier.restore(save),
+            }
+        }
         let mut rest = method;
         for a in args {
             let (param, next, eff) = self.arrow_parts(rest)?;
@@ -873,6 +931,9 @@ impl<'a> Checker<'a> {
             for it in items {
                 self.check(it, elem)?;
             }
+        }
+        if matches!(self.node(e), Expr::Str(_)) && self.is_code(expected) {
+            self.quotations.insert(e);
         }
         self.literal_hooks.insert(e, hook);
         Ok(true)

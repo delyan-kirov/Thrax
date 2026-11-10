@@ -3,7 +3,7 @@ $ @mod DERIVE_SHOW
 # \file DERIVE_SHOW.ares
 # \info Deriving `to_string` at compile time. `DERIVE.derive_show "T"` reflects on
 #       a declared type's shape (`@type_fields` / `@type_variants`) and generates
-#       the source for `$ to_string : T -> @Str`, injected here by `$ @e`. The
+#       the source for `$ to_string : T -> @Str`, injected here by `$ &`. The
 #       hand-written `test` below then calls `to_string` on values of those types,
 #       even though the definitions did not exist until the generator ran (a
 #       forward-referenced injection). One macro, any struct or union.
@@ -35,10 +35,10 @@ $ Pair : @struct a b =
     snd: b,
 
 # Generate `to_string` for each type from its declaration alone.
-$ @e <| DERIVE.derive_show "Rgb"
-$ @e <| DERIVE.derive_show "Shape"
-$ @e <| DERIVE.derive_show "Box"
-$ @e <| DERIVE.derive_show "Pair"
+$ &DERIVE.derive_show "Rgb"
+$ &DERIVE.derive_show "Shape"
+$ &DERIVE.derive_show "Box"
+$ &DERIVE.derive_show "Pair"
 
 $ ck_struct : @Int =
     if to_string (Rgb.{ .r = 1, .g = 2, .b = 3 }) == "Rgb { r = 1 g = 2 b = 3 }" => 0 else 1
@@ -82,4 +82,4 @@ $ test : @Int =
     ck_struct + ck_nullary + ck_unary + ck_nary + ck_interp + ck_gen_int + ck_gen_empty
         + ck_gen_nest + ck_pair + ck_pair2 + ck_xmod
 
-$ @e <| assert (test == 0) "DERIVE_SHOW: a check failed"
+$ &assert (test == 0) "DERIVE_SHOW: a check failed"

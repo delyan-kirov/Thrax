@@ -1,4 +1,4 @@
 $ @mod PROJECT
 #~ error[BUILD_SCRIPT]: `BUILD.ares` does not declare `$ @mod BUILD`
 
-$ @build : {} -> <@Meta, @IO> @Code = \_ => @parse_items ""
+$ @build : {} -> <@Meta, @IO> @Code = \_ => ""

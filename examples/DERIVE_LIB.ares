@@ -13,8 +13,8 @@ $ Wrap : @union t =
     Nothing: {},
     Just: { t },
 
-$ @e <| DERIVE.derive_show "Wrap"
+$ &DERIVE.derive_show "Wrap"
 
 $ test : @Int = 0
 
-$ @e <| assert (test == 0) "DERIVE_LIB: a check failed"
+$ &assert (test == 0) "DERIVE_LIB: a check failed"

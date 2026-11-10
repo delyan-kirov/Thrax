@@ -17,11 +17,12 @@
  * crates/frontend/src/lexer/data.rs; the %left/%right/%precedence block below
  * is that spec.
  *
- * CONFLICTS. `%expect 9`: bison's summary count, all resolving by the default
+ * CONFLICTS. `%expect 21`: bison's summary count, all resolving by the default
  * (shift), all matching parser.rs. Not LALR(1) but unambiguous under maximal munch
- * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates sixteen
- * (state, token) warnings over the same classes: 12 on DOT, 3 on BAR, 1 on
- * KW_CTL. The summary number is what `%expect` compares against.)
+ * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates thirty-nine
+ * (state, token) warnings over the same classes: 14 on DOT, 21 on the tokens
+ * that start an atom after a splice, 3 on BAR, 1 on KW_CTL. The summary number
+ * is what `%expect` compares against.)
  *   - `lo ...`         open range shifts an upper bound when one follows, else
  *                      closes open (a pattern `num_lit ELLIPSIS`, an expression
  *                      `[expr ELLIPSIS RBRACK]`); two conflicts
@@ -30,6 +31,10 @@
  *                     in juxtaposed lambda parameters (`\.Tag .{..}`) too,
  *                     three conflicts
  *   - `A.B.C`         qualified-name chains shift greedily
+ *   - `&f a`          a splice's operand is the whole application wherever the
+ *                     context could take another atom (a type argument, a
+ *                     row entry's argument), so `@Vec &f a` splices `f a`;
+ *                     twelve conflicts in the summary count
  *   - `do ... ctl`    `ctl` attaches to the nearest `do`
  *   - nested arms     arms belong to the innermost multi-arm `\ |` or handler
  *                     (parenthesize to nest); the real parser also ends the
@@ -50,7 +55,7 @@
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
-%expect 9
+%expect 21
 
 %token INT REAL IMAG STR   /* IMAG: an `i`-suffixed number, `3i` / `1.2i` / `2.5e-2i` */
 %token UIDENT       /* Word, uppercase-initial */
@@ -59,8 +64,8 @@
 %token HOLE         /* ??? a typed hole: any type, always a compile error naming it */
 
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN AT_BUILD
-%token AT_E AT_RUN AT_USE AT_IFACE  /* AT_USE: `@use`; `@ctx` is reserved for
-                                      the unified binder of #406 */
+%token AT_USE AT_IFACE  /* AT_USE: `@use`; `@ctx` is reserved for
+                          the unified binder of #406 */
 %token AT_PRIVATE AT_EXTERN AT_ARRAY AT_IMPORT
 %token AT_TRUE AT_FALSE /* the two `@Bool` literals (there is no `true`/`false` alias) */
 %token AT_TYCON     /* any other @name: a built-in type (@Int64, @Str, @Vec) or
@@ -85,12 +90,13 @@
 %left  STAR SLASH PERCENT AMP3 SHL3 SHR3  /* &&& <<< >>> bitwise and, shifts */
 %right CARET                        /* ^ exponentiation */
 %right COMPOSE                      /* <|> composition (desugars to `\x => f (g x)`) */
-%precedence NEG                     /* unary - ! ~~~ */
+%precedence NEG                     /* unary - ! ~~~ and the splice & */
 %precedence APP                     /* application */
 %left  DOT                          /* postfix . */
 
 %token BANG                         /* ! */
 %token TILDE3                       /* ~~~ bitwise complement */
+%token AMP                          /* & build-time splice */
 %token ANGLE_EMPTY                  /* <> */
 %token BAR                          /* | */
 %token ELLIPSIS                     /* ... inclusive range (patterns + `t.[p...q]` slices) */
@@ -111,7 +117,6 @@ global
   | DOLLAR UIDENT COLON AT_UNION  opt_type_params EQ  /* no variants: uninhabited */
   | DOLLAR UIDENT COLON AT_UNION  AT_EXTERN STR opt_type_params EQ union_body  /* C layout */
   | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ type
-  | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ eff_row  /* a row alias */
   | DOLLAR UIDENT COLON AT_EFFECT opt_type_params EQ effect_body
   | DOLLAR AT_IMPORT import
   | DOLLAR AT_PRIVATE
@@ -122,14 +127,12 @@ global
   /* A blessed interface TYPE, declarable only in CORE: the compiler resolves a
    * value of it at a desugar site and calls its single field. AT_IFACE is one of
    * `@IIntLit @IRealLit @IImagLit @IStrLit @ISeqLit @IRange @IRangeFrom @IIndex
-   * @ISlice @ISeqView @ISeqViewBack`. */
+   * @ISlice @ISeqView @ISeqViewBack @IInterp @IInterpText @IInterpHole`. */
   | DOLLAR AT_IFACE COLON AT_STRUCT opt_type_params EQ struct_body
   /* A builtin, declarable only in CORE: the name is the runtime primitive
    * (`$ @iadd : t -> t -> t = @extern "ares"`). */
   | DOLLAR AT_TYCON COLON sig EQ builtin_lit
-  | DOLLAR AT_E expr
-  | DOLLAR AT_E PIPE_BACK expr  /* `$ @e <| assert ..`: `@e` piped into */
-  | DOLLAR AT_RUN expr
+  | DOLLAR splice  /* `$ &assert ..`: the items the code holds replace it */
   | DOLLAR LPAREN operator_name RPAREN COLON type EQ expr  /* `$ (+) : T = e` */
   ;
 
@@ -165,9 +168,18 @@ field_decl    : LIDENT COLON type | entry_splice ;
 union_body    : variant_decls opt_comma ;
 variant_decls : variant_decl | variant_decls COMMA variant_decl ;
 variant_decl  : UIDENT COLON payload_decl | entry_splice ;
-/* `@e X`: X builds the `@Code` of fields (`@parse_fields`) or variants
- * (`@parse_variants`), spliced in place of the entry before the final compile. */
-entry_splice  : AT_E expr | AT_E PIPE_BACK expr ;
+/* `&X`: X builds the `@Code` of fields or variants, checked and spliced in
+ * place of the entry before the final compile. */
+entry_splice  : splice ;
+
+/* `&X`, the build-time splice, valid in every position: X runs at compile time
+ * and its result replaces the site, `@Code` spliced in as source and
+ * first-order data inserted as a literal. Syntax, not a function: no section
+ * `(&)` and no `$ (&)` definition. The operand binds like a prefix operator's,
+ * so it is an application and stops before an infix operator, a `,`, `=>` or a
+ * row's `>`. The lexer splits a trailing `&` off an operator run that is
+ * otherwise unknown, so `<&Logging>` lexes as `<` `&`. */
+splice : AMP app ;
 
 /* After `Tag:` a '{' ALWAYS opens the payload's field braces (`{}` empty,
  * `{A, B}` two positional fields) never a bare tuple type; that is how
@@ -233,7 +245,7 @@ type_atom
   | LBRACE RBRACE
   | LBRACE type_list opt_comma RBRACE  /* tuple type; n >= 1 ({} is unit) */
   | LBRACE rec_field_list BAR LIDENT RBRACE  /* open record: `{ x: T | r }` */
-  | AT_E LPAREN expr RPAREN                 /* a type a generator produces */
+  | splice                                  /* a type a generator produces */
   | LBRACE rec_field_list opt_comma RBRACE /* named-record parameter sugar:
       `{x: T, y: U}` is the tuple `{T, U}` whose field names bind the argument;
       a one-field `{x: T}` collapses to `T` (see parse_global). Legal only in a
@@ -271,11 +283,10 @@ eff_row
   | PIPE_BACK LIDENT GT
   ;
 
-/* An entry is an effect applied to its type arguments (`Chan @Int e`), a row
- * alias applied to its parameters (`WithLog e`), or entries a generator produces
- * (`@e (X)`, parenthesized so the operand stops before `,` or `>`). */
+/* An entry is an effect applied to its type arguments (`Chan @Int e`), or
+ * entries a generator produces (`&X`). A row has no alias. */
 eff_names : eff_entry | eff_names COMMA eff_entry ;
-eff_entry : UIDENT | AT_TYCON | eff_entry type_atom | AT_E LPAREN expr RPAREN ;
+eff_entry : UIDENT | AT_TYCON | eff_entry type_atom | splice ;
 
 expr
   : ctrl_expr
@@ -340,6 +351,7 @@ op_expr
   | MINUS op_expr %prec NEG
   | BANG  op_expr %prec NEG
   | TILDE3 op_expr %prec NEG
+  | AMP   op_expr %prec NEG
   | app
   ;
 
@@ -507,7 +519,7 @@ pat_atom
   | UIDENT DOT LBRACE field_pats RBRACE
   | UIDENT DOT UIDENT pat_payload
   | UIDENT DOT UIDENT DOT UIDENT pat_payload
-  | AT_E LPAREN expr RPAREN                /* a pattern a generator produces */
+  | splice  /* a constant (`&answer`) or a pattern a generator produces */
   ;
 
 pat_payload  : /* empty */ | DOT LBRACE field_pats RBRACE ;

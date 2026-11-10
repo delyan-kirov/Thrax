@@ -342,7 +342,7 @@ warning[UNREACHABLE_ARM]: unreachable arm
   --> CORE.ares:9:1
 error[META_ABORT]: boom
   --> F.ares
-note: raised while running this compile-time `@e`
+note: raised while running this compile-time `&`
 ares: cannot find module `NOPE`
 ";
     let got: Vec<String> = diagnostics(stderr, &["F.ares".to_string()])

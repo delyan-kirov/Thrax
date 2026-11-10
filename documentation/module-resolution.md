@@ -167,7 +167,7 @@ it once, and they reach it through the same `resolve_module_file`. While
 `BUILD.ares` itself compiles, step 2 is empty: it cannot import from the
 directories it adds. `@import_path` faults anywhere else, and `$ @import BUILD` is
 rejected, so the search never depends on load order. All three are
-`BUILD_SCRIPT` errors (language reference, section 11.4).
+`BUILD_SCRIPT` errors (language reference, section 11.5).
 
 ---
 

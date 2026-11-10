@@ -1,7 +1,7 @@
 $ @mod CT_RUN
 
 # \file CT_RUN.ares
-# \info Build directives: `$ @e <| @link "m"` runs at build time and adds the
+# \info Build directives: `$ &@link "m"` runs at build time and adds the
 #       named library to the link line for the native backend and to the dlopen
 #       set for the interpreter, so a project declares its libraries in Ares.
 #       `@link` / `@link_path` carry the `<@Meta>` effect and return empty code,
@@ -10,8 +10,8 @@ $ @mod CT_RUN
 
 # A build directive: link/preload libm (the suite already uses libm via MATH,
 # so this is exercised end to end in both engines without adding a dependency).
-$ @e <| @link "m"
+$ &@link "m"
 
 $ test : @Int = 0
 
-$ @e <| assert (test == 0) "CT_RUN: a check failed"
+$ &assert (test == 0) "CT_RUN: a check failed"

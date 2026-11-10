@@ -20,8 +20,8 @@ $ Geom : @union =
     Rect: { @Int, @Int },
 
 # Generate `cmp_T`, the `IOrd`/`IEq` instances, and the named comparisons.
-$ @e <| DERIVE.derive_ord "Coord"
-$ @e <| DERIVE.derive_ord "Geom"
+$ &DERIVE.derive_ord "Coord"
+$ &DERIVE.derive_ord "Geom"
 
 # Struct: lexicographic by field.
 $ ck_lt : @Int = if lt_Coord (Coord.{ .x = 1, .y = 2 }) (Coord.{ .x = 1, .y = 3 }) => 0 else 1
@@ -46,4 +46,4 @@ $ test : @Int =
     ck_lt + ck_gt + ck_eq + ck_le + ck_ge + ck_tag + ck_pay + ck_cmp + ck_op_lt + ck_op_ge
         + ck_op_eq + ck_mixed
 
-$ @e <| assert (test == 0) "DERIVE_ORD: a check failed"
+$ &assert (test == 0) "DERIVE_ORD: a check failed"

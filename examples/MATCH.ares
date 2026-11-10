@@ -177,4 +177,4 @@ $ nested_ok : @Int =
 # nested block above additionally checks values, contributing 0 when correct.
 $ test : @Int = c0; c2; cN; g_baby; g_alice; s; o0; o7; d5; lr; lg; u_none; u_some; nested_ok
 
-$ @e <| assert (test == 0) "MATCH: a check failed"
+$ &assert (test == 0) "MATCH: a check failed"

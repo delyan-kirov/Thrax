@@ -6,7 +6,7 @@ $ @mod META_BUILD
 #       @IO> @Code` is the one name its BUILD starts from: the compiler runs it
 #       during compilation and adds the items of the `@Code` it returns to this
 #       module. One name, one signature, like the entry.
-#       Its privilege over `$ @e` is the `<@IO>` in that row. `$ @e` installs
+#       Its privilege over `$ &` is the `<@IO>` in that row. `$ &` installs
 #       `<@Meta>` alone, so it is hermetic: a generator there can compute, parse
 #       and inject, but not touch the world.
 #       Building IS IO, so `@build` is the one context that discharges it.
@@ -29,7 +29,7 @@ $ arx_files : {} -> <@Meta, @IO> @Vec @Str = \_ =>
 # the first of them, which the sorted listing makes deterministic.
 $ @build : {} -> <@Meta, @IO> @Code = \_ =>
     let files = arx_files {} in
-    @parse_items
+    @code
         (
             "$ file_count : @Int = "
                 ++ STR.from_int (VEC.len files)
@@ -49,4 +49,4 @@ $ ck_self : @Int = if STR.cmp_str first_file "META_BUILD.ares" <= 0 => 0 else 4
 
 $ test : @Int = ck_count + ck_first + ck_self
 
-$ @e <| assert (test == 0) "META_BUILD: a check failed"
+$ &assert (test == 0) "META_BUILD: a check failed"

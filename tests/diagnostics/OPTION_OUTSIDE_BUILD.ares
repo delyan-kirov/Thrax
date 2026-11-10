@@ -1,5 +1,5 @@
 $ @mod OPTION_OUTSIDE_BUILD
 
 # Only the `@build` of a project's `BUILD.ares` sets project options.
-$ @build : {} -> <@Meta, @IO> @Code = \_ => @option "format.width" "80"; @parse_items ""
+$ @build : {} -> <@Meta, @IO> @Code = \_ => @option "format.width" "80"; ""
 #~ error[BUILD_SCRIPT]: `@option` outside a project's `BUILD.ares`

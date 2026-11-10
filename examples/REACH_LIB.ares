@@ -8,4 +8,4 @@ $ Item : @struct = v : @Int,
 
 $ test : @Int = 0
 
-$ @e <| assert (test == 0) "REACH_LIB: a check failed"
+$ &assert (test == 0) "REACH_LIB: a check failed"

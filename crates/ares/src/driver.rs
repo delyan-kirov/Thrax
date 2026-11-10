@@ -2,6 +2,7 @@
 //! lowering, and the `lex`/`parse`/`check`/`run` subcommands.
 
 use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -12,6 +13,7 @@ use frontend::{Item, Program};
 
 use crate::stdlib;
 
+mod hygiene;
 mod resident;
 use resident::ModuleRun;
 
@@ -235,7 +237,7 @@ pub(crate) fn load_core(
 
 /// Load every module an import names that is not loaded yet, transitively. The
 /// initial set comes from [`load_core`]; this reopens it after an expansion round,
-/// where a `@build` or a `$ @e` may have injected `$ @import M` for a module no
+/// where a `@build` or a `$ &` may have injected `$ @import M` for a module no
 /// hand-written source mentions.
 fn load_injected_imports(loaded: &mut Loaded, fetch: &Fetch) -> Result<(), String> {
     let mut queue: Vec<(String, utilities::Span, usize)> = Vec::new();
@@ -664,7 +666,7 @@ pub(crate) fn dotted(ast: &frontend::Ast, parts: utilities::Slice<utilities::Str
 /// and lower every module, returning the lowered modules (root first). The
 /// parse/check state is local (self-borrowing), so only the owned `lowered`
 /// escapes; the expansion loop in [`lower_all`] calls this repeatedly on
-/// progressively `@e`-expanded sources.
+/// progressively `&`-expanded sources.
 type Compiled = (
     Vec<frontend::core::CoreProgram>,
     Reflection,
@@ -677,6 +679,12 @@ type Compiled = (
 struct Reflection {
     info: frontend::ReflectInfo,
     scopes: HashMap<utilities::StrId, Rc<Vec<(String, String)>>>,
+    /// Where each module's bare names are defined, which the names its
+    /// quotations spell resolve through (see `hygiene`).
+    homes: HashMap<utilities::StrId, Rc<frontend::Homes>>,
+    /// The locals in scope at each expression splice, by module and span, with
+    /// their types as source, which `@check` there sees.
+    locals: HashMap<(utilities::StrId, usize, usize), Vec<(String, String)>>,
 }
 
 /// The [`Reflection`] of a checked run. Rendering every global's type is only
@@ -686,7 +694,17 @@ fn reflection(run: &ModuleRun, loaded: &Loaded, resolved: &frontend::Resolved, s
     let mut scopes = HashMap::new();
     let modules: Vec<usize> = (0..loaded.sources.len()).filter(|&i| scoped(&loaded.sources[i].0)).collect();
     if modules.is_empty() {
-        return Reflection { info, scopes };
+        return Reflection { info, scopes, homes: HashMap::new(), locals: HashMap::new() };
+    }
+    let homes = (0..loaded.sources.len())
+        .map(|i| (utilities::StrId::intern(&loaded.sources[i].0), Rc::new(run.checker(i).homes())))
+        .collect();
+    let mut locals = HashMap::new();
+    for &i in &modules {
+        let module = utilities::StrId::intern(&loaded.sources[i].0);
+        for (span, names) in run.checker(i).splice_locals() {
+            locals.insert((module, span.start, span.end), names);
+        }
     }
     // Each global as its own module renders it: only there does its type carry
     // its `@use` fields.
@@ -710,7 +728,7 @@ fn reflection(run: &ModuleRun, loaded: &Loaded, resolved: &frontend::Resolved, s
             .collect();
         scopes.insert(utilities::StrId::intern(&loaded.sources[i].0), Rc::new(entries));
     }
-    Reflection { info, scopes }
+    Reflection { info, scopes, homes, locals }
 }
 
 /// `shell` checks the root as the shell's session, under an open effect row.
@@ -806,9 +824,9 @@ fn check_entry(
     Ok(())
 }
 
-/// Render a compile-time `@e` fault at its call site: fill the fault's (sentinel)
+/// Render a compile-time `&` fault at its call site: fill the fault's (sentinel)
 /// span with the site's span and render against that module's source, so the
-/// caret lands on the `@e` in the user's file rather than a synthetic global.
+/// caret lands on the `&` in the user's file rather than a synthetic global.
 fn render_e_fault(
     diag: utilities::Diagnostic,
     module: &str,
@@ -828,8 +846,8 @@ fn render_e_fault(
     diag.render(src, path)
 }
 
-/// Move an error raised inside a `@parse_str` / `@parse_items` fragment into the
-/// string literal that spells it: the first one inside the `@e` site that
+/// Move an error raised inside a `@Code` fragment into the
+/// string literal that spells it: the first one inside the `&` site that
 /// decodes to the fragment, else the first anywhere in the module. A fragment
 /// no literal spells (built at compile time) stays at the site, quoted in a
 /// note.
@@ -864,7 +882,7 @@ fn place_in_literal(diag: utilities::Diagnostic, src: &str, site: utilities::Spa
                 let (a, b) = (start + at[s.start], start + at[s.end]);
                 Some(utilities::Span::new(a, b.max(a + 1)))
             });
-            if inside { diag } else { diag.with_label(site, "the `@e` that ran it") }
+            if inside { diag } else { diag.with_label(site, "the `&` that ran it") }
         }
         None => diag
             .place_fragment(|_| None)
@@ -923,7 +941,7 @@ fn map_back(rounds: &[HashMap<String, Vec<(usize, usize, usize)>>], module: &str
     p.max(0) as usize
 }
 
-/// Run `path`'s whole compile-time pipeline (every `$ @e` and `@build`, then the
+/// Run `path`'s whole compile-time pipeline (every `$ &` and `@build`, then the
 /// strict check) and return what it reports, as `(module, diagnostic)` with
 /// spans in the sources as written. For an editor's on-save check.
 pub(crate) fn compile_time_diagnostics(path: &str) -> Vec<(String, utilities::Diagnostic)> {
@@ -948,12 +966,12 @@ pub(crate) fn compile_time_diagnostics(path: &str) -> Vec<(String, utilities::Di
 }
 
 /// How many expansion rounds [`lower_all`] runs before it gives up. Staging depth
-/// is unbounded by design (an `@e` may inject another `@e`), so this only stops a
+/// is unbounded by design (a `&` may inject another `&`), so this only stops a
 /// generator that injects a fresh site every round from hanging the build.
 const MAX_META_ROUNDS: usize = 100;
 
-/// Compile `path`, iteratively expanding every `@e` (compile-time code
-/// insertion): each round compiles the current sources, forces every `@e` site,
+/// Compile `path`, iteratively expanding every `&` (compile-time code
+/// insertion): each round compiles the current sources, forces every `&` site,
 /// and substitutes the code it returns in source, repeating until
 /// none remain. `@link`/`@link_path` calls record build directives along the way,
 /// drained into the returned `BuildPlan`. Returns the expanded modules too, so a
@@ -1013,15 +1031,15 @@ fn expand_loaded(
             eprintln!("{}", msg.trim_end());
             return Err(ExitCode::FAILURE);
         }
-        // Compile leniently while `@e` sites remain: a generator may inject a
+        // Compile leniently while `&` sites remain: a generator may inject a
         // definition that hand-written code forward-references, which would not
         // yet resolve. Unbound names are deferred (fresh vars) so the generators
         // can still run; the final strict compile below validates the result.
-        let compiled = compile_sources(loaded, true, want_entry, shell)?;
-        // Gather every `@e` site this round, as `(module, qualified global, span,
-        // how its code is spliced)`: item position (`$ @e X`) replaces the
+        let mut compiled = compile_sources(loaded, true, want_entry, shell)?;
+        // Gather every `&` site this round, as `(module, qualified global, span,
+        // how its code is spliced)`: item position (`$ &X`) replaces the
         // directive with the items, expression and type position splice the code
-        // parenthesized to keep precedence, and pattern position (`@e (X)`) splices
+        // parenthesized to keep precedence, and pattern position (`&X`) splices
         // it bare, since a pattern has no parentheses.
         let sites: Vec<(String, String, utilities::Span, Splice)> = compiled
             .0
@@ -1053,7 +1071,7 @@ fn expand_loaded(
             })
             .collect();
         if sites.is_empty() && build_sites.is_empty() {
-            // No `@e` remains: re-check strictly so any name still unbound after
+            // No `&` remains: re-check strictly so any name still unbound after
             // all injection, or a missing/ill-typed entry, is reported now.
             let final_compiled = compile_sources(loaded, false, want_entry, shell)?;
             // Fold in any `@link`/`@link_path` directives recorded while running.
@@ -1086,7 +1104,23 @@ fn expand_loaded(
             return Err(ExitCode::FAILURE);
         }
         let ir = resident::lower_reusing(&compiled.0, &compiled.2);
+        let homes = std::mem::take(&mut compiled.1.homes);
+        let mut locals = std::mem::take(&mut compiled.1.locals);
+        let site_locals: Rc<RefCell<Vec<(String, String)>>> = Rc::default();
         let reflect = reflect_tables(compiled.1);
+        // The modules a site must import for the names hygiene qualifies.
+        let mut injected: Vec<(String, utilities::StrId)> = Vec::new();
+        let mut hygienic = |code: String, v: &interpreter::machine::data::PVal, kind, module: &str| {
+            let quoted = interpreter::machine::data::quoted_runs(v);
+            let site = utilities::StrId::intern(module);
+            let fixed = hygiene::resolve(&code, &quoted, kind, site, &homes);
+            for m in fixed.imports {
+                if !injected.iter().any(|(n, i)| n == module && *i == m) {
+                    injected.push((module.to_string(), m));
+                }
+            }
+            fixed.text
+        };
         let round_sources: Rc<HashMap<String, (String, String)>> = Rc::new(
             loaded
                 .sources
@@ -1096,18 +1130,18 @@ fn expand_loaded(
         );
         let enter = |module: &str| {
             interpreter::machine::set_meta_eval(Some(round_eval_host(&round_sources, module, fetch)));
-            interpreter::machine::set_meta_check(Some(round_check_host(&round_sources, module, fetch)));
+            interpreter::machine::set_meta_check(Some(round_check_host(&round_sources, module, fetch, &site_locals)));
             interpreter::machine::set_meta_scope(reflect.scopes.get(&utilities::StrId::intern(module)).cloned());
             interpreter::machine::set_type_host(Some(reflect_host(Rc::clone(&reflect), module.to_string())));
         };
         // `@build` first, and alone in its round: it contributes the definitions
         // the rest of the compile-time code may depend on, so its items have to
-        // land before any `$ @e` that reads them runs. Each `@build` is forced
+        // land before any `$ &` that reads them runs. Each `@build` is forced
         // once, and the items of the `@Code` it returns are APPENDED to its
-        // module's source. Appending (rather than replacing a span, as an `$ @e`
+        // module's source. Appending (rather than replacing a span, as an `$ &`
         // directive does) is what makes `@build` a definition that stays put: it
         // contributes items to its module instead of becoming them. Whatever it
-        // injects is expanded by the rounds that follow, so a generated `$ @e`
+        // injects is expanded by the rounds that follow, so a generated `$ &`
         // still runs.
         let ran_builds = !build_sites.is_empty();
         for (module, qualified) in build_sites {
@@ -1141,11 +1175,18 @@ fn expand_loaded(
                 clear_meta_hosts();
                 eprintln!(
                     "ares: `{}` of module `{module}` did not produce an `@Code` of \
-                     top-level items (build one with `@parse_items`)",
+                     top-level items",
                     frontend::BUILD
                 );
                 return Err(ExitCode::FAILURE);
             };
+            if let Err(d) = interpreter::machine::data::check_fragment(&items, interpreter::machine::data::Fragment::Items) {
+                clear_meta_hosts();
+                let d = d.with_note(format!("`{}` of module `{module}` returns top-level items", frontend::BUILD));
+                eprint!("{}", render_e_fault(d, &module, utilities::Span::at(0), &loaded.sources));
+                return Err(ExitCode::FAILURE);
+            }
+            let items = hygienic(items, &v, interpreter::machine::data::Fragment::Items, &module);
             if script && !items.trim().is_empty() {
                 clear_meta_hosts();
                 let d = utilities::Diagnostic::error(
@@ -1154,7 +1195,7 @@ fn expand_loaded(
                     0,
                     format!("the `{}` of `BUILD.ares` returned code", frontend::BUILD),
                 )
-                .with_help("return `@parse_items \"\"`; `BUILD.ares` configures the build and adds no items");
+                .with_help("return `\"\"`; `BUILD.ares` configures the build and adds no items");
                 eprint!("{}", render_e_fault(d, &module, utilities::Span::at(0), &loaded.sources));
                 return Err(ExitCode::FAILURE);
             }
@@ -1168,6 +1209,11 @@ fn expand_loaded(
         }
         if ran_builds {
             clear_meta_hosts();
+            for (module, import) in &injected {
+                if let Some(i) = loaded.index.get(module) {
+                    loaded.sources[*i].2.push_str(&import_line(*import));
+                }
+            }
             continue;
         }
         let mut edits: Vec<(String, utilities::Span, String)> = Vec::new();
@@ -1194,6 +1240,8 @@ fn expand_loaded(
             if blocked(&qualified) {
                 continue;
             }
+            let key = (utilities::StrId::intern(&module), span.start, span.end);
+            *site_locals.borrow_mut() = locals.remove(&key).unwrap_or_default();
             enter(&module);
             interpreter::machine::set_meta_site(Some(site_of(&loaded.sources, &module, span)));
             let v = interpreter::machine::eval_value(&ir, &qualified);
@@ -1201,11 +1249,36 @@ fn expand_loaded(
             let v = match v {
                 Ok(v) => v,
                 Err(d) => {
-                    faults.push((d, module, span));
+                    faults.push((d.with_note("raised while running this compile-time `&`"), module, span));
                     continue;
                 }
             };
-            let code = as_code_src(&v).expect("the checker requires an `@e` operand to be `@Code`");
+            let code = match as_code_src(&v) {
+                Some(code) => {
+                    let (kind, what) = fragment_of(&qualified);
+                    match interpreter::machine::data::check_fragment(&code, kind) {
+                        Ok(()) => hygienic(code, &v, kind, &module),
+                        Err(d) => {
+                            faults.push((d.with_note(format!("this `&` splices {what}")), module, span));
+                            continue;
+                        }
+                    }
+                }
+                None => match as_literal_src(&v) {
+                    Some(lit) => lit,
+                    None => {
+                        let d = utilities::Diagnostic::error(
+                            utilities::Code::TypeMismatch,
+                            span,
+                            0,
+                            "this `&` produced a value with no literal",
+                        )
+                        .with_note("a real that is infinite or not a number has no literal to insert");
+                        faults.push((d, module, span));
+                        continue;
+                    }
+                },
+            };
             let text = match how {
                 Splice::Items | Splice::Bare => code,
                 Splice::Parenthesized => format!("({code})"),
@@ -1213,17 +1286,23 @@ fn expand_loaded(
             edits.push((module, span, text));
         }
         clear_meta_hosts();
+        if !edits.is_empty() {
+            for (module, import) in injected {
+                let Some(i) = loaded.index.get(&module) else { continue };
+                let end = loaded.sources[*i].2.len();
+                edits.push((module, utilities::Span::new(end, end), import_line(import)));
+            }
+        }
         if edits.is_empty() {
             assert!(held + faults.len() > 0, "a round with sites and no edits must have faulted or waited");
             for (diag, module, span) in faults {
-                let diag = diag.with_note("raised while running this compile-time `@e`");
                 eprint!("{}", render_e_fault(diag, &module, span, &loaded.sources));
             }
             // Nothing will supply what the waiting sites lack any more, so what the
             // lenient check deferred is an error: the strict check reports it.
             if held > 0 {
                 compile_sources(loaded, false, want_entry, shell)?;
-                eprintln!("ares: a compile-time `@e` waits on code that never resolved");
+                eprintln!("ares: a compile-time `&` waits on code that never resolved");
             }
             return Err(ExitCode::FAILURE);
         }
@@ -1231,10 +1310,35 @@ fn expand_loaded(
     }
 }
 
-/// How the code an `@e` site returns replaces the site.
+/// The import a site gains for a module whose names hygiene qualified: under
+/// the module's own name only, so it brings no name in bare.
+fn import_line(module: utilities::StrId) -> String {
+    format!("\n$ @import {module} = {module}\n")
+}
+
+/// The syntax category the `@Code` of the `&` site backed by the global
+/// `qualified` must parse as, read from the synthetic name the desugarer gave
+/// it, and how to name it in a diagnostic.
+fn fragment_of(qualified: &str) -> (interpreter::machine::data::Fragment, &'static str) {
+    use interpreter::machine::data::Fragment;
+    let name = qualified.rsplit_once(".@").map_or(qualified, |(_, n)| n);
+    let stem = name.split_once('#').map_or(name, |(s, _)| s);
+    match stem {
+        "splice" => (Fragment::Items, "top-level items"),
+        "splice_expr" => (Fragment::Expr, "an expression"),
+        "splice_type" => (Fragment::Type, "a type"),
+        "splice_row" => (Fragment::Row, "the entries of an effect row"),
+        "splice_pat" => (Fragment::Pattern, "a pattern"),
+        "splice_fields" => (Fragment::Fields, "a struct's fields"),
+        "splice_variants" => (Fragment::Variants, "a union's variants"),
+        _ => unreachable!("`{qualified}` backs no `&` site"),
+    }
+}
+
+/// How the code a `&` site returns replaces the site.
 #[derive(Clone, Copy)]
 enum Splice {
-    /// `$ @e X`: the whole directive becomes the items, so empty code (a check,
+    /// `$ &X`: the whole directive becomes the items, so empty code (a check,
     /// an `@link`) drops it.
     Items,
     /// Expression and type position: the code, parenthesized.
@@ -1323,7 +1427,7 @@ fn site_of(sources: &[(String, String, String)], module: &str, span: utilities::
 /// Render what `@warn` reported while the site at `span` of `module` ran.
 fn report_meta_warnings(module: &str, span: utilities::Span, sources: &[(String, String, String)]) {
     for w in interpreter::machine::take_meta_warnings() {
-        let w = w.with_note("raised while running this compile-time `@e`");
+        let w = w.with_note("raised while running this compile-time `&`");
         eprint!("{}", render_e_fault(w, module, span, sources));
     }
 }
@@ -1339,8 +1443,8 @@ struct ReflectTables {
     scopes: HashMap<utilities::StrId, Rc<Vec<(String, String)>>>,
 }
 
-/// Index a round's collected type shapes for `$ @e` reflection.
-fn reflect_tables(Reflection { info: reflect, scopes }: Reflection) -> Rc<ReflectTables> {
+/// Index a round's collected type shapes for `$ &` reflection.
+fn reflect_tables(Reflection { info: reflect, scopes, .. }: Reflection) -> Rc<ReflectTables> {
     use interpreter::machine::TypeInfo;
     let mut qualified = HashMap::new();
     let mut bare: HashMap<utilities::StrId, Vec<(utilities::StrId, TypeInfo)>> = HashMap::new();
@@ -1363,7 +1467,7 @@ fn reflect_tables(Reflection { info: reflect, scopes }: Reflection) -> Rc<Reflec
     Rc::new(ReflectTables { qualified, bare, scopes })
 }
 
-/// The `$ @e` reflection host for the module whose directive is running: a
+/// The `$ &` reflection host for the module whose directive is running: a
 /// by-name lookup answering `@type_kind`/`@type_fields`/`@type_variants`/`@type_of`.
 ///
 /// A bare name resolves to `caller`'s OWN type first. Types are namespaced per
@@ -1405,7 +1509,29 @@ fn as_code_src(v: &interpreter::machine::data::PVal) -> Option<String> {
     None
 }
 
-/// Apply `@e` source substitutions to each module, right-to-left within a module
+/// The offsets of the lone `&`s in `src`, the splice sites unless one sits in
+/// a string or a comment. `&&` and `&&&` are other operators.
+pub fn splice_offsets(src: &str) -> impl Iterator<Item = usize> + '_ {
+    let b = src.as_bytes();
+    (0..b.len()).filter(move |&i| b[i] == b'&' && (i == 0 || b[i - 1] != b'&') && b.get(i + 1) != Some(&b'&'))
+}
+
+/// The source literal of a first-order value a splice inserts: a number, a
+/// `@Bool` or a `@Str` (the checker admits no other data). `None` for a value
+/// with no literal, such as an infinite real.
+fn as_literal_src(v: &interpreter::machine::data::PVal) -> Option<String> {
+    use interpreter::machine::data::Value;
+    match &*v.borrow() {
+        Value::Int(n) => Some(n.to_string()),
+        Value::Real(x) if x.is_finite() => Some(format!("{x:?}")),
+        Value::Real32(x) if x.is_finite() => Some(format!("{x:?}")),
+        Value::Bool(b) => Some(if *b { "@true" } else { "@false" }.to_string()),
+        Value::Str(bytes) => Some(interpreter::machine::data::str_literal(bytes)),
+        _ => None,
+    }
+}
+
+/// Apply `&` source substitutions to each module, right-to-left within a module
 /// so earlier spans stay valid as later ones are replaced.
 fn splice_sources(sources: &mut [(String, String, String)], mut edits: Vec<(String, utilities::Span, String)>) {
     if sink_active() {
@@ -1461,13 +1587,13 @@ impl Session {
 
     /// Install the compile-time hosts for running the shell's `REPL` module: the
     /// shell evaluates at compile time, so `<@Meta>` operations work in it as in
-    /// a `$ @e`. Undo with [`leave_session_meta`].
+    /// a `$ &`. Undo with [`leave_session_meta`].
     pub fn enter_meta(&self, root_dir: &Path) {
         let Some(meta) = &self.meta else { return };
         let module = SHELL_MODULE;
         let fetch = disk_fetch(root_dir);
         interpreter::machine::set_meta_eval(Some(round_eval_host(&meta.sources, module, &fetch)));
-        interpreter::machine::set_meta_check(Some(round_check_host(&meta.sources, module, &fetch)));
+        interpreter::machine::set_meta_check(Some(round_check_host(&meta.sources, module, &fetch, &Rc::default())));
         interpreter::machine::set_meta_scope(meta.reflect.scopes.get(&utilities::StrId::intern(module)).cloned());
         interpreter::machine::set_type_host(Some(reflect_host(Rc::clone(&meta.reflect), module.to_string())));
         interpreter::machine::set_meta_site(Some(meta.site.clone()));
@@ -1483,7 +1609,7 @@ pub fn leave_session_meta(root_dir: &Path) {
 /// The shell's in-memory root module.
 pub const SHELL_MODULE: &str = "REPL";
 
-/// Expand every `$ @e` (and `@build`) of the shell session `source`, as a file's
+/// Expand every `$ &` (and `@build`) of the shell session `source`, as a file's
 /// are, and return the expanded session. Diagnostics are printed.
 pub fn expand_session(source: &str, root_dir: &Path) -> Option<String> {
     let fetch = |name: &str| load_module(name, root_dir);
@@ -1512,7 +1638,7 @@ pub fn compile_session(source: &str, root_dir: &Path) -> Result<Session, String>
 /// not, `CORE` and `C` included) to a diagnostic path and source. The root must
 /// have an entry. Returns the lowered modules, root first, or the rendered
 /// diagnostics. This is the pipeline for a host with no filesystem to search,
-/// such as the browser playground. It expands every `$ @e` (and `@build`) as a
+/// such as the browser playground. It expands every `$ &` (and `@build`) as a
 /// file compile does, so a generated item or member works the same there.
 pub fn compile_program(
     source: &str,
@@ -1547,7 +1673,7 @@ fn compile_in_memory(
     let lowered = run.desugar(&order, &resolved);
     let kept = run.kept_ids(&order);
 
-    // The shell runs its items at compile time: give it the hosts a `$ @e` has.
+    // The shell runs its items at compile time: give it the hosts a `$ &` has.
     let meta = if open_effects {
         let reflect = reflection(&run, &loaded, &resolved, &|m| m == loaded.root_name);
         // A fragment imports the session, but not the item being evaluated,
@@ -1585,7 +1711,7 @@ fn compile_in_memory(
     })
 }
 
-/// Libraries and search paths a program's `$ @e <| @link ..` directives added to
+/// Libraries and search paths a program's `$ &@link ..` directives added to
 /// the build. Applied to the native link line; the
 /// interpreter's default set already covers libc/libm and lazily `dlopen`s the
 /// rest per `@extern`.
@@ -1668,10 +1794,13 @@ fn round_eval_host(
 
 /// The expansion-time `@check` host for a directive in `module`: like
 /// [`round_eval_host`], but the fragment is only checked, and its type returned.
+/// It also sees `locals`, the locals in scope at the running splice, each as a
+/// global of its type; nothing runs, so its body is only itself.
 fn round_check_host(
     sources: &Rc<HashMap<String, (String, String)>>,
     module: &str,
     fetch: &Fetch,
+    locals: &Rc<RefCell<Vec<(String, String)>>>,
 ) -> Box<dyn Fn(&str) -> std::result::Result<String, String>> {
     let mut imports = sources
         .get(module)
@@ -1680,8 +1809,11 @@ fn round_check_host(
     imports.push(format!("$ @import {module}"));
     let sources = Rc::clone(sources);
     let fetch = Rc::clone(fetch);
+    let locals = Rc::clone(locals);
     Box::new(move |src| {
-        let session = compile_wrapped(src, &imports, &|name| match sources.get(name) {
+        let mut prefix = imports.clone();
+        prefix.extend(locals.borrow().iter().map(|(name, ty)| format!("$ {name} : {ty} = {name}")));
+        let session = compile_wrapped(src, &prefix, &|name| match sources.get(name) {
             Some((path, text)) => Ok((path.clone(), text.clone())),
             None => fetch(name),
         })?;
@@ -1699,8 +1831,8 @@ pub fn install_eval_host(root_dir: PathBuf) {
 
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
     start_progress(2);
-    // `lower_all` has already expanded every `$ @e` (compile-time execution and
-    // code injection); the lowered program is `@e`-free.
+    // `lower_all` has already expanded every `$ &` (compile-time execution and
+    // code injection); the lowered program is `&`-free.
     let (lowered, _loaded, _plan) = match lower_all(path, true) {
         Ok(x) => x,
         Err(code) => return code,
@@ -1850,7 +1982,7 @@ pub fn cmd_build(
             }
         }
     }
-    // Libraries and search paths declared in Ares via `$ @e <| @link ..` /
+    // Libraries and search paths declared in Ares via `$ &@link ..` /
     // `@link_path`. Skip a lib already linked from an `@extern`.
     for lib in &plan.libs {
         if emitted.libraries.iter().any(|l| l == lib) {
@@ -2018,7 +2150,7 @@ fn libares_dir() -> Option<PathBuf> {
     dirs.into_iter().find(|d| d.join(&name).exists())
 }
 
-/// Print the source as the checker finally saw it: every `@e` spliced
+/// Print the source as the checker finally saw it: every `&` spliced
 /// and every `@build`'s items appended. This is the only view of what a
 /// metaprogram actually produced, so it is how a generator is debugged.
 ///
@@ -2068,7 +2200,7 @@ fn is_stdlib_module(name: &str) -> bool {
 pub fn cmd_check(path: &str) -> ExitCode {
     start_progress(1);
     // Expanding first means the printed types are the ones the program really has
-    // (a `@e`-injected definition included), and that every `$ @e` directive has
+    // (a `&`-injected definition included), and that every `$ &` directive has
     // run: a module's compile-time assertions are checked by checking it.
     let (_lowered, loaded, _plan) = match lower_all(path, false) {
         Ok(x) => x,
@@ -2456,7 +2588,7 @@ mod sink_tests {
 
     #[test]
     fn positions_map_back_through_splices() {
-        // "ab@e(x)cd" -> the 5-byte site at 2 became 1 byte: "ab1cd".
+        // "ab&(xy)cd" -> the 5-byte site at 2 became 1 byte: "ab1cd".
         let mut round = HashMap::new();
         round.insert("M".to_string(), vec![(2, 5, 1)]);
         let rounds = vec![round];

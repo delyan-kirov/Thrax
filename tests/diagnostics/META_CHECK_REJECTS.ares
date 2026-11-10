@@ -1,5 +1,5 @@
 $ @mod META_CHECK_REJECTS
 
-# `@check` type-checks a fragment where the `@e` runs; an ill-typed one fails.
+# `@check` type-checks a fragment where the `&` runs; an ill-typed one fails.
 $ inc : @Int -> @Int = \x => x + 1
-$ @e <| (@check (@parse_str "inc \"x\""); @parse_items "") #~ error[META_ABORT]: `@check` rejected the fragment
+$ &(@check "inc \"x\""; "") #~ error[META_ABORT]: `@check` rejected the fragment

@@ -162,8 +162,8 @@ fn lex_tokenizes_a_string_into_tokens() {
 #[test]
 fn parse_str_produces_opaque_code() {
     // A valid expression parses into an opaque `@Code` carrying its source. A
-    // syntax error traps (verified via `ares run`: a compile-time `@e` of a
-    // bad `@parse_str` fails the build), the same fault path as a `@e` trap.
+    // syntax error traps (verified via `ares run`: a compile-time `&` of a
+    // bad `@parse_str` fails the build), the same fault path as a `&` trap.
     let src = "$ @mod T\n$ c : @Code = @parse_str \"1 + 2\"";
     assert_eq!(run(src, "T.c"), "@Code.{ .src = \"1 + 2\" }");
 }
@@ -180,8 +180,8 @@ fn parse_consumes_tokens_into_code() {
 
 #[test]
 fn format_lays_out_items_like_ares_fmt() {
-    let src = "$ @mod T\n$ s : @Str = @format \"$ f   : @Int->@Int = \\\\x=x+1\"";
-    assert_eq!(run(src, "T.s"), "\"$ f : @Int -> @Int = \\\\x = x + 1\\n\"");
+    let src = "$ @mod T\n$ s : @Str = @format \"$ f   : @Int->@Int = \\\\x=>x+1\"";
+    assert_eq!(run(src, "T.s"), "\"$ f : @Int -> @Int = \\\\x => x + 1\\n\"");
 }
 
 #[test]
@@ -198,45 +198,45 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
 #[test]
 fn fresh_mints_distinct_names() {
     // `@fresh` returns a unique identifier each call, for hygienic codegen. It
-    // carries `<@Meta>`, so it runs inside `@e`; force the synthetic global.
+    // carries `<@Meta>`, so it runs inside `&`; force the synthetic global.
     let src = "$ @mod T\n\
-               $ ck : @Bool = @e <| @parse_str (if @fresh \"t\" == @fresh \"t\" => \"@true\" else \"@false\")";
-    assert_eq!(run(src, "T.@e_expr#0"), "@Code.{ .src = \"@false\" }");
+               $ ck : @Bool = &@parse_str (if @fresh \"t\" == @fresh \"t\" => \"@true\" else \"@false\")";
+    assert_eq!(run(src, "T.@splice_expr#0"), "@Code.{ .src = \"@false\" }");
 }
 
 #[test]
-fn expr_position_e_lowers_to_a_synthetic_global() {
-    // `@e X` in expression position becomes a synthetic global `@e_expr#i = X`
+fn expr_position_splice_lowers_to_a_synthetic_global() {
+    // `&X` in expression position becomes a synthetic global `@splice_expr#i = X`
     // (the driver splices the code it returns; here we force the body directly
     // to confirm the site was lowered and the callee is in scope).
     let src = "$ @mod T\n\
                $ fib : @Int -> @Int = \\n => if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
-               $ x : @Int = @e <| @parse_str <| to_string <| fib 10";
-    assert_eq!(run(src, "T.@e_expr#0"), "@Code.{ .src = \"55\" }");
+               $ x : @Int = &(@parse_str <| to_string <| fib 10)";
+    assert_eq!(run(src, "T.@splice_expr#0"), "@Code.{ .src = \"55\" }");
 }
 
 #[test]
 fn ct_run_lowers_to_a_forceable_synthetic_global() {
-    // `$ @e <expr>` becomes a synthetic global (`Module.@e#i`) that the driver
+    // `$ &<expr>` becomes a synthetic global (`Module.@splice#i`) that the driver
     // forces at compile time. Here we force it directly to confirm it is emitted
     // and evaluates.
     let src = "$ @mod T\n\
                $ triple : @Int -> @Int = \\n => n * 3\n\
-               $ @e <| @parse_items <| \"$ k : @Int = \" ++ to_string (triple 14)\n\
+               $ &(@code <| \"$ k : @Int = \" ++ to_string (triple 14))\n\
                $ test : @Int = 0";
-    assert_eq!(run(src, "T.@e#0"), "@Code.{ .src = \"$ k : @Int = 42\" }");
+    assert_eq!(run(src, "T.@splice#0"), "@Code.{ .src = \"$ k : @Int = 42\" }");
 }
 
 #[test]
-fn type_position_e_lowers_to_a_forceable_synthetic_global() {
-    // `Foo : @e X = ...` records the type-position `@e X` as a synthetic global
-    // (`Module.@e_type#i`) the driver forces at compile time, then splices the
+fn type_position_splice_lowers_to_a_forceable_synthetic_global() {
+    // `Foo : &X = ...` records the type-position `&X` as a synthetic global
+    // (`Module.@splice_type#i`) the driver forces at compile time, then splices the
     // resulting `@Code`'s type source into the annotation. Here we force it
     // directly to confirm it is emitted and yields the type-carrying `@Code`.
     let src = "$ @mod T\n\
                $ pick : @Str -> @Code = \\s => @parse_str \"@Int\"\n\
-               $ x : @e <| pick \"num\" = 42";
-    assert_eq!(run(src, "T.@e_type#0"), "@Code.{ .src = \"@Int\" }");
+               $ x : &pick \"num\" = 42";
+    assert_eq!(run(src, "T.@splice_type#0"), "@Code.{ .src = \"@Int\" }");
 }
 
 /// Compile a tiny C source to a shared library in a temp dir, returning its path.
@@ -1602,6 +1602,8 @@ fn operator_table_every_entry() {
             "<<<" => ("$ a : @Int = 1 <<< 40", "1099511627776"),
             ">>>" => ("$ a : @Int = (0 - 16) >>> 2", "-4"),
             "~~~" => ("$ a : @Int = ~~~0", "-1"),
+            // The splice runs its operand at compile time; forcing `a` here runs it.
+            "&" => ("$ a : @Int = &(2 + 3)", "5"),
             // Comparison.
             "==" => ("$ a : @Int = if 3 == 3 => 1 else 0", "1"),
             "!=" => ("$ a : @Int = if 3 != 4 => 1 else 0", "1"),
@@ -1825,10 +1827,10 @@ fn deep_tail_recursion_is_constant_stack() {
 
 #[test]
 fn emit_returns_unit_and_abort_faults() {
-    // `@emit` carries `<@Meta>`, so it is used inside `@e` (which discharges the
+    // `@emit` carries `<@Meta>`, so it is used inside `&` (which discharges the
     // effect); forcing the synthetic global runs it, printing and returning unit.
-    let src = "$ @mod T\n$ u : {} = @e <| (@emit \"note\"; @parse_str \"{}\")";
-    assert_eq!(run(src, "T.@e_expr#0"), "@Code.{ .src = \"{}\" }");
+    let src = "$ @mod T\n$ u : {} = &(@emit \"note\"; @parse_str \"{}\")";
+    assert_eq!(run(src, "T.@splice_expr#0"), "@Code.{ .src = \"{}\" }");
 }
 
 // -- issue #209: laziness is a property of the slot -----------------------

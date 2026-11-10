@@ -62,6 +62,15 @@ pub struct Resolved {
     /// `[..]` literal sites resolved to a sized tensor (a vector value), from
     /// [`Checker::tensor_nodes`]. Lowering builds a vector.
     pub tensor_exprs: HashSet<Aol<Expr>>,
+    /// Interpolated strings that build through an `@IInterp` instance (from
+    /// [`Checker::interp_nodes`]); lowering takes their builder reading.
+    pub interp_targets: HashSet<Aol<Expr>>,
+    /// Interpolated strings built as a `Template` (from
+    /// [`Checker::interp_quoted_nodes`]); lowering takes their quoted reading.
+    pub interp_quoted: HashSet<Aol<Expr>>,
+    /// String literals and interpolations built as `@Code` (from
+    /// [`Checker::quotation_nodes`]); lowering marks a generator's with its module.
+    pub quotations: HashSet<Aol<Expr>>,
     /// Argument sites promoted to a record, mapped to the target field names (from
     /// [`Checker::promotions`]); lowering wraps the value.
     pub promotions: HashMap<Aol<Expr>, Vec<StrId>>,
@@ -144,6 +153,9 @@ pub fn collect_resolved<'c, 'a: 'c>(checkers: impl IntoIterator<Item = &'c Check
     for checker in checkers {
         resolved.declarations.add_module(checker);
         resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
+        resolved.interp_targets.extend(checker.interp_nodes().iter().copied());
+        resolved.interp_quoted.extend(checker.interp_quoted_nodes().iter().copied());
+        resolved.quotations.extend(checker.quotation_nodes().iter().copied());
         for (&site, names) in checker.promotions() {
             resolved.promotions.insert(site, names.clone());
         }
@@ -198,6 +210,21 @@ impl<'a> Checker<'a> {
     /// The `[..]` literal sites resolved to a sized tensor. Lowering builds a vector.
     pub fn tensor_nodes(&self) -> &HashSet<Aol<Expr>> {
         &self.tensor_exprs
+    }
+
+    /// The interpolated strings that build through an `@IInterp` instance.
+    pub fn interp_nodes(&self) -> &HashSet<Aol<Expr>> {
+        &self.interp_targets
+    }
+
+    /// The interpolated strings built as a `Template`.
+    pub fn interp_quoted_nodes(&self) -> &HashSet<Aol<Expr>> {
+        &self.interp_quoted
+    }
+
+    /// The string literals and interpolations built as `@Code`.
+    pub fn quotation_nodes(&self) -> &HashSet<Aol<Expr>> {
+        &self.quotations
     }
 
     /// Argument sites promoted to a record, mapped to the target field names;
@@ -328,7 +355,7 @@ struct VariantLayout {
 /// The declared shape of every user type, for compile-time reflection. The
 /// driver keys its reflection host by both the bare `name` and the qualified
 /// `module.name`, so a name shared across modules can be disambiguated. Built by
-/// [`Declarations::reflect`], consumed by the driver's `$ @e` type-reflection host.
+/// [`Declarations::reflect`], consumed by the driver's `$ &` type-reflection host.
 pub struct ReflectInfo {
     pub structs: Vec<(StrId, StrId, Shape<StructShape>)>,
     pub unions: Vec<(StrId, StrId, Shape<UnionShape>)>,
@@ -336,7 +363,7 @@ pub struct ReflectInfo {
     pub values: Vec<(StrId, StrId, String)>,
 }
 
-/// A declared type's parameters and members. `pending` while an `@e` splice in
+/// A declared type's parameters and members. `pending` while a `&` splice in
 /// the declaration has not been spliced in, so the members are not all known.
 #[derive(Clone, Debug)]
 pub struct Shape<M> {

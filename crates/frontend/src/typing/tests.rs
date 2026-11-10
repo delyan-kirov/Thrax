@@ -600,8 +600,8 @@ fn signature_row_tail_stays_open() {
 
 #[test]
 fn meta_op_outside_e_is_an_unhandled_effect() {
-    // The metaprogramming ops carry `<@Meta>`. Used in ordinary code (outside an
-    // `@e`), the latent `<@Meta>` cannot be subsumed into the pure ambient,
+    // The metaprogramming ops carry `<@Meta>`. Used in ordinary code (outside a
+    // `&`), the latent `<@Meta>` cannot be subsumed into the pure ambient,
     // so it is a clean compile error rather than a runtime no-op/fault.
     let src = "$ @mod M\n$ bad : @Str = @fresh \"x\"";
     let e = errors(src);
@@ -609,41 +609,46 @@ fn meta_op_outside_e_is_an_unhandled_effect() {
 }
 
 #[test]
-fn e_discharges_meta_and_requires_code() {
-    // `@e` handles `<@Meta>`: a meta op inside it type-checks and the surrounding
-    // context stays pure. It inserts code, so a non-`@Code` operand is an error.
+fn splice_discharges_meta_and_requires_code_or_data() {
+    // `&` handles `<@Meta>`: a meta op inside it type-checks and the surrounding
+    // context stays pure. It inserts code or a literal, so first-order data is
+    // fine and anything else is an error.
     assert_eq!(
-        errors("$ @mod M\n$ ok : @Str = @e <| @parse_str <| @fresh \"x\""),
+        errors("$ @mod M\n$ ok : @Str = &(@parse_str <| @fresh \"x\")"),
         "",
-        "meta op inside @e should type-check",
+        "meta op inside & should type-check",
     );
-    let e = errors("$ @mod M\n$ bad : @Str = @e <| @fresh \"x\"");
-    assert!(e.contains("inserts code") && e.contains("`@Str`"), "got: {e:?}");
-    let e = errors("$ @mod M\n$ bad : @Int = @e 1");
-    assert!(e.contains("`@Code`"), "got: {e:?}");
+    assert_eq!(errors("$ @mod M\n$ ok : @Str = &@fresh \"x\""), "", "a `@Str` is data");
+    assert_eq!(errors("$ @mod M\n$ ok : @Int = &(1 + 2)"), "", "a number is data");
+    let e = errors("$ @mod M\n$ bad : @Int = &(\\(x: @Int) => x)");
+    assert!(e.contains("inserts code or a literal") && e.contains("@Int -> @Int"), "got: {e:?}");
+    let e = errors("$ @mod M\n$ bad : {} = &{1, 2}");
+    assert!(e.contains("inserts code or a literal"), "got: {e:?}");
 }
 
 #[test]
-fn run_is_gone() {
-    let e = crate::parse("$ @mod M\n$ @run (@parse_items \"\")\n").err().expect("`@run` is rejected");
-    assert!(format!("{e}").contains("there is no '@run'"), "got: {e}");
+fn splice_is_not_a_function() {
+    for src in ["$ @mod M\n$ f : @Int = (&) 1\n", "$ @mod M\n$ (&) : @Int -> @Int = \\x => x\n"] {
+        let e = crate::parse(src).err().expect("`&` is no function");
+        assert!(format!("{e}").contains("`&` is a splice, not a function"), "got: {e}");
+    }
 }
 
 #[test]
 fn build_is_the_only_io_capable_compile_time_context() {
-    // `@e` discharges `<@Meta>` only, so it cannot perform IO: that is what makes
+    // `&` discharges `<@Meta>` only, so it cannot perform IO: that is what makes
     // it hermetic, and what leaves `@build` (whose own signature carries `<@IO>`)
     // as the only place a generator may touch the world.
     let io_fn = "$ shout : @Str -> <@IO> @Int = @extern \"C\" \"puts\" \"libc\"\n";
     let e = errors(&format!(
-        "$ @mod M\n{io_fn}$ bad : @Int = @e <| (shout \"hi\"; @parse_str \"1\")"
+        "$ @mod M\n{io_fn}$ bad : @Int = &(shout \"hi\"; @parse_str \"1\")"
     ));
     assert!(e.contains("@IO") && e.contains("not handled"), "got: {e:?}");
     // A `@build`-shaped row handles both `@Meta` and `@IO`.
     assert_eq!(
         errors(&format!(
             "$ @mod M\n{io_fn}$ b : {{}} -> <@Meta, @IO> @Code = \\_ => \
-             shout \"hi\"; @parse_items \"$ x : @Int = 1\""
+             shout \"hi\"; \"$ x : @Int = 1\""
         )),
         "",
         "a <@Meta, @IO> row should accept both IO and meta ops",
@@ -1334,92 +1339,26 @@ fn a_near_miss_instance_is_named_instead_of_none_in_scope() {
     assert!(!text.contains("in scope"), "{text}");
 }
 
-const ROW_ALIAS_EFFECTS: &str = "$ @mod M\n\
+const ROW_EFFECTS: &str = "$ @mod M\n\
      $ Log : @effect = log : @Int -> {},\n\
-     $ Gpu : @effect = draw : @Int -> {},\n\
-     $ Net : @effect = fetch : @Int -> @Int,\n\
-     $ App : @alias = <Gpu, Log>\n";
+     $ Gpu : @effect = draw : @Int -> {},\n";
 
 #[test]
-fn row_alias_expands_to_its_labels_and_prints_folded() {
-    let src = format!(
-        "{ROW_ALIAS_EFFECTS}\
-         $ frame : @Int -> <App> @Int = \\x => log x; draw x; x\n\
-         $ wide : @Int -> <Log, Gpu, Net> @Int = \\x => fetch (frame x)\n\
-         $ one : @Int -> <Log> @Int = \\x => log x; x\n"
-    );
-    assert_eq!(type_of(&src, "frame"), "@Int -> <App> @Int");
-    // Every label of `App` is present, so the row prints with the alias.
-    assert_eq!(type_of(&src, "wide"), "@Int -> <App, Net> @Int");
-    // Not all of them: the labels print as written.
-    assert_eq!(type_of(&src, "one"), "@Int -> <Log> @Int");
+fn a_row_prints_its_labels_and_an_unhandled_one_by_name() {
+    let frame = format!("{ROW_EFFECTS}$ frame : @Int -> <Gpu, Log> @Int = \\x => log x; draw x; x\n");
+    assert_eq!(type_of(&frame, "frame"), "@Int -> <Gpu, Log> @Int");
+    let e = errors(&format!("{frame}$ g : @Int -> <Gpu> @Int = \\x => frame x\n"));
+    assert!(e.contains("effect `Log` is performed but not handled"), "got: {e:?}");
 }
 
 #[test]
-fn row_alias_nests_and_keeps_a_label_once() {
-    let src = format!(
-        "{ROW_ALIAS_EFFECTS}\
-         $ Big : @alias = <App, Net>\n\
-         $ f : @Int -> <Big> @Int = \\x => fetch x; log x; x\n\
-         $ g : @Int -> <App, Log> @Int = \\x => draw x; x\n"
-    );
-    assert_eq!(errors(&src), "");
-    assert_eq!(type_of(&src, "f"), "@Int -> <Big> @Int");
-    assert_eq!(type_of(&src, "g"), "@Int -> <App> @Int");
-}
-
-#[test]
-fn parameterized_row_alias_takes_the_tail() {
-    let src = format!(
-        "{ROW_ALIAS_EFFECTS}\
-         $ WithLog : @alias e = <Log | e>\n\
-         $ f : @Int -> <WithLog e> @Int = \\x => log x; x\n\
-         $ g : @Int -> <WithLog e, Net | e> @Int = \\x => fetch x\n\
-         $ closed : @Int -> <WithLog> @Int = \\x => log x; x\n"
-    );
-    assert_eq!(type_of(&src, "f"), "@Int -> <Log | a> @Int");
-    assert_eq!(type_of(&src, "g"), "@Int -> <Log, Net | a> @Int");
-    // Under-applied, the tail is a fresh variable, as for a type alias.
-    assert_eq!(type_of(&src, "closed"), "@Int -> <Log | a> @Int");
-}
-
-#[test]
-fn row_alias_rejects_a_label_outside_it() {
-    let src = format!("{ROW_ALIAS_EFFECTS}$ f : @Int -> <App> @Int = \\x => fetch x\n");
-    let e = errors(&src);
-    assert!(e.contains("effect `Net` is performed but not handled"), "got: {e:?}");
-}
-
-#[test]
-fn unhandled_label_names_the_alias_it_came_from() {
-    let src = format!(
-        "{ROW_ALIAS_EFFECTS}\
-         $ frame : @Int -> <App> @Int = \\x => log x; draw x; x\n\
-         $ g : @Int -> <Gpu> @Int = \\x => frame x\n"
-    );
-    let e = errors(&src);
-    assert!(
-        e.contains("effect `Log` (part of `App`) is performed but not handled"),
-        "got: {e:?}"
-    );
-}
-
-#[test]
-fn row_alias_misuse_is_reported() {
-    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ x : App = 3\n"));
-    assert!(e.contains("`App` is an effect row alias, not a type"), "got: {e:?}");
+fn a_row_names_only_effects() {
     let e = errors(&format!(
-        "{ROW_ALIAS_EFFECTS}$ N : @alias = @Int\n$ f : @Int -> <N> @Int = \\x => x\n"
+        "{ROW_EFFECTS}$ N : @alias = @Int\n$ f : @Int -> <N> @Int = \\x => x\n"
     ));
-    assert!(e.contains("type alias `N` is not an effect row"), "got: {e:?}");
-    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ f : @Int -> <App e> @Int = \\x => x\n"));
-    assert!(e.contains("row alias `App` takes 0 parameter(s) but 1 were given"), "got: {e:?}");
-    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ f : @Int -> <Log e> @Int = \\x => x\n"));
+    assert!(e.contains("type alias `N` is not an effect"), "got: {e:?}");
+    let e = errors(&format!("{ROW_EFFECTS}$ f : @Int -> <Log e> @Int = \\x => x\n"));
     assert!(e.contains("effect `Log` takes no parameters"), "got: {e:?}");
-    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ W : @alias = <Log | e>\n"));
-    assert!(e.contains("declares no type parameters"), "got: {e:?}");
-    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ A1 : @alias = <A2>\n$ A2 : @alias = <A1>\n"));
-    assert!(e.contains("row alias `A1` expands to itself"), "got: {e:?}");
 }
 
 // -- effect parameters (#291) ---------------------------------------------
@@ -1473,13 +1412,13 @@ fn mutual_recursion_keeps_a_row_parameter_open() {
 }
 
 /// Reflection reports members in source order with their types as source, and
-/// marks a type whose `@e` entries are not spliced in yet as pending.
+/// marks a type whose `&` entries are not spliced in yet as pending.
 #[test]
 fn reflection_reports_member_sources_and_pending_types() {
     let src = "$ @mod M\n\
                $ Big : @union a = D: {}, C: { n: @Int, a }, B: @Vec (@Vec a), A\n\
                $ P : @struct b e n = f: b -> <Log, State @Int | e> @Int, g: [@co n + 1]{@Int, {}}\n\
-               $ Q : @struct = @e <| gen {}, x: @Int\n";
+               $ Q : @struct = &gen {}, x: @Int\n";
     let (ast, prog) = crate::parse_into(Ast::new(), src).expect("parse");
     let mut checker = Checker::new(&ast, std::rc::Rc::new(crate::Types::new()));
     checker.set_lenient(true);

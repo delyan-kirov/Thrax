@@ -49,4 +49,4 @@ $ test : @Int =
     ck_empty + ck_nonempty + ck_sum2 + ck_sum2_miss + ck_after_one + ck_after_two + ck_head3
         + ck_rest_len + ck_prefix + ck_prefix_miss + ck_ord_lt
 
-$ @e <| assert (test == 0) "ARRAY_PATTERNS: a check failed"
+$ &assert (test == 0) "ARRAY_PATTERNS: a check failed"

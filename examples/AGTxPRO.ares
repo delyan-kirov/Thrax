@@ -69,4 +69,4 @@ $ deep : @Int = wrap.inner.val
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = who; yrs; older; unboxed; label; left; right; deep; try_weird; try_weird2; ipfst; 0
 
-$ @e <| assert (test == 0) "AGTxPRO: a check failed"
+$ &assert (test == 0) "AGTxPRO: a check failed"

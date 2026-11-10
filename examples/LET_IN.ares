@@ -33,4 +33,4 @@ $ chk_escape : @Int = if (make_counter {}).run 7 == 7 => 0 else 1
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = simple; nested; chained; mixed; compose; chk_indirect + chk_escape
 
-$ @e <| assert (test == 0) "LET_IN: a check failed"
+$ &assert (test == 0) "LET_IN: a check failed"

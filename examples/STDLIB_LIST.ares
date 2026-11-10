@@ -75,4 +75,4 @@ $ test : @Int =
         + ck_repl + ck_inter + ck_intern + ck_takew + ck_dropw + ck_span + ck_split + ck_part
         + ck_fmap + ck_flat + ck_rmfst + ck_index + ck_lookup + ck_sort + ck_sortrev
 
-$ @e <| assert (test == 0) "STDLIB_LIST: a check failed"
+$ &assert (test == 0) "STDLIB_LIST: a check failed"

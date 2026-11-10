@@ -121,7 +121,7 @@ Commands:
   repl     Start an interactive shell (read-eval-print loop).
   build    Compile a program to a native executable next to the source.
   check    Type-check a module, run its compile-time checks, print its types.
-  expand   Print the source after metaprogram expansion (`$ @e`, `@build`).
+  expand   Print the source after metaprogram expansion (`&` splices, `@build`).
   fix      Apply every fix the compiler is sure of, in place.
   fmt      Format files in place (`fmt --check FILE...` only reports).
   explain  Explain a diagnostic code: `ares explain TYPE_MISMATCH`.

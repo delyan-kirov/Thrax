@@ -204,7 +204,7 @@ reports this without a code. The one entry signature is
 
 ## META_ABORT
 
-Compile-time code ran `@abort`: a `$ @e` check (usually `assert`) or a
+Compile-time code ran `@abort`: a `$ &` check (usually `assert`) or a
 generator failed the build on purpose.
 
 The message is the one the check gave. Fix what it checks, or the check.
@@ -212,7 +212,7 @@ The message is the one the check gave. Fix what it checks, or the check.
 ## META_WARNING
 
 Compile-time code ran `@warn`: a generator reported something worth knowing
-but let the build go on. It is shown at the `@e` that ran it, with the notes
+but let the build go on. It is shown at the `&` that ran it, with the notes
 and helps the generator gave.
 
 ## INT_LITERAL_RANGE
@@ -243,7 +243,7 @@ Delete the arm, or move it above the arm that covers it. The level is set by
 ## RUNTIME_FAULT
 
 Evaluation failed: a division by zero, an out-of-range index, an unhandled
-effect at run time. At compile time this comes from a `$ @e` site.
+effect at run time. At compile time this comes from a `$ &` site.
 
 The note says which compile-time site raised it, when there is one.
 

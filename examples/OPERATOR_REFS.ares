@@ -74,4 +74,4 @@ $ test : @Int =
     else
         1
 
-$ @e <| assert (test == 0) "OPERATOR_REFS: a check failed"
+$ &assert (test == 0) "OPERATOR_REFS: a check failed"

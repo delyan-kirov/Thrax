@@ -77,4 +77,4 @@ $ test : @Int =
     not_not;
     ck_int + ck_real + ck_f32 + ck_str + ck_bool + ck_unsigned + ck_custom + ck_structural + ck_row
 
-$ @e <| assert (test == 0) "OPERATORS: a check failed"
+$ &assert (test == 0) "OPERATORS: a check failed"

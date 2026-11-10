@@ -84,6 +84,7 @@ pub fn desugar_program(
         meta_row_evals: Vec::new(),
         reached_deferred: false,
         deferred: Vec::new(),
+        in_splice: 0,
     };
     let mut effects = Vec::new();
     let mut globals = Vec::new();
@@ -111,29 +112,29 @@ pub fn desugar_program(
                     ctx_globals.push(*name);
                 }
             }
-            // `$ @e <expr>`: back it with a synthetic global, forced at compile
+            // `$ &<expr>`: back it with a synthetic global, forced at compile
             // time by the driver. The name is bare here (index-tagged so several
-            // `@e`s in one module never collide); `lower_modules` prefixes the
+            // `&`s in one module never collide); `lower_modules` prefixes the
             // module, and the driver qualifies the same way to force it.
             Item::Run(expr, span) => {
-                let name = StrId::intern(&format!("@e#{}", ct_runs.len()));
+                let name = StrId::intern(&format!("@splice#{}", ct_runs.len()));
                 let term = if lw.resolved.deferred_sites.contains(expr) {
                     lw.deferred.push(name);
-                    lw.fault("this `@e` waits for a generated declaration")
+                    lw.fault("this `&` waits for a generated declaration")
                 } else {
-                    lw.watched(name, |lw| lw.expr(*expr))
+                    lw.watched(name, |lw| lw.operand(*expr))
                 };
                 globals.push((name, term));
                 ct_runs.push((name, *span));
             }
             Item::Struct { fields, splices, .. } => {
-                lw.collect_entry_splices(ast.slice(*splices));
+                lw.collect_entry_splices("fields", ast.slice(*splices));
                 for f in ast.slice(*fields).iter() {
                     lw.collect_meta_types(f.ty);
                 }
             }
             Item::Union { variants, splices, .. } => {
-                lw.collect_entry_splices(ast.slice(*splices));
+                lw.collect_entry_splices("variants", ast.slice(*splices));
                 for v in ast.slice(*variants).iter() {
                     for (_, ty) in payload_fields(ast, &v.payload) {
                         lw.collect_meta_types(ty);
@@ -153,27 +154,27 @@ pub fn desugar_program(
             _ => {}
         }
     }
-    // Expression-position `@e X` synthetic globals accumulated while lowering the
+    // Expression-position `&X` synthetic globals accumulated while lowering the
     // bodies above; append them and record (name, source-span) for the driver to
     // fold/splice.
     let ct_evals: Vec<(StrId, Span)> =
         lw.meta_evals.iter().map(|(n, _, s)| (*n, *s)).collect();
     globals.extend(lw.meta_evals.drain(..).map(|(n, body, _)| (n, body)));
-    // Type-position `@e X` synthetic globals, same treatment as `ct_evals` but the
+    // Type-position `&X` synthetic globals, same treatment as `ct_evals` but the
     // driver splices the result as type source rather than a value literal.
     let ct_types: Vec<(StrId, Span)> =
         lw.meta_type_evals.iter().map(|(n, _, s)| (*n, *s)).collect();
     globals.extend(lw.meta_type_evals.drain(..).map(|(n, body, _)| (n, body)));
-    // Pattern-position `@e (X)` synthetic globals, spliced as pattern source.
+    // Pattern-position `&X` synthetic globals, spliced as pattern source.
     let ct_patterns: Vec<(StrId, Span)> =
         lw.meta_pat_evals.iter().map(|(n, _, s)| (*n, *s)).collect();
     globals.extend(lw.meta_pat_evals.drain(..).map(|(n, body, _)| (n, body)));
-    // Effect-row `<@e (X)>` synthetic globals, spliced as row entries.
+    // Effect-row `<&X>` synthetic globals, spliced as row entries.
     let ct_rows: Vec<(StrId, Span)> =
         lw.meta_row_evals.iter().map(|(n, _, s)| (*n, *s)).collect();
     globals.extend(lw.meta_row_evals.drain(..).map(|(n, body, _)| (n, body)));
     // `$ @build : {} -> <@Meta, @IO> @Code`: back the call `@build {}` with a
-    // synthetic global so the driver can force it exactly as it forces an `$ @e`.
+    // synthetic global so the driver can force it exactly as it forces an `$ &`.
     // The reference is module-qualified because several modules may each define
     // their own `@build`, and a bare global lookup resolves root-first.
     let ct_build = if globals.iter().any(|(n, _)| *n == crate::BUILD) {
@@ -222,22 +223,22 @@ struct Desugarer<'a> {
     names: FreshNames,
     /// The Core being built.
     terms: Terms,
-    /// Synthetic globals for expression-position `@e X`: each `@e X` becomes a
-    /// global `@e_expr#n = X` that the driver forces at compile time, with the
-    /// source span of the whole `@e X` so the driver can substitute the result's
+    /// Synthetic globals for expression-position `&X`: each `&X` becomes a
+    /// global `@splice_expr#n = X` that the driver forces at compile time, with the
+    /// source span of the whole `&X` so the driver can substitute the result's
     /// source there and re-compile. Drained by [`desugar_program`] into
     /// `Program.globals` / `Program.ct_evals`.
     meta_evals: Vec<(StrId, Aol<Term>, Span)>,
-    /// Synthetic globals for type-position `@e X` (`Foo : @e X = ...`), each a
-    /// global `@e_type#n = X` forced at compile time; the driver splices the
-    /// resulting `@Code`'s type source at the `@e X` span and re-compiles. Drained
+    /// Synthetic globals for type-position `&X` (`Foo : &X = ...`), each a
+    /// global `@splice_type#n = X` forced at compile time; the driver splices the
+    /// resulting `@Code`'s type source at the `&X` span and re-compiles. Drained
     /// by [`desugar_program`] into `Program.globals` / `Program.ct_types`.
     meta_type_evals: Vec<(StrId, Aol<Term>, Span)>,
-    /// Synthetic globals for pattern-position `@e (X)`, each `@e_pat#n = X`; the
+    /// Synthetic globals for pattern-position `&X`, each `@splice_pat#n = X`; the
     /// driver splices the resulting `@Code`'s pattern source at the span. Drained
     /// by [`desugar_program`] into `Program.globals` / `Program.ct_patterns`.
     meta_pat_evals: Vec<(StrId, Aol<Term>, Span)>,
-    /// Synthetic globals for effect-row `<@e (X)>`, each `@e_row#n = X`; the
+    /// Synthetic globals for effect-row `<&X>`, each `@splice_row#n = X`; the
     /// driver splices the resulting `@Code`'s entries at the span. Drained by
     /// [`desugar_program`] into `Program.globals` / `Program.ct_rows`.
     meta_row_evals: Vec<(StrId, Aol<Term>, Span)>,
@@ -245,6 +246,9 @@ struct Desugarer<'a> {
     reached_deferred: bool,
     /// The globals that did, drained into `Program.deferred`.
     deferred: Vec<StrId>,
+    /// How many `&` operands enclose what is being lowered. A quotation in one
+    /// is written where its code lands, so it is left unmarked.
+    in_splice: u32,
 }
 
 // Note [Deferred sites hold back generators]
@@ -253,12 +257,12 @@ struct Desugarer<'a> {
 // name, a missing instance) unresolved, because a generator that has not run may
 // still supply it. Lowering then emits the site without what it lacks: a call
 // with no instance argument, a reference to a global that does not exist. Code
-// like that runs wrong in whatever way the gap produces, so an `@e` that ran it
+// like that runs wrong in whatever way the gap produces, so a `&` that ran it
 // would fault with a message unrelated to the cause ("no field `c`"), or worse,
 // succeed and splice code computed from a wrong value.
 //
 // So every global whose body holds a deferred site is recorded in
-// `Program.deferred`, and the driver does not run an `@e` whose global reaches
+// `Program.deferred`, and the driver does not run a `&` whose global reaches
 // one through the globals it references. The site waits like a faulting one: a
 // later round, after some generator supplied what was missing, runs it against
 // the resolved code. When a round makes no progress, the strict check reports
@@ -345,6 +349,26 @@ impl<'a> Desugarer<'a> {
         let term = f(self);
         let reached = std::mem::replace(&mut self.reached_deferred, outer);
         (term, reached)
+    }
+
+    /// Lower the operand of a `&`.
+    fn operand(&mut self, e: Aol<Expr>) -> Aol<Term> {
+        self.in_splice += 1;
+        let term = self.expr(e);
+        self.in_splice -= 1;
+        term
+    }
+
+    /// A quotation's code, marked as written in this module unless a `&` operand
+    /// encloses it. See Note [Quotation scopes] in `interpreter::machine::data`.
+    fn quotation(&mut self, e: Aol<Expr>, code: Aol<Term>) -> Aol<Term> {
+        if self.in_splice > 0 || !self.resolved.quotations.contains(&e) {
+            return code;
+        }
+        let quote = self.var("@quote");
+        let module = self.add(Term::Str(self.module));
+        let quote = self.app(quote, module);
+        self.app(quote, code)
     }
 
     /// Lower global `name`'s body with `f`, recording `name` in `deferred` when
@@ -505,7 +529,8 @@ impl<'a> Desugarer<'a> {
             }
             Expr::Str(s) => {
                 let raw = self.add(Term::Str(*s));
-                self.literal_hook_wrap(e, raw)
+                let code = self.literal_hook_wrap(e, raw);
+                self.quotation(e, code)
             }
             Expr::Bool(b) => self.add(Term::Bool(*b)),
             Expr::Unit => self.unit(),
@@ -546,12 +571,6 @@ impl<'a> Desugarer<'a> {
                         }
                         None => x,
                     };
-                }
-                // `@e X` in expression position: run X at compile time and embed
-                // its value here (see `lower_meta_e`).
-                if self.is_meta_e_head(f) {
-                    let span = self.ast.expr_span(e).unwrap_or(Span::at(0));
-                    return self.lower_meta_e(x, span);
                 }
                 // A foreign call flattens the record that groups its C parameters
                 // into positional arguments here, so the record is never built and
@@ -622,6 +641,24 @@ impl<'a> Desugarer<'a> {
             Expr::BinOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (*op, *lhs, *rhs);
                 self.binop(e, op, lhs, rhs)
+            }
+            // The reading the checker chose for an interpolated string.
+            Expr::Interp { default, target, quoted } => {
+                let chosen = if self.resolved.interp_targets.contains(&e) {
+                    *target
+                } else if self.resolved.interp_quoted.contains(&e) {
+                    *quoted
+                } else {
+                    *default
+                };
+                let code = self.expr(chosen);
+                self.quotation(e, code)
+            }
+            // `&X` in expression position: run X at compile time and embed its
+            // result here (see `lower_meta_e`).
+            Expr::Splice(arg) => {
+                let span = self.ast.expr_span(e).unwrap_or(Span::at(0));
+                self.lower_meta_e(*arg, span)
             }
             Expr::UnOp { op, operand } => {
                 let (op, operand) = (*op, *operand);
@@ -1078,18 +1115,12 @@ impl<'a> Desugarer<'a> {
         Some(self.field(base, field))
     }
 
-    /// Whether `f` is the `@e` compile-time splice in head position.
-    fn is_meta_e_head(&self, f: Aol<Expr>) -> bool {
-        matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@e")
-    }
-
-    /// Lower an expression-position `@e arg`: `arg` becomes a synthetic global the
-    /// driver forces at compile time and splices the returned code in for, and
-    /// this site references that global. Shared by direct application and the
-    /// `|>` / `<|` pipes (so `x |> @e` and `@e <| x` splice too).
+    /// Lower an expression-position `&arg`: `arg` becomes a synthetic global the
+    /// driver forces at compile time and splices the result in for, and this
+    /// site references that global.
     fn lower_meta_e(&mut self, arg: Aol<Expr>, span: Span) -> Aol<Term> {
-        let (body, reached) = self.watching(|lw| lw.expr(arg));
-        let name = StrId::intern(&format!("@e_expr#{}", self.meta_evals.len()));
+        let (body, reached) = self.watching(|lw| lw.operand(arg));
+        let name = StrId::intern(&format!("@splice_expr#{}", self.meta_evals.len()));
         if reached {
             self.deferred.push(name);
         }
@@ -1101,17 +1132,17 @@ impl<'a> Desugarer<'a> {
         matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@cast")
     }
 
-    /// Walk a signature type, turning each type-position `@e X` into a synthetic
-    /// global (`@e_type#n = X`) forced at compile time; the node's span is recorded
+    /// Walk a signature type, turning each type-position `&X` into a synthetic
+    /// global (`@splice_type#n = X`) forced at compile time; the node's span is recorded
     /// so the driver splices the resulting type source there. Recurses through
-    /// every type sub-position an annotation can nest a `@e` in.
+    /// every type sub-position an annotation can nest a `&` in.
     fn collect_meta_types(&mut self, ty: Aol<Ty>) {
         match self.tnode(ty) {
             Ty::MetaE(expr) => {
                 let expr = *expr;
                 let span = self.ast.ty_span(ty).unwrap_or_else(|| Span::at(0));
-                let name = StrId::intern(&format!("@e_type#{}", self.meta_type_evals.len()));
-                let term = self.watched(name, |lw| lw.expr(expr));
+                let name = StrId::intern(&format!("@splice_type#{}", self.meta_type_evals.len()));
+                let term = self.watched(name, |lw| lw.operand(expr));
                 self.meta_type_evals.push((name, term, span));
             }
             Ty::App(a, b) | Ty::SizeAdd(a, b) | Ty::SizeMul(a, b) => {
@@ -1133,10 +1164,6 @@ impl<'a> Desugarer<'a> {
                 self.collect_meta_types(from);
                 self.collect_meta_types(to);
             }
-            Ty::Row(row) => {
-                let row = row.clone();
-                self.collect_meta_row(&row);
-            }
             Ty::Tuple(items) => {
                 for t in self.ast.slice(*items).to_vec() {
                     self.collect_meta_types(t);
@@ -1151,13 +1178,14 @@ impl<'a> Desugarer<'a> {
         }
     }
 
-    /// The type arguments of an effect row's entries (`<Chan (@e X)>`).
-    /// A declaration's `@e X` entries, each a synthetic global whose code the
-    /// driver splices bare in place of the entry, as for a row entry.
-    fn collect_entry_splices(&mut self, splices: &[EntrySplice]) {
+    /// The type arguments of an effect row's entries (`<Chan (&X)>`).
+    /// A declaration's `&X` entries, each a synthetic global whose code the
+    /// driver splices bare in place of the entry, as for a row entry. `what` is
+    /// `fields` or `variants`, which the name carries for the driver.
+    fn collect_entry_splices(&mut self, what: &str, splices: &[EntrySplice]) {
         for s in splices {
-            let name = StrId::intern(&format!("@e_entries#{}", self.meta_row_evals.len()));
-            let term = self.watched(name, |lw| lw.expr(s.expr));
+            let name = StrId::intern(&format!("@splice_{what}#{}", self.meta_row_evals.len()));
+            let term = self.watched(name, |lw| lw.operand(s.expr));
             self.meta_row_evals.push((name, term, s.span));
         }
     }
@@ -1165,8 +1193,8 @@ impl<'a> Desugarer<'a> {
     fn collect_meta_row(&mut self, row: &EffectRow) {
         for entry in self.ast.slice(row.entries).to_vec() {
             if let Some(expr) = entry.meta {
-                let name = StrId::intern(&format!("@e_row#{}", self.meta_row_evals.len()));
-                let term = self.watched(name, |lw| lw.expr(expr));
+                let name = StrId::intern(&format!("@splice_row#{}", self.meta_row_evals.len()));
+                let term = self.watched(name, |lw| lw.operand(expr));
                 self.meta_row_evals.push((name, term, entry.span));
             }
             for arg in self.ast.slice(entry.args).to_vec() {
@@ -1292,14 +1320,6 @@ impl<'a> Desugarer<'a> {
                 let val = self.expr(lhs);
                 let body = self.expr(rhs);
                 self.terms.let_(name, val, body)
-            }
-            // Pipes are application, so they compose with `@e`: `x |> @e` and
-            // `@e <| x` fold `x` at compile time just like `@e x`.
-            "|>" if self.is_meta_e_head(rhs) => {
-                self.lower_meta_e(lhs, self.ast.expr_span(site).unwrap_or(Span::at(0)))
-            }
-            "<|" if self.is_meta_e_head(lhs) => {
-                self.lower_meta_e(rhs, self.ast.expr_span(site).unwrap_or(Span::at(0)))
             }
             "|>" => {
                 if let Some(t) = self.finale_app(rhs, lhs) {
@@ -1592,14 +1612,14 @@ impl<'a> Desugarer<'a> {
     fn pat(&mut self, p: Aol<Pattern>) -> Pat {
         match self.pnode(p) {
             Pattern::Wild => Pat::Wild,
-            // `@e (X)`: `X` becomes a synthetic global the driver forces, splicing
+            // `&X`: `X` becomes a synthetic global the driver forces, splicing
             // the pattern source it returns here. Until then the match cannot be
-            // run, so the enclosing global counts as deferred and no `@e` runs it.
+            // run, so the enclosing global counts as deferred and no `&` runs it.
             Pattern::MetaE(e) => {
                 let e = *e;
                 let span = self.ast.pat_span(p).unwrap_or_else(|| Span::at(0));
-                let (body, reached) = self.watching(|lw| lw.expr(e));
-                let name = StrId::intern(&format!("@e_pat#{}", self.meta_pat_evals.len()));
+                let (body, reached) = self.watching(|lw| lw.operand(e));
+                let name = StrId::intern(&format!("@splice_pat#{}", self.meta_pat_evals.len()));
                 if reached {
                     self.deferred.push(name);
                 }

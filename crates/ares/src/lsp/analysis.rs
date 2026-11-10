@@ -393,7 +393,7 @@ fn check_root(base: Rc<Base>, root_path: &Path, root_src: String, fresh: bool) -
     }
 
     let generative = is_generative(&root_src);
-    // A type whose `@e` entries have not been spliced in lacks their members,
+    // A type whose `&` entries have not been spliced in lacks their members,
     // so any error past parsing may be only early, as a lenient compile round
     // treats it.
     let awaiting = checker.awaits_splices();
@@ -403,7 +403,7 @@ fn check_root(base: Rc<Base>, root_path: &Path, root_src: String, fresh: bool) -
         if awaiting && d.root().code != Code::UnexpectedToken {
             d = d
                 .with_severity(Severity::Hint)
-                .with_note("a type here still waits for the members its `@e` entries generate; saving checks it fully");
+                .with_note("a type here still waits for the members its `&` entries generate; saving checks it fully");
         } else if generative && d.root().code == Code::TypeUnbound {
             d = d
                 .with_severity(Severity::Hint)
@@ -423,18 +423,16 @@ fn check_root(base: Rc<Base>, root_path: &Path, root_src: String, fresh: bool) -
 }
 
 /// Whether a module has compile-time code that may define names: a `@build`, or
-/// an `@e` other than an `assert` check.
+/// a `&` splice other than an `assert` check.
 fn is_generative(src: &str) -> bool {
     if src.contains("@build") {
         return true;
     }
     src.lines()
         .map(|l| l.split('#').next().unwrap_or(""))
-        .flat_map(|l| l.match_indices("@e").map(move |(i, _)| &l[i + 2..]))
-        .filter(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+        .flat_map(|l| crate::driver::splice_offsets(l).map(move |i| &l[i + 1..]))
         .any(|rest| {
-            let rest = rest.trim_start();
-            let rest = rest.strip_prefix("<|").or_else(|| rest.strip_prefix('(')).unwrap_or(rest).trim_start();
+            let rest = rest.strip_prefix('(').unwrap_or(rest).trim_start();
             !rest.starts_with("assert")
         })
 }

@@ -70,4 +70,4 @@ $ chk4b : @Int =
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @Int = chk0 + chk0b + chk1 + chk2 + chk2b + chk2c + chk2d + chk4 + chk4b
 
-$ @e <| assert (test == 0) "AGTxSUM: a check failed"
+$ &assert (test == 0) "AGTxSUM: a check failed"

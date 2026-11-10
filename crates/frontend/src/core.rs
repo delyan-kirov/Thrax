@@ -36,38 +36,38 @@ pub struct CoreProgram {
     /// [`crate::ir::lower_modules`] has merged the modules. Read by
     /// [`crate::passes::specialize`].
     pub ctx_globals: Vec<StrId>,
-    /// The synthetic globals that back top-level `$ @e <expr>` directives, as
-    /// `(name, source span of the `@e X`)`, in source order. The driver forces
+    /// The synthetic globals that back top-level `$ &<expr>` directives, as
+    /// `(name, source span of the `&X`)`, in source order. The driver forces
     /// each at compile time and discards the value (a trap fails the build, and
     /// the span points the error at the directive). See [`super::desugar_program`].
     pub ct_runs: Vec<(StrId, Span)>,
-    /// Expression-position `@e X` sites: `(synthetic global name, source span of
-    /// the `@e X`)`. The driver forces the global at compile time, renders the
+    /// Expression-position `&X` sites: `(synthetic global name, source span of
+    /// the `&X`)`. The driver forces the global at compile time, renders the
     /// value/code to source, substitutes it at the span, and re-compiles (the
     /// iterative expansion). See [`super::desugar_program`].
     pub ct_evals: Vec<(StrId, Span)>,
-    /// Type-position `@e X` sites (`Foo : @e X = ...`): `(synthetic global name,
-    /// source span of the `@e X`)`. The driver forces the global at compile time,
+    /// Type-position `&X` sites (`Foo : &X = ...`): `(synthetic global name,
+    /// source span of the `&X`)`. The driver forces the global at compile time,
     /// splices the resulting `@Code`'s type source at the span, and re-compiles.
     /// See [`super::desugar_program`].
     pub ct_types: Vec<(StrId, Span)>,
-    /// Pattern-position `@e (X)` sites, `(synthetic global name, source span of
-    /// the `@e (X)`)`. The driver forces the global at compile time and splices
+    /// Pattern-position `&X` sites, `(synthetic global name, source span of
+    /// the `&X`)`. The driver forces the global at compile time and splices
     /// the resulting `@Code`'s pattern source at the span.
     pub ct_patterns: Vec<(StrId, Span)>,
-    /// Effect-row `<@e (X)>` sites, `(synthetic global name, source span of the
+    /// Effect-row `<&X>` sites, `(synthetic global name, source span of the
     /// entry)`. The driver splices the resulting `@Code`'s entries at the span.
     pub ct_rows: Vec<(StrId, Span)>,
     /// The synthetic global holding the call `@build {}`, present when this module
     /// defines `$ @build`. The driver forces it once per module at compile time and
     /// appends the items of the `@Code` it returns to the module's source. Unlike
-    /// the `@e` sites there is no span: `@build` is a definition, not a directive,
+    /// the `&` sites there is no span: `@build` is a definition, not a directive,
     /// so it stays where it was written and its output is added to the module.
     pub ct_build: Option<StrId>,
-    /// The globals (bare names, synthetic `@e` globals included) whose lowered
+    /// The globals (bare names, synthetic `&` globals included) whose lowered
     /// body holds a site the lenient check deferred. Running one would run code
     /// lowered without what the site still lacks, so the driver holds back any
-    /// `@e` that reaches one. See Note [Deferred sites hold back generators].
+    /// `&` that reaches one. See Note [Deferred sites hold back generators].
     pub deferred: Vec<StrId>,
     /// The De Bruijn index of each variable occurrence, filled by
     /// [`crate::passes::de_bruijn::assign_de_bruijn_indices`]: `0` (or no

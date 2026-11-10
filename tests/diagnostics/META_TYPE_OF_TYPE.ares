@@ -2,4 +2,4 @@ $ @mod META_TYPE_OF_TYPE
 
 # `@type_of` names a value; a type name is a fault at the site.
 $ P : @struct = x: @Int
-$ @e <| assert (@type_of "P" == "") "unreachable" #~ error[RUNTIME_FAULT]: `P` is a type, not a value
+$ &assert (@type_of "P" == "") "unreachable" #~ error[RUNTIME_FAULT]: `P` is a type, not a value

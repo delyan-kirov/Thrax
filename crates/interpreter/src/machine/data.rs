@@ -808,7 +808,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Ok(Value::Vector(Rc::new(v)))
         }
         // Metaprogramming: tokenize a string into CORE `Token` variants. A lex
-        // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
+        // error is a `Diagnostic`, which propagates as a fault (fails a `&`).
         Prim::Lex => {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
@@ -838,28 +838,63 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Ok(code_value(src))
         }
         // Parse a string as an expression fragment into opaque `@Code`. A syntax
-        // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
+        // error is a `Diagnostic`, which propagates as a fault (fails a `&`).
         // The fragment is carried as its source text, which `@eval` and splicing
         // re-enter the driver's pipeline with.
-        Prim::ParseStr | Prim::ParseItems | Prim::ParseType | Prim::ParseRow | Prim::ParseFields | Prim::ParseVariants => {
+        Prim::ParseStr => {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
                 .map_err(|_| fault(format!("{name}: the argument is not valid UTF-8")))?;
-            let kind = match name {
-                Prim::ParseStr => Fragment::Expr,
-                Prim::ParseItems => Fragment::Items,
-                Prim::ParseType => Fragment::Type,
-                Prim::ParseFields => Fragment::Fields,
-                Prim::ParseVariants => Fragment::Variants,
-                _ => Fragment::Row,
-            };
-            check_fragment(src, kind)?;
+            check_fragment(src, Fragment::Expr)?;
             Ok(code_value(src))
+        }
+        // Source text as `@Code`, unchecked: its syntax category is decided where
+        // it is spliced, which checks it.
+        Prim::Code => {
+            let bytes = as_bytes(&a[0])?;
+            let src = std::str::from_utf8(&bytes)
+                .map_err(|_| fault(format!("{name}: the argument is not valid UTF-8")))?;
+            Ok(code_value(src))
+        }
+        Prim::StrLiteral => Ok(Value::Str(Rc::new(str_literal(&as_bytes(&a[0])?).into_bytes()))),
+        // The building blocks of a quotation. See Note [Quotation scopes].
+        Prim::QuoteOpen => Ok(code_value_marked(b"", &[], fresh_scope())),
+        Prim::CodeText => {
+            let (mut src, mut marks, scope) = code_parts(&a[0], &name.to_string())?;
+            let text = as_bytes(&a[1])?;
+            if scope != 0 && !text.is_empty() {
+                add_mark(&mut marks, Mark { start: src.len(), end: src.len() + text.len(), scope });
+            }
+            src.extend_from_slice(&text);
+            Ok(code_value_marked(&src, &marks, scope))
+        }
+        Prim::CodeCat => {
+            let (mut src, mut marks, scope) = code_parts(&a[0], &name.to_string())?;
+            let (hole, hole_marks, _) = code_parts(&a[1], &name.to_string())?;
+            for m in hole_marks {
+                add_mark(&mut marks, Mark { start: m.start + src.len(), end: m.end + src.len(), scope: m.scope });
+            }
+            src.extend_from_slice(&hole);
+            Ok(code_value_marked(&src, &marks, scope))
+        }
+        Prim::Quote => {
+            let module = as_bytes(&a[0])?;
+            let (src, marks, scope) = code_parts(&a[1], &name.to_string())?;
+            if scope != 0 {
+                let module = StrId::intern(&String::from_utf8_lossy(&module));
+                SCOPES
+                    .lock()
+                    .expect("the scope table is never poisoned")
+                    .get_or_insert_with(std::collections::HashMap::new)
+                    .insert(scope, module);
+            }
+            Ok(code_value_marked(&src, &marks, scope))
         }
         Prim::Format => {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
                 .map_err(|_| fault("@format: the argument is not valid UTF-8"))?;
+            check_fragment(src, Fragment::Items)?;
             let out = frontend::format::format_source(src, &Default::default())
                 .map_err(|m| fault(format!("@format: {m}")))?;
             Ok(Value::Str(Rc::new(out.into_bytes())))
@@ -904,7 +939,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
             s.extend_from_slice(format!("_m{n}").as_bytes());
             Ok(Value::Str(Rc::new(s)))
         }
-        // Steer the build at compile time (used as `$ @e <| @link "curl"`): record
+        // Steer the build at compile time (used as `$ &@link "curl"`): record
         // a library / search path for the driver to add to the link line. Returns
         // empty code, so the directive inserts nothing.
         Prim::Link | Prim::LinkPath => {
@@ -938,7 +973,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
         }
         // Compile-time reflection over a declared type, resolved by the driver's
         // type host (see `crate::machine::set_type_host`), reachable only inside
-        // `$ @e`. A derive-style macro reads the shape and generates code for it.
+        // `$ &`. A derive-style macro reads the shape and generates code for it.
         // `@type_kind` reports `"struct"` / `"union"`; `@type_fields` the struct's
         // field names; `@type_variants` the union's `(tag, arity)` pairs. `@type_of`
         // is a global value's type.
@@ -1018,7 +1053,7 @@ pub(crate) fn run_builtin<'p>(name: Prim, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .collect();
             Ok(Value::Vector(Rc::new(items)))
         }
-        // The `@e` site running now, as a CORE `Site`.
+        // The `&` site running now, as a CORE `Site`.
         Prim::Here => {
             let (file, line, column) = crate::machine::meta_site()?;
             Ok(Value::Struct {
@@ -1087,18 +1122,19 @@ pub fn lex(src: &str) -> Result<crate::machine::OwnedValue> {
     Ok(OwnedValue::Vector(toks))
 }
 
-/// What a source fragment must parse as: an expression (`@parse_str`),
-/// top-level items (`@parse_items`), a type (`@parse_type`), or the entries of
-/// an effect row (`@parse_row`).
+/// What a source fragment must parse as, decided by where `@Code` is spliced:
+/// an expression, top-level items, a type, the entries of an effect row, a
+/// pattern, or a struct's fields or a union's variants.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fragment {
     Expr,
     Items,
     Type,
     Row,
-    /// A struct's fields, for an `@e` entry in a `@struct` declaration.
+    Pattern,
+    /// A struct's fields, for a `&` entry in a `@struct` declaration.
     Fields,
-    /// A union's variants, for an `@e` entry in a `@union` declaration.
+    /// A union's variants, for a `&` entry in a `@union` declaration.
     Variants,
 }
 
@@ -1106,25 +1142,172 @@ pub enum Fragment {
 /// syntax error carries `src` as its fragment, so the driver can point into the
 /// string the author wrote rather than the wrapper.
 pub fn check_fragment(src: &str, kind: Fragment) -> Result<()> {
-    let (prefix, suffix) = match kind {
+    parse_fragment(src, kind).map(|_| ())
+}
+
+/// Parse `src` as `kind`, wrapped as [`wrap_fragment`] wraps it, with where
+/// `src` starts in the wrapper.
+pub fn parse_fragment(src: &str, kind: Fragment) -> Result<(frontend::Parsed, usize)> {
+    let prefix = fragment_wrapper(kind).0.len();
+    frontend::parse(&wrap_fragment(src, kind))
+        .map(|p| (p, prefix))
+        .map_err(|d| d.with_fragment(src, prefix))
+}
+
+/// `src` wrapped in a scratch module where it stands as `kind`.
+pub fn wrap_fragment(src: &str, kind: Fragment) -> String {
+    let (prefix, suffix) = fragment_wrapper(kind);
+    format!("{prefix}{src}{suffix}")
+}
+
+fn fragment_wrapper(kind: Fragment) -> (&'static str, &'static str) {
+    match kind {
         Fragment::Expr => ("$ @mod _META\n$ _e =\n", ""),
         Fragment::Items => ("$ @mod _META\n", ""),
         Fragment::Type => ("$ @mod _META\n$ _t :\n", "\n= {}"),
         Fragment::Row => ("$ @mod _META\n$ _r : {} -> <\n", "\n> {} = {}"),
+        Fragment::Pattern => ("$ @mod _META\n$ _p = \\ | ", "\n=> {}"),
         Fragment::Fields => ("$ @mod _META\n$ Fields : @struct =\n", ""),
         Fragment::Variants => ("$ @mod _META\n$ Variants : @union =\n", ""),
-    };
-    frontend::parse(&format!("{prefix}{src}{suffix}"))
-        .map(|_| ())
-        .map_err(|d| d.with_fragment(src, prefix.len()))
+    }
 }
 
-/// An opaque `@Code` value carrying `src`.
+/// The source literal spelling the string `bytes`, escaped so it lexes back
+/// to the same bytes.
+pub fn str_literal(bytes: &[u8]) -> String {
+    let mut out = String::from("\"");
+    for &b in bytes {
+        match b {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            b'?' => out.push_str("\\?"),
+            b'\n' => out.push_str("\\n"),
+            b'\t' => out.push_str("\\t"),
+            b'\r' => out.push_str("\\r"),
+            0x20..=0x7e => out.push(b as char),
+            _ => out.push_str(&format!("\\x{b:02x}")),
+        }
+    }
+    out.push('"');
+    out
+}
+
+// Note [Quotation scopes]
+// ~~~~~~~~~~~~~~~~~~~~~~~~
+// A generator's quotation spells names the generator's module defines, and
+// binders its own code alone may see, but the code lands in another module
+// where those names may mean something else. So an `@Code` remembers which of
+// its bytes which quotation wrote: `marks` lists the runs, each in a scope.
+//
+// Each evaluation of a quotation opens a fresh scope (`@quote_open`), its text
+// pieces are marked with it (`@code_text`), and its holes keep the marks they
+// carry (`@code_cat`). Lowering wraps a quotation a module's function writes in
+// `@quote "MODULE"`, which records the scope's module in `SCOPES`. A quotation
+// in a `&` operand is written where its code lands, so lowering leaves its
+// scope unrecorded, and an unrecorded scope is no scope: its text reads as if
+// written at the site, as `@code` text does.
+//
+// The driver reads the recorded runs back (`quoted_runs`) and resolves the
+// names they spell where they were written, before the code is spliced.
+
+/// The module each recorded quotation scope was written in.
+static SCOPES: std::sync::Mutex<Option<std::collections::HashMap<u64, StrId>>> = std::sync::Mutex::new(None);
+
+static NEXT_SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn fresh_scope() -> u64 {
+    NEXT_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A run of an `@Code`'s text that one quotation wrote: bytes `start..end`,
+/// in quotation scope `scope`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    pub start: usize,
+    pub end: usize,
+    pub scope: u64,
+}
+
+/// A run of an `@Code`'s text a module's quotation wrote: [`Mark`] with the
+/// module its scope was recorded in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Quoted {
+    pub start: usize,
+    pub end: usize,
+    pub scope: u64,
+    pub module: StrId,
+}
+
+/// The runs of `v`'s text whose scope was recorded, empty for anything but an
+/// `@Code`.
+pub fn quoted_runs(v: &PVal) -> Vec<Quoted> {
+    let Ok((_, marks, _)) = code_parts(v, "@Code") else { return Vec::new() };
+    let table = SCOPES.lock().expect("the scope table is never poisoned");
+    let Some(table) = table.as_ref() else { return Vec::new() };
+    marks
+        .into_iter()
+        .filter_map(|m| table.get(&m.scope).map(|&module| Quoted { start: m.start, end: m.end, scope: m.scope, module }))
+        .collect()
+}
+
+/// Append `m` to `marks`, merging it into the last run it continues.
+fn add_mark(marks: &mut Vec<Mark>, m: Mark) {
+    match marks.last_mut() {
+        Some(last) if last.end == m.start && last.scope == m.scope => last.end = m.end,
+        _ => marks.push(m),
+    }
+}
+
+/// An opaque `@Code` value carrying `src`, which no quotation wrote.
 fn code_value<'p>(src: &str) -> Value<'p> {
+    code_value_marked(src.as_bytes(), &[], 0)
+}
+
+/// An `@Code` value: its text, the runs quotations wrote, and the scope the
+/// quotation building it marks its text with (0 for none).
+fn code_value_marked<'p>(src: &[u8], marks: &[Mark], scope: u64) -> Value<'p> {
+    let mut packed = Vec::with_capacity(marks.len() * 24);
+    for m in marks {
+        packed.extend_from_slice(&(m.start as u64).to_le_bytes());
+        packed.extend_from_slice(&(m.end as u64).to_le_bytes());
+        packed.extend_from_slice(&m.scope.to_le_bytes());
+    }
     Value::Struct {
         name: "@Code".into(),
-        fields: vec![("src".into(), mk(Value::Str(Rc::new(src.as_bytes().to_vec()))))],
+        fields: vec![
+            ("src".into(), mk(Value::Str(Rc::new(src.to_vec())))),
+            ("marks".into(), mk(Value::Str(Rc::new(packed)))),
+            ("scope".into(), mk(Value::Int(scope as i64))),
+        ],
     }
+}
+
+/// The parts of an `@Code` value, as [`code_value_marked`] takes them.
+fn code_parts(v: &PVal, builtin: &str) -> Result<(Vec<u8>, Vec<Mark>, u64)> {
+    let src = code_src(v, builtin)?.as_ref().clone();
+    let Value::Struct { fields, .. } = &*v.borrow() else { unreachable!("`code_src` read an `@Code`") };
+    let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let marks = match field("marks") {
+        Some(v) => match &*v.borrow() {
+            Value::Str(b) => b
+                .chunks_exact(24)
+                .map(|c| {
+                    let word = |i: usize| u64::from_le_bytes(c[i * 8..i * 8 + 8].try_into().expect("eight bytes"));
+                    Mark { start: word(0) as usize, end: word(1) as usize, scope: word(2) }
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    let scope = match field("scope") {
+        Some(v) => match &*v.borrow() {
+            Value::Int(n) => *n as u64,
+            _ => 0,
+        },
+        None => 0,
+    };
+    Ok((src, marks, scope))
 }
 
 /// The tag name reported by `@token_kind` for a lexical [`frontend::Kind`]. The
@@ -1540,8 +1723,10 @@ impl<'p> Value<'p> {
                 format!("{{{}}}", inner.join(", "))
             }
             Value::Struct { name, fields } => {
+                // An `@Code` shows as its text: its marks are bookkeeping.
                 let inner: Vec<String> = fields
                     .iter()
+                    .filter(|(n, _)| name != "@Code" || n == "src")
                     .map(|(n, v)| format!(".{n} = {}", v.borrow().show()))
                     .collect();
                 format!("{name}.{{ {} }}", inner.join(", "))

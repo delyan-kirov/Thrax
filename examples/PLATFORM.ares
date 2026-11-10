@@ -26,4 +26,4 @@ $ ck_name : @Int = if (TARGET.arch ++ "-" ++ TARGET.os) == TARGET.name => 0 else
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @Int = ck_bits + ck_bounds + ck_name
 
-$ @e <| assert (test == 0) "PLATFORM: a check failed"
+$ &assert (test == 0) "PLATFORM: a check failed"

@@ -84,4 +84,4 @@ $ test : @Int =
     ck_unique + ck_shared * 2 + ck_slack * 4 + ck_partial * 8 + ck_closure * 16 + ck_multishot * 32
         + ck_multishot_move * 64
 
-$ @e <| assert (test == 0) "VEC_IN_PLACE: a check failed"
+$ &assert (test == 0) "VEC_IN_PLACE: a check failed"

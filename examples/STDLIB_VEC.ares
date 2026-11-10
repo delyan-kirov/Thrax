@@ -45,4 +45,4 @@ $ test : @Int =
         + ck_setoob + ck_push + ck_pushed + ck_fill + ck_froml + ck_tol + ck_map + ck_fold + ck_tup
         + ck_big
 
-$ @e <| assert (test == 0) "STDLIB_VEC: a check failed"
+$ &assert (test == 0) "STDLIB_VEC: a check failed"

@@ -75,4 +75,4 @@ $ ck_partial : @Int =
 
 $ test : @Int = ck_ctx + ck_chain + ck_by_hand + ck_generic + ck_qual + ck_fields + ck_partial
 
-$ @e <| assert (test == 0) "IMPLICITS: a check failed"
+$ &assert (test == 0) "IMPLICITS: a check failed"

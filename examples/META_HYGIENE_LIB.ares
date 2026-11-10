@@ -1,0 +1,25 @@
+$ @mod META_HYGIENE_LIB
+
+# \file META_HYGIENE_LIB.ares
+# \info Generators for `META_HYGIENE`, whose code lands in that module.
+
+$ @import MATH
+
+$ scale : @Int -> @Int = \x => x * 10
+
+# `scale` names this module's, wherever the code lands.
+$ scaled : @Code -> @Code = \c => "scale (?(c))"
+
+# The generator's own binder: `tmp` binds only the `tmp` this quotation spells.
+$ plus_one : @Code -> @Code = \c => "let tmp = 1 in tmp + ?(c)"
+
+# `cmp_int` is MATH's, which the site need not import.
+$ compare : @Code -> @Code -> @Code = \a b => "cmp_int (?(a)) (?(b))"
+
+# A binder the body may use: `@code` text reads as written at the site.
+$ it : @Code = @code "it"
+$ with_it : @Code -> @Code -> @Code = \v body => "let ?(it) = ?(v) in ?(body)"
+
+$ test : @Int = 0
+
+$ &assert (test == 0) "META_HYGIENE_LIB: a check failed"

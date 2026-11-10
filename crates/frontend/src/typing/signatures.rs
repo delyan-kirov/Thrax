@@ -3,7 +3,7 @@
 //! [`Checker::ty_of_ast`] elaborates a type expression from a signature, a
 //! field or an alias body. It validates names (an unknown or hidden type is an
 //! error with a fix), checks arities, expands aliases, turns `<...>` effect rows
-//! into row types (expanding row aliases), and turns tensor shapes into sizes.
+//! into row types, and turns tensor shapes into sizes.
 //!
 //! Entry point: [`Checker::ty_of_ast`].
 
@@ -180,15 +180,6 @@ impl<'a> Checker<'a> {
         };
         let (params, body) = self.aliases.get(&name)?.clone();
         self.check_hidden_type(cur, name);
-        if matches!(self.tnode(body), Ty::Row(_)) {
-            let span = self.ty_span_or_none(ty);
-            self.defer_type_error(diag!(
-                Code::TypeMismatch, span, 0,
-                "`{name}` is an effect row alias, not a type";
-                help: "use it inside an effect row, as in `A -> <{name}> B`"
-            ));
-            return Some(self.unifier.fresh());
-        }
         args.reverse();
         self.check_type_arity(ty, false);
         let mut sub: HashMap<StrId, Type> = HashMap::new();
@@ -214,22 +205,42 @@ impl<'a> Checker<'a> {
 // ## Effect rows
 
 impl<'a> Checker<'a> {
-    /// Elaborate an effect row: each entry's label, or a row alias's labels in its
-    /// place, extended onto the tail. A label occurs once when an alias brings it,
-    /// since an alias names a set. The tail is the written one together with any
-    /// an alias brings (all one row variable), or the closed row when there is none.
+    /// Elaborate an effect row: each entry's label extended onto the tail. The
+    /// tail is the written one together with one per `&X` entry still waiting to
+    /// be spliced (all one row variable), or the closed row when there is none.
     pub(super) fn row_of_ast(
         &mut self,
         entries: Slice<RowEntry>,
         tail: Option<StrId>,
         tvars: &mut HashMap<StrId, Type>,
     ) -> Type {
-        let mut labels: Vec<(StrId, bool, Type)> = Vec::new();
+        let ast = self.ast;
+        let mut labels: Vec<(StrId, Type)> = Vec::new();
         let mut tails: Vec<Type> = Vec::new();
         if let Some(t) = tail {
             tails.push(*tvars.entry(t).or_insert_with(|| self.unifier.fresh()));
         }
-        self.expand_row_entries(entries, tvars, false, &mut labels, &mut tails);
+        for entry in ast.slice(entries) {
+            // `<&X>`: the labels are unknown until the driver splices them, so
+            // the entry stands as an open tail.
+            if let Some(expr) = entry.meta {
+                self.meta_splice_operand(expr);
+                tails.push(self.unifier.fresh());
+                continue;
+            }
+            let name = entry.name;
+            if self.aliases.contains_key(&name) {
+                self.defer_type_error(diag!(
+                    Code::TypeMismatch, entry.span, 0,
+                    "type alias `{name}` is not an effect";
+                    help: "an effect row names effects; a set of them is a `@Code` global \
+                           spliced as `<&name>`"
+                ));
+                continue;
+            }
+            let args = self.effect_label_args(name, ast.slice(entry.args), entry.span, tvars);
+            labels.push((name, args));
+        }
         let mut row = match tails.split_first() {
             None => self.unifier.types.row_empty(),
             Some((&first, rest)) => {
@@ -241,7 +252,7 @@ impl<'a> Checker<'a> {
                 first
             }
         };
-        for &(label, _, args) in labels.iter().rev() {
+        for &(label, args) in labels.iter().rev() {
             row = self.unifier.types.row_extend_args(label, args, row);
         }
         row
@@ -271,7 +282,7 @@ impl<'a> Checker<'a> {
             Some(0) if !args.is_empty() => self.defer_type_error(diag!(
                 Code::TypeMismatch, span, 0,
                 "effect `{name}` takes no parameters";
-                note: "only an effect or a row alias declared with parameters is applied in a row"
+                note: "only an effect declared with parameters is applied in a row"
             )),
             Some(n) if !args.is_empty() && args.len() != n => self.defer_type_error(diag!(
                 Code::TypeMismatch, span, 0,
@@ -292,124 +303,24 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Append a row's entries to `labels` (each tagged with whether an alias
-    /// brought it) and the tails its aliases bring to `tails`.
-    pub(super) fn expand_row_entries(
-        &mut self,
-        entries: Slice<RowEntry>,
-        tvars: &mut HashMap<StrId, Type>,
-        in_alias: bool,
-        labels: &mut Vec<(StrId, bool, Type)>,
-        tails: &mut Vec<Type>,
-    ) {
-        let ast = self.ast;
-        for entry in ast.slice(entries) {
-            // `<@e (X)>`: the labels are unknown until the driver splices them, so
-            // the entry stands as an open tail.
-            if let Some(expr) = entry.meta {
-                self.meta_splice_operand(expr);
-                tails.push(self.unifier.fresh());
-                continue;
-            }
-            let name = entry.name;
-            let args = ast.slice(entry.args);
-            let Some((params, body)) = self.aliases.get(&name).cloned() else {
-                let dup = labels.iter().any(|&(l, from, _)| l == name && (from || in_alias));
-                if !dup {
-                    let args = self.effect_label_args(name, args, entry.span, tvars);
-                    labels.push((name, in_alias, args));
-                }
-                continue;
-            };
-            let Ty::Row(row) = ast.ty(body) else {
-                self.defer_type_error(diag!(
-                    Code::TypeMismatch, entry.span, 0,
-                    "type alias `{name}` is not an effect row";
-                    help: "an effect row names effects, or row aliases declared as \
-                           `$ {name} : @alias = <...>`"
-                ));
-                continue;
-            };
-            if args.len() > params.len() {
-                self.defer_type_error(diag!(
-                    Code::TypeMismatch, entry.span, 0,
-                    "row alias `{name}` takes {} parameter(s) but {} were given",
-                    params.len(), args.len()
-                ));
-                continue;
-            }
-            let mut sub: HashMap<StrId, Type> = HashMap::new();
-            for (i, p) in params.iter().enumerate() {
-                let t = match args.get(i) {
-                    Some(&a) => self.ty_of_ast(a, tvars),
-                    None => self.unifier.fresh(),
-                };
-                sub.insert(*p, t);
-            }
-            self.expand_row_entries(row.entries, &mut sub, true, labels, tails);
-            if let Some(t) = row.tail {
-                tails.push(*sub.entry(t).or_insert_with(|| self.unifier.fresh()));
-            }
-        }
-    }
-
-    /// Infer the operand of a type or row splice `@e X` under the `<@Meta>`
-    /// ambient and require it to build `@Code`. See `Ty::MetaE` in `ty_of_ast`.
+    /// Check the operand of a type or row splice `&X` under the `<@Meta>`
+    /// ambient against `@Code`, so a string literal there is a quotation. See
+    /// `Ty::MetaE` in `ty_of_ast`. The operand is its own boundary, as a `$ &`
+    /// directive is: what it plans (a quotation's hole instances) resolves here,
+    /// apart from the requirements of any definition it sits in.
     pub(super) fn meta_splice_operand(&mut self, expr: Aol<Expr>) {
         let ambient = self.meta_ambient();
         let saved = std::mem::replace(&mut self.ambient, ambient);
         let sites = self.deferred_sites.clone();
-        if let Ok(t) = self.infer(expr) {
-            let _ = self.unifier.unify(t, self.unifier.types.con("@Code"), "in a `@e` type splice");
-        }
+        let outer = (std::mem::take(&mut self.pending), std::mem::take(&mut self.ctx_pending));
+        let code = self.unifier.types.con("@Code");
+        let _ = self
+            .check(expr, code)
+            .and_then(|_| self.solve_pending())
+            .and_then(|_| self.resolve_pending_ctx());
+        (self.pending, self.ctx_pending) = outer;
         self.deferred_sites = sites;
         self.ambient = saved;
-    }
-
-    /// The labels a parameterless, closed row alias stands for, through any
-    /// aliases it names, or None when it is not one (or names something else).
-    pub(super) fn closed_row_alias_labels(&self, name: StrId) -> Option<Vec<StrId>> {
-        let (params, body) = self.aliases.get(&name)?;
-        let Ty::Row(row) = self.ast.ty(*body) else {
-            return None;
-        };
-        if !params.is_empty() || row.tail.is_some() {
-            return None;
-        }
-        let mut out: Vec<StrId> = Vec::new();
-        for entry in self.ast.slice(row.entries) {
-            let label = entry.name;
-            let more = if self.aliases.contains_key(&label) {
-                if !self.ast.slice(entry.args).is_empty() {
-                    return None;
-                }
-                self.closed_row_alias_labels(label)?
-            } else {
-                vec![label]
-            };
-            for l in more {
-                if !out.contains(&l) {
-                    out.push(l);
-                }
-            }
-        }
-        Some(out)
-    }
-
-    /// Hand the unifier the row aliases a printed row folds back to: every closed,
-    /// parameterless one of at least two labels (a one-label alias is a mere
-    /// rename, and printing it would hide the effect's own name), largest first.
-    pub(super) fn register_row_folds(&mut self) {
-        let mut folds: Vec<(StrId, Vec<StrId>)> = self
-            .aliases
-            .keys()
-            .filter_map(|&name| {
-                let labels = self.closed_row_alias_labels(name)?;
-                (labels.len() >= 2).then_some((name, labels))
-            })
-            .collect();
-        folds.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.as_str().cmp(b.0.as_str())));
-        self.unifier.row_folds = folds;
     }
 }
 
@@ -522,7 +433,7 @@ impl<'a> Checker<'a> {
                 self.check_type_arity(ty, true);
                 self.spine_of_ast(ty, tvars)
             }
-            // `@e X` in type position: infer `X` (so its calls/overloads resolve
+            // `&X` in type position: infer `X` (so its calls/overloads resolve
             // for lowering) and require it to build `@Code`; the spliced-in type is
             // unknown until the driver's expand loop runs `X`, so it stands as a
             // fresh variable here. Only reachable in a lenient (pre-expansion)
@@ -561,7 +472,6 @@ impl<'a> Checker<'a> {
                 let (f, t) = (self.ty_of_ast(from, tvars), self.ty_of_ast(to, tvars));
                 self.unifier.types.arrow_eff(f, t, eff)
             }
-            Ty::Row(_) => self.unifier.fresh(),
             Ty::Unit => self.unifier.types.con(ty::UNIT),
             Ty::Tuple(items) => {
                 let items = self.ast.slice(*items);

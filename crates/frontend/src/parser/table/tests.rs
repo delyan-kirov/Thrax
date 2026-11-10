@@ -11,8 +11,10 @@ fn every_op_token_has_a_parse_role() {
         if d.kind() != Kind::Op {
             continue;
         }
-        let classified =
-            infix(d.lexeme).is_some() || prefix(d.lexeme).is_some() || ends_expr(d.lexeme);
+        let classified = infix(d.lexeme).is_some()
+            || prefix(d.lexeme).is_some()
+            || ends_expr(d.lexeme)
+            || d.lexeme == SPLICE;
         assert!(
             classified,
             "operator `{}` lexes as Kind::Op but has no parser role",

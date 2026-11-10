@@ -1,0 +1,32 @@
+$ @mod META_HYGIENE
+
+# \file META_HYGIENE.ares
+# \info Hygiene. A name a generator's quotation spells means what it means in
+#       the generator's module, wherever its code is spliced, and a binder it
+#       spells binds only the names that quotation spells. Code the site hands
+#       in, a quotation written in the `&` operand or `@code` text, keeps its
+#       meaning at the site. The generators are in `META_HYGIENE_LIB`.
+
+$ @import META_HYGIENE_LIB
+
+# This module's `scale` does not capture the generator's.
+$ scale : @Int -> @Int = \x => x + 1
+$ forty : @Int = &scaled "4"
+
+# The generator's `tmp` does not capture the caller's.
+$ add_one : @Int -> @Int = \tmp => &plus_one "tmp"
+
+# `cmp_int` reaches MATH, which this module does not import.
+$ less : @Int = &compare "1" "2"
+
+# The binder comes from `@code` text, so the body's `it` sees it.
+$ doubled : @Int = &with_it "21" "it * 2"
+
+$ ck1 : @Int = if forty == 40 && scale 4 == 5 => 0 else 1
+$ ck2 : @Int = if add_one 100 == 101 => 0 else 2
+$ ck3 : @Int = if less == 0 - 1 => 0 else 4
+$ ck4 : @Int = if doubled == 42 => 0 else 8
+
+$ test : @Int = ck1 + ck2 + ck3 + ck4
+
+$ &assert (test == 0) "META_HYGIENE: a check failed"

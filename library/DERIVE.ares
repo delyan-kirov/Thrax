@@ -5,16 +5,16 @@ $ @mod DERIVE
 #       `derive_show "T"` generates a default `to_string`, and `derive_ord "T"`
 #       generates a structural three-way `cmp_T` (plus the `ICmp`/`IOrd`/`IEq`
 #       instances and `lt_T`/`le_T`/`gt_T`/`ge_T`/`eq_T`), both usable via
-#       `$ @e (DERIVE.derive_* "T")`. See the `derive_ord` section lower down.
+#       `$ &DERIVE.derive_* "T"`. See the `derive_ord` section lower down.
 #
 #       `derive_show "T"` returns the `@Code` for an `IToString T` instance,
-#       injected with `$ @e`:
+#       injected with `$ &`:
 #
-#           $ @e (DERIVE.derive_show "Box")
+#           $ &DERIVE.derive_show "Box"
 #
 #       after which `to_string` (and `?(...)` interpolation) works on `T`. It uses
 #       the reflection intrinsics `@type_kind` / `@type_params` / `@type_fields` /
-#       `@type_variants`, `<@Meta>` operations, so each derive runs only inside `@e`.
+#       `@type_variants`, `<@Meta>` operations, so each derive runs only inside `&`.
 #
 #       A GENERIC type derives one GENERIC instance, which takes the renderers of
 #       its parameters as its own context: `$ impl_IToString_for_Pair : @ctx {IToString a,
@@ -80,7 +80,7 @@ $ derive_show : @Str -> <@Meta> @Code = \ty =>
     let params = @type_params ty in
     let applied = if VEC.is_empty params => ty else "(" ++ ty ++ " " ++ join " " params ++ ")" in
     let body = if @type_kind ty == "struct" => struct_show ty else union_show ty in
-    @parse_items
+    @code
         (
             "$ impl_IToString_for_"
                 ++ ty
@@ -280,9 +280,9 @@ $ union_cmp : @Str -> <@Meta> @Str = \ty =>
 
 $ derive_ord : @Str -> <@Meta> @Code = \ty =>
     if @type_kind ty == "struct" =>
-        @parse_items (struct_cmp ty ++ "\n" ++ bool_ops ty)
+        @code (struct_cmp ty ++ "\n" ++ bool_ops ty)
     else
-        @parse_items (union_cmp ty ++ "\n" ++ bool_ops ty)
+        @code (union_cmp ty ++ "\n" ++ bool_ops ty)
 
 # Equality alone, for a type that has no sensible order. The comparison function is
 # the same structural one; only the `IEq` instance is emitted over it.
@@ -291,17 +291,17 @@ $ eq_only : @Str -> <@Meta> @Str = \ty =>
 
 $ derive_eq : @Str -> <@Meta> @Code = \ty =>
     if @type_kind ty == "struct" =>
-        @parse_items (struct_cmp ty ++ "\n" ++ eq_only ty)
+        @code (struct_cmp ty ++ "\n" ++ eq_only ty)
     else
-        @parse_items (union_cmp ty ++ "\n" ++ eq_only ty)
+        @code (union_cmp ty ++ "\n" ++ eq_only ty)
 
 # ---- copying a declaration's members ----
 # `fields_of "Foo"` is the `@Code` of `Foo`'s fields, and `variants_of "Base"` of
-# `Base`'s variants, for an `@e` entry of a declaration. The entries land where
-# the `@e` stands, among the ones written by hand:
+# `Base`'s variants, for a `&` entry of a declaration. The entries land where
+# the `&` stands, among the ones written by hand:
 #
-#     $ Bar : @struct = @e <| fields_of "Foo", i: @Int
-#     $ Color : @union = @e <| variants_of "Base", Blue: {}
+#     $ Bar : @struct = &fields_of "Foo", i: @Int
+#     $ Color : @union = &variants_of "Base", Blue: {}
 #
 # It is a copy of the text, so `Bar` has no relationship to `Foo`. A generic type
 # is named applied to the declaring type's own parameters, which replace its own:
@@ -381,7 +381,7 @@ $ fields_of : @Str -> <@Meta> @Code = \ty =>
         | Decl.Struct.{ params, fields } =>
             check_args name params args;
             let field = \f => f.0 ++ ": " ++ rename params args f.1 in
-            @parse_fields <| join ", " <| VEC.map field fields
+            @code <| join ", " <| VEC.map field fields
         | _ => @fail {
             .message = "`" ++ name ++ "` is not a struct",
             .notes = ["`fields_of` copies a struct's fields into another declaration"],
@@ -395,8 +395,7 @@ $ variants_of : @Str -> <@Meta> @Code = \ty =>
     let render = \params v => if v.1 == "" => v.0 else v.0 ++ ": " ++ rename params args v.1 in
     @lookup name |> \
         | Decl.Union.{ params, variants } =>
-            check_args name params args;
-            @parse_variants <| join ", " <| VEC.map (render params) variants
+            check_args name params args; @code <| join ", " <| VEC.map (render params) variants
         | _ => @fail {
             .message = "`" ++ name ++ "` is not a union",
             .notes = ["`variants_of` copies a union's variants into another declaration"],

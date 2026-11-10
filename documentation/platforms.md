@@ -61,7 +61,7 @@ macOS give it, and `aresstd.c` `dllexport`s its functions, since a PE
 executable has no `-rdynamic`.
 
 `TARGET` reflects the target being built, at compile time too: `ares build
---target=wasm32-wasi` runs `@build` and `$ @e` code with `TARGET.os ==
+--target=wasm32-wasi` runs `@build` and `$ &` code with `TARGET.os ==
 "wasi"`, while their foreign calls still run on the host.
 
 ## What a platform cannot run

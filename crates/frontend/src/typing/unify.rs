@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use utilities::{Code, Diagnostic, Result, Span, StrId};
 
-use crate::typing::types::{display_folding, Level, RowFold, Type, TypeNode, Types, VarId};
+use crate::typing::types::{display, Level, Type, TypeNode, Types, VarId};
 
 /// The state of one unification variable.
 #[derive(Clone, Debug)]
@@ -66,12 +66,6 @@ pub struct Unifier {
     /// Set while [`Unifier::unify_expected`] runs: its first operand is the type
     /// found, not the one expected, so a mismatch names them the other way round.
     found_first: bool,
-    /// The row aliases in scope that a printed row folds back to, largest first.
-    /// An unhandled label is attributed to the fold its row prints with.
-    pub row_folds: Vec<RowFold>,
-    /// The labels of the row being performed while [`Unifier::subrow`] or a row
-    /// unification runs, to name the alias an unhandled label belongs to.
-    performed: Option<Vec<StrId>>,
 }
 
 /// One reversible mutation, recorded so [`Unifier::restore`] can rewind a trial.
@@ -107,8 +101,6 @@ impl Unifier {
             int_vars: HashSet::new(),
             trail: Vec::new(),
             found_first: false,
-            row_folds: Vec::new(),
-            performed: None,
         }
     }
 
@@ -750,7 +742,7 @@ impl Unifier {
         tys.iter()
             .map(|t| {
                 let zonked = self.zonk(*t);
-                display_folding(&self.types, zonked, &mut namer, &self.row_folds)
+                display(&self.types, zonked, &mut namer)
             })
             .collect()
     }
