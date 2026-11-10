@@ -213,3 +213,81 @@ $ contradiction : (P: @Type 0) -> P -> Not P -> @Bottom = \P p n => n p
     );
     reject("$ A : @Type 1\n$ a : A\n$ bad : A = @absurd A @tt\n", "expected `@Bottom`, found `@Top`");
 }
+
+const NAT: &str = r"
+$ Nat : @Type 1 = @data | zero | succ Nat
+$ add : Nat -> Nat -> Nat = \m n => Nat.elim @ctx {.m = 1} (\_ => Nat) n (\_ r => succ r) m
+$ two : Nat = succ (succ zero)
+$ four : Nat = succ (succ (succ (succ zero)))
+$ P : Nat -> @Type 1
+";
+
+#[test]
+fn recursors_compute_on_constructors() {
+    let src = format!("{NAT}$ p : P (add two two)\n$ q : P four = p\n");
+    let sig = accept(&src);
+    assert_eq!(normal_form(&sig, "q").unwrap(), "p");
+    reject(&format!("{NAT}$ p : P (add two two)\n$ q : P two = p\n"), "expected `P (succ (succ zero))`");
+}
+
+#[test]
+fn recursors_are_stuck_on_variables() {
+    // `add n zero` does not reduce: the recursion is on the first argument.
+    let src = format!("{NAT}$ n : Nat\n$ p : P (add zero n)\n$ q : P n = p\n");
+    accept(&src);
+    reject(&format!("{NAT}$ n : Nat\n$ p : P (add n zero)\n$ q : P n = p\n"), "expected `P n`");
+}
+
+#[test]
+fn recursor_types_are_generated() {
+    let sig = accept(NAT);
+    let elim = sig.lookup("Nat.elim").unwrap();
+    let ty = crate::term::TermDisplay {
+        sig: &sig,
+        names: &[],
+        level_names: &sig.global(elim).level_params,
+        term: &sig.global(elim).ty,
+    }
+    .to_string();
+    assert_eq!(
+        ty,
+        "(P: Nat -> @Type m) -> P zero -> ((f0: Nat) -> P f0 -> P (succ f0)) -> (x: Nat) -> P x"
+    );
+}
+
+#[test]
+fn parameters_and_dependent_motives() {
+    accept(&format!(
+        r"{NAT}
+$ List : @ctx {{u: @l}} -> (a: @Type (u + 1)) -> @Type (u + 1) = @data | nil | cons (h: a) (t: List @ctx {{.u = u}} a)
+$ length : List @ctx {{.u = 0}} Nat -> Nat =
+    \xs => List.elim @ctx {{.u = 0, .m = 1}} Nat (\_ => Nat) zero (\_ _ r => succ r) xs
+$ xs : List @ctx {{.u = 0}} Nat = cons @ctx {{.u = 0}} Nat two (cons @ctx {{.u = 0}} Nat four (nil @ctx {{.u = 0}} Nat))
+$ p : P (length xs)
+$ q : P two = p
+$ Unit : @Type 1 = @data | unit
+$ Vec : Nat -> @Type 1 = \n => Nat.elim @ctx {{.m = 2}} (\_ => @Type 1) Unit (\_ t => Nat * t) n
+$ v : Vec two = (zero, (four, unit))
+"
+    ));
+}
+
+#[test]
+fn constructors_are_injective_by_conversion() {
+    accept(&format!(
+        r"{NAT}
+$ n : Nat
+$ p : P (succ (add zero n))
+$ q : P (succ n) = p
+"
+    ));
+}
+
+#[test]
+fn inductive_declarations_are_checked() {
+    reject("$ Bad : @Type 1 = @data | mk (Bad -> Bad)\n", "may only occur as a whole field");
+    reject("$ Prop : @Type 0 = @data | yes\n", "inductive propositions are not supported");
+    reject("$ Big : @Type 1 = @data | mk (@Type 1)\n", "too large");
+    reject("$ Idx : @Type 1 -> @Type 2 = @data | mk\n$ I : @Type 1 = @data | a | a\n", "`a` is already defined");
+    reject("$ F : @Type 1 = @data | mk\n$ G : F = @data | mk\n", "must end in `@Type l`");
+}

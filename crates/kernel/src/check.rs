@@ -24,10 +24,11 @@ use utilities::{Code, Diagnostic, Result, Span};
 
 use crate::conversion::ConversionChecker;
 use crate::level::Level;
-use crate::nbe::{eval, fst, global_type, quote, BindingVal, Closure, Env, Lvl, Val};
-use crate::signature::{Global, GlobalKind, Signature};
-use crate::syntax::{error, parse_script, Item, ItemBody, LevelArg, Primitive, Raw, RawKind, RawLevel};
-use crate::term::{Binding, Name, Term, TermDisplay};
+use crate::nbe::{eval, fst, global_type, quote, BindingVal, Closure, Env, Lvl, Neutral, Val};
+use crate::inductive::{constructor_type, recursor_type};
+use crate::signature::{ConstructorDecl, DataDecl, DataId, Global, GlobalId, GlobalKind, Param, Signature};
+use crate::syntax::{error, parse_script, Item, ItemBody, LevelArg, Primitive, Raw, RawConstructor, RawKind, RawLevel};
+use crate::term::{mentions_global, Binding, Name, Term, TermDisplay};
 
 /// Check every global of a script.
 pub fn check_script(src: &str) -> Result<Signature> {
@@ -56,6 +57,15 @@ struct Context {
 }
 
 impl Context {
+    fn new(level_names: Vec<Name>) -> Context {
+        Context {
+            names: Vec::new(),
+            types: Vec::new(),
+            env: Env::new(),
+            level_names,
+        }
+    }
+
     fn depth(&self) -> Lvl {
         self.types.len() as Lvl
     }
@@ -93,12 +103,10 @@ impl Checker<'_> {
             }
             level_names.push(name.clone());
         }
-        let mut ctx = Context {
-            names: Vec::new(),
-            types: Vec::new(),
-            env: Env::new(),
-            level_names: level_names.clone(),
-        };
+        if let ItemBody::Data(ctors) = &item.body {
+            return self.check_data(item, level_names, ctors);
+        }
+        let mut ctx = Context::new(level_names.clone());
         let (ty, _) = self.check_type(&mut ctx, &item.ty)?;
         let kind = match &item.body {
             ItemBody::Definition(body) => {
@@ -106,6 +114,7 @@ impl Checker<'_> {
                 GlobalKind::Definition(Rc::new(self.check(&mut ctx, body, &expected)?))
             }
             ItemBody::Axiom => GlobalKind::Axiom,
+            ItemBody::Data(_) => unreachable!("handled above"),
         };
         self.sig.add(Global {
             name: item.name.clone(),
@@ -116,6 +125,163 @@ impl Checker<'_> {
         Ok(())
     }
 }
+
+// ## Inductive declarations
+
+impl Checker<'_> {
+    /// Reject a name a declaration would introduce twice.
+    fn fresh_global(&self, name: &str, span: Span, taken: &[Name]) -> Result<()> {
+        if self.sig.lookup(name).is_some() || taken.iter().any(|t| &**t == name) {
+            return Err(self.error(Code::DuplicateSymbol, span, format!("`{name}` is already defined")));
+        }
+        Ok(())
+    }
+
+    fn check_data(&mut self, item: &Item, level_names: Vec<Name>, ctors: &[RawConstructor]) -> Result<()> {
+        let mut ctx = Context::new(level_names.clone());
+        let (ty, _) = self.check_type(&mut ctx, &item.ty)?;
+        let mut params = Vec::new();
+        let mut result = &ty;
+        while let Term::Pi(b) = result {
+            params.push(Param {
+                name: b.name.clone(),
+                ty: b.dom.clone(),
+                level: b.dom_level.clone(),
+            });
+            result = &b.cod;
+        }
+        let Term::Sort(level) = result.clone() else {
+            return Err(self.error(
+                Code::Unsupported,
+                item.ty.span,
+                "an inductive type's signature must end in `@Type l` after its parameters",
+            )
+            .with_note("indexed families are not primitive: give the index as a parameter and an equality field"));
+        };
+        if !level.is_nonzero() {
+            return Err(self.error(
+                Code::Unsupported,
+                item.ty.span,
+                "inductive propositions are not supported: the type must be in `@Type l` with `l >= 1`",
+            ));
+        }
+        let recursor_name: Name = format!("{}.elim", item.name).into();
+        let mut taken = vec![item.name.clone(), recursor_name.clone()];
+        for c in ctors {
+            self.fresh_global(&c.name, c.span, &taken)?;
+            taken.push(c.name.clone());
+        }
+        self.fresh_global(&recursor_name, item.span, &[])?;
+
+        let data = self.sig.add_data(DataDecl {
+            global: self.sig.next_global(),
+            params,
+            level: level.clone(),
+            constructors: Vec::new(),
+            recursor: GlobalId::MAX,
+        });
+        self.sig.add(Global {
+            name: item.name.clone(),
+            level_params: level_names.clone(),
+            ty: Rc::new(ty),
+            kind: GlobalKind::Data(data),
+        });
+        for (index, c) in ctors.iter().enumerate() {
+            let mut decl = self.check_constructor(data, &level_names, &level, c)?;
+            decl.global = self.sig.next_global();
+            self.sig.data_mut(data).constructors.push(decl);
+            let ty = constructor_type(self.sig.data(data), level_names.len(), index);
+            self.sig.add(Global {
+                name: c.name.clone(),
+                level_params: level_names.clone(),
+                ty: Rc::new(ty),
+                kind: GlobalKind::Constructor(data, index),
+            });
+        }
+
+        let mut recursor_levels = level_names.clone();
+        let mut motive: Name = "m".into();
+        while recursor_levels.contains(&motive) {
+            motive = format!("{motive}'").into();
+        }
+        recursor_levels.push(motive);
+        let ty = recursor_type(self.sig.data(data), level_names.len());
+        self.sig.data_mut(data).recursor = self.sig.next_global();
+        self.sig.add(Global {
+            name: recursor_name,
+            level_params: recursor_levels,
+            ty: Rc::new(ty),
+            kind: GlobalKind::Recursor(data),
+        });
+        Ok(())
+    }
+
+    fn check_constructor(&self, data: DataId, level_names: &[Name], level: &Level, c: &RawConstructor) -> Result<ConstructorDecl> {
+        let decl = self.sig.data(data);
+        let mut ctx = Context::new(level_names.to_vec());
+        for p in &decl.params {
+            let ty = self.eval(&ctx, &p.ty);
+            ctx.bind(p.name.clone(), ty);
+        }
+        let np = decl.params.len();
+        let mut fields = Vec::new();
+        let mut recursive = Vec::new();
+        for (i, (name, raw)) in c.fields.iter().enumerate() {
+            // An unnamed field gets a positional name, for printing the
+            // recursor's type.
+            let name: Name = if &**name == "_" { format!("f{i}").into() } else { name.clone() };
+            let (ty, field_level) = self.check_type(&mut ctx, raw)?;
+            if !field_level.leq(level) {
+                return Err(self.error(
+                    Code::TypeMismatch,
+                    raw.span,
+                    format!("this field is too large for the type's universe `{}`", self.show(&ctx, &Val::Sort(level.clone()))),
+                ));
+            }
+            let ty_val = self.eval(&ctx, &ty);
+            // See Note [Strict positivity, restricted].
+            let is_self = is_data_at_own_params(&ty_val, data, np);
+            if !is_self && mentions_global(&ty, decl.global) {
+                let name = &self.sig.global(decl.global).name;
+                return Err(self.error(
+                    Code::Unsupported,
+                    raw.span,
+                    format!("`{name}` may only occur as a whole field, applied to its own parameters"),
+                ));
+            }
+            fields.push(Param {
+                name: name.clone(),
+                ty: Rc::new(ty),
+                level: field_level,
+            });
+            recursive.push(is_self);
+            ctx.bind(name, ty_val);
+        }
+        Ok(ConstructorDecl {
+            name: c.name.clone(),
+            global: GlobalId::MAX,
+            fields,
+            recursive,
+        })
+    }
+}
+
+/// `ty` is `D p0 ... pn` with each `pi` the parameter variable at level `i`.
+fn is_data_at_own_params(ty: &Val, data: DataId, params: usize) -> bool {
+    let Val::Data(d) = ty else { return false };
+    let own = |(i, p): (usize, &Val)| matches!(p, Val::Neutral(n) if matches!(**n, Neutral::Var(l) if l as usize == i));
+    d.data == data && d.params.len() == params && d.params.iter().enumerate().all(own)
+}
+
+// Note [Strict positivity, restricted]
+//
+// An inductive type may appear in its own constructors only where its
+// recursor can recurse: as a whole field `D params`, with exactly the
+// declaration's parameters. Strict positivity proper also allows
+// `A -> D params` (infinitely branching trees) and nested occurrences such as
+// `List (D params)`; both need more of the recursor's machinery and are
+// rejected for now. Anything that is not positive must be rejected for
+// consistency: a negative occurrence gives a fixpoint combinator.
 
 // ## Bidirectional checking
 

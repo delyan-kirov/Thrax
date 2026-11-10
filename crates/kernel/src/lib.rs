@@ -11,7 +11,8 @@
 //!   propositions, and the decision procedure for `<=`.
 //! * [`term`] is the core terms (de Bruijn indices) and [`signature`] the
 //!   checked globals.
-//! * [`nbe`] evaluates terms to values and reads them back.
+//! * [`nbe`] evaluates terms to values and reads them back; [`inductive`]
+//!   gives the declared inductive types their recursors.
 //! * [`conversion`] decides definitional equality and cumulative subtyping.
 //! * [`syntax`] parses scripts and [`check`] elaborates them by bidirectional
 //!   type checking.
@@ -20,6 +21,7 @@
 
 pub mod check;
 pub mod conversion;
+pub mod inductive;
 pub mod level;
 pub mod nbe;
 pub mod signature;

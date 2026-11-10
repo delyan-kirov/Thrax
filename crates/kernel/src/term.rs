@@ -220,6 +220,47 @@ impl Printer<'_> {
     }
 }
 
+/// `t` with every variable at index `cutoff` or above moved out by `by`:
+/// the de Bruijn shift that makes room for `by` new binders below `cutoff`
+/// bound variables.
+pub fn shift(t: &Term, cutoff: Index, by: Index) -> Term {
+    let go = |t: &Rc<Term>, cutoff| Rc::new(shift(t, cutoff, by));
+    let binding = |b: &Binding| {
+        Rc::new(Binding {
+            name: b.name.clone(),
+            dom: go(&b.dom, cutoff),
+            cod: go(&b.cod, cutoff + 1),
+            dom_level: b.dom_level.clone(),
+            cod_level: b.cod_level.clone(),
+        })
+    };
+    match t {
+        Term::Var(i) if *i >= cutoff => Term::Var(i + by),
+        Term::Var(_) | Term::Global(..) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom => t.clone(),
+        Term::Pi(b) => Term::Pi(binding(b)),
+        Term::Sigma(b) => Term::Sigma(binding(b)),
+        Term::Lam(name, body) => Term::Lam(name.clone(), go(body, cutoff + 1)),
+        Term::App(f, a) => Term::App(go(f, cutoff), go(a, cutoff)),
+        Term::Let(name, ty, val, body) => Term::Let(name.clone(), go(ty, cutoff), go(val, cutoff), go(body, cutoff + 1)),
+        Term::Pair(a, b) => Term::Pair(go(a, cutoff), go(b, cutoff)),
+        Term::Fst(e) => Term::Fst(go(e, cutoff)),
+        Term::Snd(e) => Term::Snd(go(e, cutoff)),
+        Term::Absurd(ty, e) => Term::Absurd(go(ty, cutoff), go(e, cutoff)),
+    }
+}
+
+/// Whether global `id` occurs in `t`.
+pub fn mentions_global(t: &Term, id: GlobalId) -> bool {
+    match t {
+        Term::Global(g, _) => *g == id,
+        Term::Var(_) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom => false,
+        Term::Pi(b) | Term::Sigma(b) => mentions_global(&b.dom, id) || mentions_global(&b.cod, id),
+        Term::Lam(_, e) | Term::Fst(e) | Term::Snd(e) => mentions_global(e, id),
+        Term::App(a, b) | Term::Pair(a, b) | Term::Absurd(a, b) => mentions_global(a, id) || mentions_global(b, id),
+        Term::Let(_, ty, val, body) => mentions_global(ty, id) || mentions_global(val, id) || mentions_global(body, id),
+    }
+}
+
 /// Whether variable `ix` occurs free in `t`.
 pub fn mentions(t: &Term, ix: Index) -> bool {
     match t {

@@ -22,6 +22,7 @@
 
 use std::rc::Rc;
 
+use crate::inductive::{constructor_value, data_value, recursor_value, ConstructorVal, DataVal, RecursorArgs};
 use crate::level::Level;
 use crate::signature::{GlobalId, GlobalKind, Signature};
 use crate::term::{Binding, Index, Name, Term};
@@ -42,6 +43,8 @@ pub enum Val {
     Top,
     Tt,
     Bottom,
+    Data(Rc<DataVal>),
+    Constructor(Rc<ConstructorVal>),
 }
 
 /// A Pi or Sigma type's value, with the sorts of both sides.
@@ -62,6 +65,8 @@ pub enum Neutral {
     Snd(Rc<Neutral>),
     /// `@absurd ty proof`, stuck because no proof of `@Bottom` is canonical.
     Absurd(Val, Val),
+    /// A recursor stuck on its major premise.
+    Recursor(Rc<RecursorArgs>, Rc<Neutral>),
 }
 
 /// A binder's body, waiting for the value of its variable.
@@ -111,7 +116,7 @@ impl Env {
         Env::default()
     }
 
-    fn with_levels(levels: Rc<[Level]>) -> Env {
+    pub fn with_levels(levels: Rc<[Level]>) -> Env {
         Env {
             values: None,
             levels: Some(levels),
@@ -186,6 +191,9 @@ pub fn eval_global(sig: &Signature, id: GlobalId, levels: Rc<[Level]>) -> Val {
     match &global.kind {
         GlobalKind::Definition(body) => eval(sig, &Env::with_levels(levels), body),
         GlobalKind::Axiom => Val::neutral(Neutral::Axiom(id, levels)),
+        GlobalKind::Data(data) => data_value(sig, *data, levels),
+        GlobalKind::Constructor(data, index) => constructor_value(sig, *data, *index, levels),
+        GlobalKind::Recursor(data) => recursor_value(sig, *data, levels),
     }
 }
 
@@ -232,7 +240,21 @@ pub fn quote(sig: &Signature, depth: Lvl, v: &Val) -> Term {
         Val::Top => Term::Top,
         Val::Tt => Term::Tt,
         Val::Bottom => Term::Bottom,
+        Val::Data(d) => {
+            let head = Term::Global(sig.data(d.data).global, d.levels.clone());
+            quote_spine(sig, depth, head, &d.params)
+        }
+        Val::Constructor(c) => {
+            let global = sig.data(c.data).constructors[c.index].global;
+            let head = Term::Global(global, c.levels.clone());
+            let params = quote_spine(sig, depth, head, &c.params);
+            quote_spine(sig, depth, params, &c.fields)
+        }
     }
+}
+
+fn quote_spine(sig: &Signature, depth: Lvl, head: Term, args: &[Val]) -> Term {
+    args.iter().fold(head, |f, a| Term::app(f, quote(sig, depth, a)))
 }
 
 fn quote_binding(sig: &Signature, depth: Lvl, p: &BindingVal) -> Binding {
@@ -261,5 +283,9 @@ fn quote_neutral(sig: &Signature, depth: Lvl, n: &Neutral) -> Term {
         Neutral::Fst(p) => Term::Fst(Rc::new(quote_neutral(sig, depth, p))),
         Neutral::Snd(p) => Term::Snd(Rc::new(quote_neutral(sig, depth, p))),
         Neutral::Absurd(ty, e) => Term::Absurd(Rc::new(quote(sig, depth, ty)), Rc::new(quote(sig, depth, e))),
+        Neutral::Recursor(rec, major) => {
+            let head = Term::Global(sig.data(rec.data).recursor, rec.levels.clone());
+            Term::app(quote_spine(sig, depth, head, &rec.args), quote_neutral(sig, depth, major))
+        }
     }
 }

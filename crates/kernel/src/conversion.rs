@@ -20,6 +20,7 @@
 //!
 //! Entry points: [`ConversionChecker::conv`], [`ConversionChecker::subtype`].
 
+use crate::inductive::{data_level, field_type, param_type};
 use crate::level::Level;
 use crate::nbe::{apply, fst, global_type, snd, Lvl, Neutral, Val};
 use crate::signature::Signature;
@@ -63,6 +64,7 @@ impl ConversionChecker<'_> {
                 _ => unreachable!("projected from a neutral that is not a pair"),
             },
             Neutral::Absurd(ty, _) => ty.clone(),
+            Neutral::Recursor(rec, major) => apply(self.sig, rec.motive(self.sig).clone(), Val::Neutral(major.clone())),
         }
     }
 
@@ -73,11 +75,12 @@ impl ConversionChecker<'_> {
             Val::Pi(p) => Some(Level::imax(&p.dom_level, &p.cod_level)),
             Val::Sigma(p) => Some(Level::max(&p.dom_level, &p.cod_level)),
             Val::Top | Val::Bottom => Some(Level::Zero),
+            Val::Data(d) => Some(data_level(self.sig, d)),
             Val::Neutral(n) => match self.infer_neutral(n) {
                 Val::Sort(l) => Some(l),
                 _ => None,
             },
-            Val::Lam(..) | Val::Pair(_) | Val::Tt => None,
+            Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) => None,
         }
     }
 
@@ -111,9 +114,9 @@ impl ConversionChecker<'_> {
                 }
             }
             Val::Sort(_) => self.conv_type(a, b, false),
-            Val::Neutral(_) => self.conv_by_structure(a, b),
+            Val::Neutral(_) | Val::Data(_) => self.conv_by_structure(a, b),
             Val::Top | Val::Bottom => unreachable!("propositions were handled above"),
-            Val::Lam(..) | Val::Pair(_) | Val::Tt => unreachable!("not a type"),
+            Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) => unreachable!("not a type"),
         }
     }
 
@@ -122,6 +125,14 @@ impl ConversionChecker<'_> {
     fn conv_by_structure(&mut self, a: &Val, b: &Val) -> bool {
         match (a, b) {
             (Val::Neutral(x), Val::Neutral(y)) => self.conv_neutral(x, y).is_some(),
+            (Val::Constructor(x), Val::Constructor(y)) => {
+                x.data == y.data
+                    && x.index == y.index
+                    && (0..x.fields.len()).all(|i| {
+                        let ty = field_type(self.sig, x, i, &x.fields[..i]);
+                        self.conv(&ty, &x.fields[i], &y.fields[i])
+                    })
+            }
             _ => false,
         }
     }
@@ -130,9 +141,7 @@ impl ConversionChecker<'_> {
     fn conv_neutral(&mut self, a: &Neutral, b: &Neutral) -> Option<Val> {
         match (a, b) {
             (Neutral::Var(x), Neutral::Var(y)) if x == y => Some(self.types[*x as usize].clone()),
-            (Neutral::Axiom(x, xl), Neutral::Axiom(y, yl))
-                if x == y && xl.iter().zip(yl.iter()).all(|(l, m)| l.equal(m)) =>
-            {
+            (Neutral::Axiom(x, xl), Neutral::Axiom(y, yl)) if x == y && levels_equal(xl, yl) => {
                 Some(global_type(self.sig, *x, xl.clone()))
             }
             (Neutral::App(f, x), Neutral::App(g, y)) => match self.conv_neutral(f, g)? {
@@ -149,6 +158,23 @@ impl ConversionChecker<'_> {
             },
             // The proofs of `@Bottom` are irrelevant.
             (Neutral::Absurd(x, _), Neutral::Absurd(y, _)) => self.conv_type(x, y, false).then(|| x.clone()),
+            (Neutral::Recursor(r, x), Neutral::Recursor(s, y)) => {
+                if r.data != s.data || !levels_equal(&r.levels, &s.levels) {
+                    return None;
+                }
+                // Compare the arguments along the recursor's own type.
+                let recursor = self.sig.data(r.data).recursor;
+                let mut ty = global_type(self.sig, recursor, r.levels.clone());
+                for (a, b) in r.args.iter().zip(&s.args) {
+                    let Val::Pi(p) = ty else { unreachable!("the recursor takes more arguments than its type") };
+                    if !self.conv(&p.dom, a, b) {
+                        return None;
+                    }
+                    ty = p.cod.apply(self.sig, a.clone());
+                }
+                self.conv_neutral(x, y)?;
+                Some(apply(self.sig, r.motive(self.sig).clone(), Val::Neutral(x.clone())))
+            }
             _ => None,
         }
     }
@@ -171,6 +197,14 @@ impl ConversionChecker<'_> {
                     })
             }
             (Val::Top, Val::Top) | (Val::Bottom, Val::Bottom) => true,
+            (Val::Data(x), Val::Data(y)) => {
+                x.data == y.data
+                    && levels_equal(&x.levels, &y.levels)
+                    && (0..x.params.len()).all(|i| {
+                        let ty = param_type(self.sig, x, i);
+                        self.conv(&ty, &x.params[i], &y.params[i])
+                    })
+            }
             (Val::Neutral(x), Val::Neutral(y)) => self.conv_neutral(x, y).is_some(),
             _ => false,
         }
@@ -180,6 +214,10 @@ impl ConversionChecker<'_> {
     pub fn subtype(&mut self, a: &Val, b: &Val) -> bool {
         self.conv_type(a, b, true)
     }
+}
+
+fn levels_equal(a: &[Level], b: &[Level]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(l, m)| l.equal(m))
 }
 
 // Note [Proof irrelevance is decided by the type]

@@ -11,7 +11,8 @@
 //!
 //! Every argument is explicit except levels, which a reference to a
 //! level-polymorphic global supplies with `@ctx {.u = l}`. A global without a
-//! body is an axiom. Primitive forms are `@name` followed by a fixed number
+//! body is an axiom, and one whose body is `@data | c fields | ...` an
+//! inductive type. Primitive forms are `@name` followed by a fixed number
 //! of arguments, read from the [`PRIMITIVES`] table.
 //!
 //! Input: source text. Output: [`Item`]s of named, unresolved [`Raw`] terms.
@@ -97,6 +98,16 @@ pub struct Item {
 pub enum ItemBody {
     Definition(Raw),
     Axiom,
+    /// `@data | c (x: A) B | ...`.
+    Data(Vec<RawConstructor>),
+}
+
+#[derive(Clone, Debug)]
+pub struct RawConstructor {
+    pub name: Name,
+    pub span: Span,
+    /// Each field's name (`_` when unnamed) and type.
+    pub fields: Vec<(Name, Raw)>,
 }
 
 // ## Lexer
@@ -362,7 +373,12 @@ impl Parser<'_> {
         let level_params = self.level_params()?;
         let ty = self.expr()?;
         let body = if self.eat(&Tok::Equals) {
-            ItemBody::Definition(self.expr()?)
+            if self.at_keyword("data") {
+                self.next();
+                ItemBody::Data(self.constructors()?)
+            } else {
+                ItemBody::Definition(self.expr()?)
+            }
         } else {
             ItemBody::Axiom
         };
@@ -373,6 +389,37 @@ impl Parser<'_> {
             ty,
             body,
         })
+    }
+
+    fn constructors(&mut self) -> Result<Vec<RawConstructor>> {
+        let mut ctors = Vec::new();
+        while self.eat(&Tok::Pipe) {
+            let (name, span) = self.ident()?;
+            let mut fields = Vec::new();
+            loop {
+                if self.named_fields_ahead() {
+                    fields.extend(self.binder_group()?);
+                } else if self.starts_atom() {
+                    fields.push(("_".into(), self.atom()?));
+                } else {
+                    break;
+                }
+            }
+            ctors.push(RawConstructor { name, span, fields });
+        }
+        Ok(ctors)
+    }
+
+    /// `(x y: A)` as a constructor's named fields.
+    fn named_fields_ahead(&self) -> bool {
+        if self.peek(0) != &Tok::LParen {
+            return false;
+        }
+        let mut n = 1;
+        while matches!(self.peek(n), Tok::Ident(_)) {
+            n += 1;
+        }
+        n > 1 && self.peek(n) == &Tok::Colon
     }
 
     /// A signature's leading `@ctx {u: @l, ...} ->`.
@@ -539,7 +586,7 @@ impl Parser<'_> {
     fn starts_atom(&self) -> bool {
         match self.peek(0) {
             Tok::Ident(_) | Tok::LParen => true,
-            Tok::At(w) => &**w != "ctx" && &**w != "l",
+            Tok::At(w) => !matches!(&**w, "ctx" | "l" | "data"),
             _ => false,
         }
     }
