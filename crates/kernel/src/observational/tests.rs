@@ -110,3 +110,68 @@ fn equality_proofs_must_typecheck() {
     reject(&format!("{NAT}$ bad : (m n: Nat) -> m ~ n = \\m n => @refl m\n"), "expected `m ~ n`, found `m ~ m`");
     reject(&format!("{NAT}$ bad : @cast Nat (Nat -> Nat) @tt zero ~ zero\n"), "expected `@Bottom`, found `@Top`");
 }
+
+// Naturals up to parity: `R m n` is `even m ~ even n`, an equality of
+// booleans, so it computes.
+const PARITY: &str = r"
+$ Bool : @Type 1 = @data | false | true
+$ not : Bool -> Bool = \b => Bool.elim @ctx {.m = 1} (\_ => Bool) true false b
+$ even : Nat -> Bool = \n => Nat.elim @ctx {.m = 1} (\_ => Nat -> Bool) (\_ => true) (\_ r => \_ => not (r zero)) n zero
+$ R : Nat -> Nat -> @Type 0 = \m n => even m ~ even n
+$ Parity : @Type 1 = @Quot Nat R
+    (\x => @refl (even x))
+    (\x y e => @transp (even x) (\b => b ~ even x) (@refl (even x)) (even y) e)
+    (\x y z e f => @transp (even y) (\b => even x ~ b) e (even z) f)
+$ class : Nat -> Parity = \n => @qin n
+";
+
+#[test]
+fn classes_are_equal_by_the_relation() {
+    accept(&format!(
+        r"{NAT}{PARITY}
+$ same : class zero ~ class two = @tt
+$ apart : class zero ~ class (succ zero) -> @Bottom = \e => e
+$ related : (m n: Nat) -> R m n -> class m ~ class n = \m n e => e
+"
+    ));
+}
+
+#[test]
+fn eliminating_a_class_needs_respect() {
+    let sig = accept(&format!(
+        r"{NAT}{PARITY}
+$ parity : Parity -> Bool = \q => @qelim (\_ => Bool) even (\x y e => e) q
+$ of_four : Bool = parity (class four)
+$ classes_agree : (p q: Parity) -> p ~ q -> parity p ~ parity q =
+    \p q e => @transp p (\r => parity p ~ parity r) (@refl (parity p)) q e
+"
+    ));
+    assert_eq!(normal_form(&sig, "of_four").unwrap(), "true");
+    // The identity on representatives does not respect parity.
+    reject(
+        &format!("{NAT}{PARITY}$ leak : Parity -> Nat = \\q => @qelim (\\_ => Nat) (\\n => n) (\\x y e => e) q\n"),
+        "expected `x ~ y`, found",
+    );
+}
+
+#[test]
+fn quotients_need_an_equivalence() {
+    reject(
+        &format!("{NAT}$ Lt : @Type 1 = @Quot Nat (\\m n => @Bottom) (\\x => @tt) (\\x y e => e) (\\x y z e f => e)\n"),
+        "expected `@Bottom`, found `@Top`",
+    );
+    reject(
+        "$ P : @Type 0\n$ Q : @Type 1 = @Quot P (\\x y => @Top) (\\x => @tt) (\\x y e => e) (\\x y z e f => e)\n",
+        "only data can be quotiented",
+    );
+}
+
+#[test]
+fn casts_move_classes_through_representatives() {
+    let sig = accept(&format!(
+        r"{NAT}{PARITY}
+$ moved : Parity = @cast Parity Parity (@tt, \a b => (\h => h, \h => h)) (class two)
+"
+    ));
+    assert_eq!(normal_form(&sig, "moved").unwrap(), "@qin (succ (succ zero))");
+}

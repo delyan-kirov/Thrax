@@ -84,6 +84,12 @@ pub enum Primitive {
     /// `B t'` (transport into a proposition).
     Transp,
     Cast,
+    /// `@Quot A R rr rs rt`: `A` quotiented by `R`, with proofs that `R` is
+    /// reflexive, symmetric and transitive.
+    Quot,
+    QIn,
+    /// `@qelim P f resp q`.
+    QElim,
 }
 
 /// Every primitive's spelling and argument count.
@@ -96,6 +102,9 @@ pub const PRIMITIVES: &[(&str, Primitive, usize)] = &[
     ("refl", Primitive::Refl, 1),
     ("transp", Primitive::Transp, 5),
     ("cast", Primitive::Cast, 4),
+    ("Quot", Primitive::Quot, 5),
+    ("qin", Primitive::QIn, 1),
+    ("qelim", Primitive::QElim, 4),
 ];
 
 #[derive(Clone, Debug)]

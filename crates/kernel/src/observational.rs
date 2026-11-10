@@ -13,12 +13,17 @@
 //! * at a universe, `A ~ B` compares type formers: the domains (contravariant
 //!   for Pi) and codomains of two Pi or Sigma types, the parameters of two
 //!   applications of one inductive type, and `@Bottom` for different heads;
+//! * at a quotient, `@qin a ~ @qin b` is the relation `R a b`;
 //! * at `@Type 0`, `P ~ Q` is `(P -> Q) * (Q -> P)` (propositional
 //!   extensionality), and at a proposition it is `@Top` (proof irrelevance).
 //!
+//! Quotients follow the impredicative sequel, Pujet and Tabareau,
+//! "Impredicative Observational Equality" (POPL 2023).
+//!
 //! `@cast A B e t` moves `t : A` to `B` along `e : A ~ B`, computing by the
 //! heads of `A` and `B`: through a lambda by casting the argument back, into
-//! a pair componentwise, and into a constructor fieldwise. A cast between two
+//! a pair componentwise, into a constructor fieldwise, and into a class
+//! through its representative. A cast between two
 //! types with different heads, or with a neutral one, is stuck.
 //!
 //! See Note [Proofs evaluate to an irrelevant witness].
@@ -38,14 +43,29 @@ use crate::term::mentions;
 
 // ## Building propositions
 
-fn proposition_pi(name: &str, dom: Val, dom_level: Level, cod: impl Fn(&Signature, Val) -> Val + 'static) -> Val {
+/// `(name: dom) -> cod name`, where `cod` is a Rust function.
+pub fn native_pi(name: &str, dom: Val, dom_level: Level, cod_level: Level, cod: impl Fn(&Signature, Val) -> Val + 'static) -> Val {
     Val::Pi(Rc::new(BindingVal {
         name: name.into(),
         dom,
         cod: Closure::Native(Rc::new(cod)),
         dom_level,
-        cod_level: Level::Zero,
+        cod_level,
     }))
+}
+
+fn proposition_pi(name: &str, dom: Val, dom_level: Level, cod: impl Fn(&Signature, Val) -> Val + 'static) -> Val {
+    native_pi(name, dom, dom_level, Level::Zero, cod)
+}
+
+/// `A -> A -> @Type 0`, the type of a quotient's relation.
+pub fn relation_type(carrier: Val, level: Level) -> Val {
+    let inner = carrier.clone();
+    let inner_level = level.clone();
+    let cod_level = Level::max(&level, &Level::constant(1));
+    native_pi("x", carrier, level, cod_level, move |_, _| {
+        native_pi("y", inner.clone(), inner_level.clone(), Level::constant(1), |_, _| Val::Sort(Level::Zero))
+    })
 }
 
 /// `a * b` for two propositions.
@@ -111,9 +131,14 @@ pub fn eq(sig: &Signature, level: Level, ty: Val, a: Val, b: Val) -> Val {
             (Val::Constructor(x), Val::Constructor(y)) => eq_fields(sig, x, y),
             _ => stuck_eq(level, ty, a, b),
         },
+        // See Note [Equality on a quotient is its relation].
+        Val::Quot(q) => match (&a, &b) {
+            (Val::QIn(x), Val::QIn(y)) => apply(sig, apply(sig, q.relation.clone(), (**x).clone()), (**y).clone()),
+            _ => stuck_eq(level, ty, a, b),
+        },
         Val::Neutral(_) => stuck_eq(level, ty, a, b),
         Val::Top | Val::Bottom => unreachable!("a proposition's level is zero"),
-        Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) | Val::Irrelevant => {
+        Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) | Val::Irrelevant | Val::QIn(_) => {
             unreachable!("an equality at a non-type")
         }
     }
@@ -228,6 +253,22 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
             }
             and_all(props)
         }
+        (Val::Quot(x), Val::Quot(y)) => {
+            // `A / R ~ A' / R'` is `A ~ A'` and, for every `a b: A`,
+            // `R a b ~ R' (cast a) (cast b)`.
+            let carriers = eq_types(sig, k, x.carrier.clone(), y.carrier.clone());
+            let (x, y) = (x.clone(), y.clone());
+            let relations = proposition_pi("a", x.carrier.clone(), x.level.clone(), move |_, a1| {
+                let (x, y) = (x.clone(), y.clone());
+                proposition_pi("b", x.carrier.clone(), x.level.clone(), move |sig, b1| {
+                    let move_over = |v: Val| cast(sig, x.carrier.clone(), y.carrier.clone(), Val::Irrelevant, v);
+                    let left = apply(sig, apply(sig, x.relation.clone(), a1.clone()), b1.clone());
+                    let right = apply(sig, apply(sig, y.relation.clone(), move_over(a1.clone())), move_over(b1));
+                    eq_types(sig, &Level::Zero, left, right)
+                })
+            });
+            and(carriers, relations)
+        }
         (Val::Neutral(_), _) | (_, Val::Neutral(_)) => stuck_eq(k.succ(), universe(), a, b),
         _ => Val::Bottom,
     }
@@ -282,6 +323,10 @@ pub fn cast(sig: &Signature, a: Val, b: Val, e: Val, t: Val) -> Val {
             }
             Val::Constructor(Rc::new(ConstructorVal { fields, ..target }))
         }
+        (Val::Quot(x), Val::Quot(y)) => match &t {
+            Val::QIn(v) => Val::QIn(Rc::new(cast(sig, x.carrier.clone(), y.carrier.clone(), Val::Irrelevant, (**v).clone()))),
+            _ => stuck_cast(a, b, e, t),
+        },
         _ => stuck_cast(a, b, e, t),
     }
 }
@@ -289,6 +334,17 @@ pub fn cast(sig: &Signature, a: Val, b: Val, e: Val, t: Val) -> Val {
 fn stuck_cast(a: Val, b: Val, e: Val, t: Val) -> Val {
     Val::neutral(Neutral::Cast { from: a, to: b, proof: e, value: t })
 }
+
+// Note [Equality on a quotient is its relation]
+//
+// Two classes `@qin a` and `@qin b` are equal exactly when `R a b`: that is
+// the whole point of the quotient, and it is a computation rule, not an
+// axiom. It is sound because the relation was proved an equivalence when the
+// quotient was formed: `@refl (@qin a)` has type `R a a`, which reflexivity
+// inhabits, and `sym`/`trans` on classes need symmetry and transitivity. The
+// eliminator `@qelim P f resp` is what keeps it consistent: `f` must send
+// related representatives to equal results (`resp`), so no function can tell
+// two equal classes apart.
 
 // Note [Proofs evaluate to an irrelevant witness]
 //

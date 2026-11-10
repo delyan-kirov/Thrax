@@ -60,6 +60,14 @@ pub enum Term {
     Eq(Level, Rc<Term>, Rc<Term>, Rc<Term>),
     /// `@cast from to proof value`.
     Cast(Rc<Term>, Rc<Term>, Rc<Term>, Rc<Term>),
+    /// `@Quot carrier relation`, at the carrier's sort; the proofs that the
+    /// relation is an equivalence were checked and are not kept.
+    Quot(Rc<Term>, Rc<Term>, Level),
+    /// `@qin a`, the class of `a`.
+    QIn(Rc<Term>),
+    /// `@qelim motive method q`, with the motive's sort; the proof that the
+    /// method respects the relation was checked and is not kept.
+    QElim(Rc<Term>, Rc<Term>, Level, Rc<Term>),
     /// A proof, whose value is irrelevant.
     /// See Note [Proofs evaluate to an irrelevant witness].
     Irrelevant,
@@ -208,6 +216,29 @@ impl Printer<'_> {
                 close(out, Precedence::App);
             }
             Term::Irrelevant => out.push_str("@irrelevant"),
+            Term::Quot(a, r, _) => {
+                open(out, Precedence::App);
+                out.push_str("@Quot ");
+                self.print(out, Precedence::Atom, a);
+                out.push(' ');
+                self.print(out, Precedence::Atom, r);
+                close(out, Precedence::App);
+            }
+            Term::QIn(a) => {
+                open(out, Precedence::App);
+                out.push_str("@qin ");
+                self.print(out, Precedence::Atom, a);
+                close(out, Precedence::App);
+            }
+            Term::QElim(p, f, _, q) => {
+                open(out, Precedence::App);
+                out.push_str("@qelim");
+                for t in [p, f, q] {
+                    out.push(' ');
+                    self.print(out, Precedence::Atom, t);
+                }
+                close(out, Precedence::App);
+            }
             Term::Top => out.push_str("@Top"),
             Term::Tt => out.push_str("@tt"),
             Term::Bottom => out.push_str("@Bottom"),
@@ -263,6 +294,9 @@ pub fn shift(t: &Term, cutoff: Index, by: Index) -> Term {
         Term::Var(_) | Term::Global(..) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom | Term::Irrelevant => t.clone(),
         Term::Eq(l, ty, a, b) => Term::Eq(l.clone(), go(ty, cutoff), go(a, cutoff), go(b, cutoff)),
         Term::Cast(x, y, e, v) => Term::Cast(go(x, cutoff), go(y, cutoff), go(e, cutoff), go(v, cutoff)),
+        Term::Quot(a, r, l) => Term::Quot(go(a, cutoff), go(r, cutoff), l.clone()),
+        Term::QIn(a) => Term::QIn(go(a, cutoff)),
+        Term::QElim(p, f, l, q) => Term::QElim(go(p, cutoff), go(f, cutoff), l.clone(), go(q, cutoff)),
         Term::Pi(b) => Term::Pi(binding(b)),
         Term::Sigma(b) => Term::Sigma(binding(b)),
         Term::Lam(name, body) => Term::Lam(name.clone(), go(body, cutoff + 1)),
@@ -282,6 +316,9 @@ pub fn mentions_global(t: &Term, id: GlobalId) -> bool {
         Term::Var(_) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom | Term::Irrelevant => false,
         Term::Eq(_, ty, a, b) => [ty, a, b].iter().any(|t| mentions_global(t, id)),
         Term::Cast(x, y, e, v) => [x, y, e, v].iter().any(|t| mentions_global(t, id)),
+        Term::Quot(a, r, _) => mentions_global(a, id) || mentions_global(r, id),
+        Term::QIn(a) => mentions_global(a, id),
+        Term::QElim(p, f, _, q) => [p, f, q].iter().any(|t| mentions_global(t, id)),
         Term::Pi(b) | Term::Sigma(b) => mentions_global(&b.dom, id) || mentions_global(&b.cod, id),
         Term::Lam(_, e) | Term::Fst(e) | Term::Snd(e) => mentions_global(e, id),
         Term::App(a, b) | Term::Pair(a, b) | Term::Absurd(a, b) => mentions_global(a, id) || mentions_global(b, id),
@@ -296,6 +333,9 @@ pub fn mentions(t: &Term, ix: Index) -> bool {
         Term::Global(..) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom | Term::Irrelevant => false,
         Term::Eq(_, ty, a, b) => [ty, a, b].iter().any(|t| mentions(t, ix)),
         Term::Cast(x, y, e, v) => [x, y, e, v].iter().any(|t| mentions(t, ix)),
+        Term::Quot(a, r, _) => mentions(a, ix) || mentions(r, ix),
+        Term::QIn(a) => mentions(a, ix),
+        Term::QElim(p, f, _, q) => [p, f, q].iter().any(|t| mentions(t, ix)),
         Term::Pi(b) | Term::Sigma(b) => mentions(&b.dom, ix) || mentions(&b.cod, ix + 1),
         Term::Pair(a, b) | Term::Absurd(a, b) => mentions(a, ix) || mentions(b, ix),
         Term::Fst(e) | Term::Snd(e) => mentions(e, ix),

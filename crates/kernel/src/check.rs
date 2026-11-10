@@ -24,8 +24,8 @@ use utilities::{Code, Diagnostic, Result, Span};
 
 use crate::conversion::ConversionChecker;
 use crate::level::Level;
-use crate::nbe::{apply, eval, fst, global_type, quote, BindingVal, Closure, Env, Lvl, Neutral, Val};
-use crate::observational::eq;
+use crate::nbe::{apply, eval, fst, global_type, quote, BindingVal, Closure, Env, Lvl, Neutral, QuotVal, Val};
+use crate::observational::{cast, eq, native_pi, relation_type};
 use crate::inductive::{constructor_type, recursor_type};
 use crate::signature::{ConstructorDecl, DataDecl, DataId, Global, GlobalId, GlobalKind, Param, Signature};
 use crate::syntax::{error, parse_script, Item, ItemBody, LevelArg, Primitive, Raw, RawConstructor, RawKind, RawLevel};
@@ -267,6 +267,23 @@ impl Checker<'_> {
     }
 }
 
+/// `(x y: A) -> R x y -> @cast (P (@qin x)) (P (@qin y)) _ (f x) ~ f y`: the
+/// method `f` sends related representatives to equal results.
+fn respect_type(quot: Rc<QuotVal>, p: Val, f: Val, level: Level) -> Val {
+    let outer = quot.clone();
+    native_pi("x", outer.carrier.clone(), outer.level.clone(), Level::Zero, move |_, x| {
+        let (quot, p, f, level) = (quot.clone(), p.clone(), f.clone(), level.clone());
+        native_pi("y", quot.carrier.clone(), quot.level.clone(), Level::Zero, move |sig, y| {
+            let related = apply(sig, apply(sig, quot.relation.clone(), x.clone()), y.clone());
+            let px = apply(sig, p.clone(), Val::QIn(Rc::new(x.clone())));
+            let py = apply(sig, p.clone(), Val::QIn(Rc::new(y.clone())));
+            let moved = cast(sig, px, py.clone(), Val::Irrelevant, apply(sig, f.clone(), x.clone()));
+            let goal = eq(sig, level.clone(), py, moved, apply(sig, f.clone(), y));
+            native_pi("_", related, Level::Zero, Level::Zero, move |_, _| goal.clone())
+        })
+    })
+}
+
 /// `ty` is `D p0 ... pn` with each `pi` the parameter variable at level `i`.
 fn is_data_at_own_params(ty: &Val, data: DataId, params: usize) -> bool {
     let Val::Data(d) = ty else { return false };
@@ -362,6 +379,10 @@ impl Checker<'_> {
                 let cod = sigma.cod.apply(&self.sig, self.eval(ctx, &a));
                 let b = self.check(ctx, b, &cod)?;
                 Ok(Term::Pair(Rc::new(a), Rc::new(b)))
+            }
+            (RawKind::Prim(Primitive::QIn, args), Val::Quot(q)) => {
+                let a = self.check(ctx, &args[0], &q.carrier)?;
+                Ok(Term::QIn(Rc::new(a)))
             }
             (RawKind::Let(name, ann, val, body), _) => {
                 let (ty, val) = self.let_binding(ctx, ann.as_deref(), val)?;
@@ -571,7 +592,127 @@ impl Checker<'_> {
                 let term = Term::Cast(Rc::new(from), Rc::new(to), Rc::new(proof), Rc::new(value));
                 (term, to_val)
             }
+            Primitive::Quot => self.infer_quotient(ctx, args)?,
+            Primitive::QIn => {
+                return Err(self.error(
+                    Code::TypeAnnotationRequired,
+                    args[0].span,
+                    "cannot infer which quotient this class belongs to; annotate it as `(@qin a : Q)`",
+                ))
+            }
+            Primitive::QElim => self.infer_quotient_elim(ctx, args)?,
         })
+    }
+
+    fn infer_quotient(&self, ctx: &mut Context, args: &[Raw]) -> Result<(Term, Val)> {
+        let (carrier, level) = self.check_type(ctx, &args[0])?;
+        if !level.is_nonzero() {
+            return Err(self.error(Code::Unsupported, args[0].span, "only data can be quotiented, not a proposition"));
+        }
+        let a = self.eval(ctx, &carrier);
+        let relation = self.check(ctx, &args[1], &relation_type(a.clone(), level.clone()))?;
+        let r = self.eval(ctx, &relation);
+        let r0 = r.clone();
+        let rel = Rc::new(move |sig: &Signature, x: Val, y: Val| apply(sig, apply(sig, r0.clone(), x), y));
+
+        // (x: A) -> R x x
+        let (r1, l1) = (r.clone(), level.clone());
+        let reflexive = native_pi("x", a.clone(), l1, Level::Zero, move |sig, x| apply(sig, apply(sig, r1.clone(), x.clone()), x));
+        self.check(ctx, &args[2], &reflexive)?;
+
+        // (x y: A) -> R x y -> R y x
+        let (a2, l2, r2) = (a.clone(), level.clone(), r.clone());
+        let symmetric = native_pi("x", a.clone(), level.clone(), Level::Zero, move |_, x| {
+            let r2 = r2.clone();
+            native_pi("y", a2.clone(), l2.clone(), Level::Zero, move |sig, y| {
+                let forward = apply(sig, apply(sig, r2.clone(), x.clone()), y.clone());
+                let back = apply(sig, apply(sig, r2.clone(), y), x.clone());
+                native_pi("_", forward, Level::Zero, Level::Zero, move |_, _| back.clone())
+            })
+        });
+        self.check(ctx, &args[3], &symmetric)?;
+
+        // (x y z: A) -> R x y -> R y z -> R x z
+        let (a3, l3) = (a.clone(), level.clone());
+        let rel3 = rel.clone();
+        let transitive = native_pi("x", a.clone(), level.clone(), Level::Zero, move |_, x| {
+            let (a3, l3, rel3) = (a3.clone(), l3.clone(), rel3.clone());
+            native_pi("y", a3.clone(), l3.clone(), Level::Zero, move |_, y| {
+                let (x, rel3) = (x.clone(), rel3.clone());
+                native_pi("z", a3.clone(), l3.clone(), Level::Zero, move |sig, z| {
+                    let (xy, yz, xz) = (rel3(sig, x.clone(), y.clone()), rel3(sig, y.clone(), z.clone()), rel3(sig, x.clone(), z));
+                    native_pi("_", xy, Level::Zero, Level::Zero, move |_, _| {
+                        let xz = xz.clone();
+                        native_pi("_", yz.clone(), Level::Zero, Level::Zero, move |_, _| xz.clone())
+                    })
+                })
+            })
+        });
+        self.check(ctx, &args[4], &transitive)?;
+
+        let term = Term::Quot(Rc::new(carrier), Rc::new(relation), level.clone());
+        Ok((term, Val::Sort(level)))
+    }
+
+    fn infer_quotient_elim(&self, ctx: &mut Context, args: &[Raw]) -> Result<(Term, Val)> {
+        let (q, q_ty) = self.infer(ctx, &args[3])?;
+        let Val::Quot(quot) = &q_ty else {
+            return Err(self.error(
+                Code::TypeMismatch,
+                args[3].span,
+                format!("eliminated a value of type `{}`, which is not a quotient", self.show(ctx, &q_ty)),
+            ));
+        };
+        let (motive, level) = self.infer_motive(ctx, &args[0], &q_ty, &quot.level)?;
+        let p = self.eval(ctx, &motive);
+
+        // (x: A) -> P (@qin x)
+        let p1 = p.clone();
+        let method_ty = native_pi("x", quot.carrier.clone(), quot.level.clone(), level.clone(), move |sig, x| {
+            apply(sig, p1.clone(), Val::QIn(Rc::new(x)))
+        });
+        let method = self.check(ctx, &args[1], &method_ty)?;
+        let f = self.eval(ctx, &method);
+
+        // (x y: A) -> R x y -> @cast (P (@qin x)) (P (@qin y)) _ (f x) ~ f y
+        let respects = respect_type(quot.clone(), p.clone(), f.clone(), level.clone());
+        self.check(ctx, &args[2], &respects)?;
+
+        let ty = apply(&self.sig, p, self.eval(ctx, &q));
+        Ok((Term::QElim(Rc::new(motive), Rc::new(method), level, Rc::new(q)), ty))
+    }
+
+    /// A motive `P : dom -> @Type m`, with its sort `m`. A lambda is checked
+    /// against the domain and its body's sort read off; anything else must
+    /// have a Pi type over `dom`.
+    fn infer_motive(&self, ctx: &mut Context, raw: &Raw, dom: &Val, dom_level: &Level) -> Result<(Term, Level)> {
+        if let RawKind::Lam(name, ann, body) = &raw.kind {
+            if let Some(ann) = ann {
+                let (t, _) = self.check_type(ctx, ann)?;
+                let given = self.eval(ctx, &t);
+                if !self.conversion(ctx).conv_type(&given, dom, false) {
+                    return Err(self.mismatch(ctx, ann.span, dom, &given));
+                }
+            }
+            let (body, level) = self.under(ctx, name, dom.clone(), |c, ctx| c.check_type(ctx, body))?;
+            return Ok((Term::Lam(name.clone(), Rc::new(body)), level));
+        }
+        let (t, ty) = self.infer(ctx, raw)?;
+        if let Val::Pi(pi) = &ty {
+            let cod = pi.cod.apply(&self.sig, Val::var(ctx.depth()));
+            if let Val::Sort(level) = cod {
+                if self.conversion(ctx).conv_type(&pi.dom, dom, false) {
+                    return Ok((t, level));
+                }
+            }
+        }
+        let expected = native_pi("_", dom.clone(), dom_level.clone(), Level::constant(1), |_, _| Val::Sort(Level::Zero));
+        Err(self.error(
+            Code::TypeMismatch,
+            raw.span,
+            format!("expected a motive over `{}`, found `{}`", self.show(ctx, dom), self.show(ctx, &ty)),
+        )
+        .with_note(format!("a motive has a type like `{}`", self.show(ctx, &expected))))
     }
 
     /// The type and value of `let x: ann = val`.

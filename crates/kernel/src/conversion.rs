@@ -20,9 +20,12 @@
 //!
 //! Entry points: [`ConversionChecker::conv`], [`ConversionChecker::subtype`].
 
+use std::rc::Rc;
+
 use crate::inductive::{data_level, field_type, param_type};
 use crate::level::Level;
 use crate::nbe::{apply, fst, global_type, snd, Lvl, Neutral, Val};
+use crate::observational::{native_pi, relation_type};
 use crate::signature::Signature;
 
 pub struct ConversionChecker<'a> {
@@ -67,6 +70,7 @@ impl ConversionChecker<'_> {
             Neutral::Recursor(rec, major) => apply(self.sig, rec.motive(self.sig).clone(), Val::Neutral(major.clone())),
             Neutral::Eq { .. } => Val::Sort(Level::Zero),
             Neutral::Cast { to, .. } => to.clone(),
+            Neutral::QElim { motive, quotient, .. } => apply(self.sig, motive.clone(), Val::Neutral(quotient.clone())),
         }
     }
 
@@ -78,11 +82,12 @@ impl ConversionChecker<'_> {
             Val::Sigma(p) => Some(Level::max(&p.dom_level, &p.cod_level)),
             Val::Top | Val::Bottom => Some(Level::Zero),
             Val::Data(d) => Some(data_level(self.sig, d)),
+            Val::Quot(q) => Some(q.level.clone()),
             Val::Neutral(n) => match self.infer_neutral(n) {
                 Val::Sort(l) => Some(l),
                 _ => None,
             },
-            Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) | Val::Irrelevant => None,
+            Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) | Val::Irrelevant | Val::QIn(_) => None,
         }
     }
 
@@ -117,8 +122,14 @@ impl ConversionChecker<'_> {
             }
             Val::Sort(_) => self.conv_type(a, b, false),
             Val::Neutral(_) | Val::Data(_) => self.conv_by_structure(a, b),
+            Val::Quot(q) => match (a, b) {
+                (Val::QIn(x), Val::QIn(y)) => self.conv(&q.carrier, x, y),
+                _ => self.conv_by_structure(a, b),
+            },
             Val::Top | Val::Bottom => unreachable!("propositions were handled above"),
-            Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) | Val::Irrelevant => unreachable!("not a type"),
+            Val::Lam(..) | Val::Pair(_) | Val::Tt | Val::Constructor(_) | Val::Irrelevant | Val::QIn(_) => {
+                unreachable!("not a type")
+            }
         }
     }
 
@@ -184,6 +195,26 @@ impl ConversionChecker<'_> {
                 let same = l.equal(m) && self.conv_type(t, u, false) && self.conv(t, a1, a2) && self.conv(t, b1, b2);
                 same.then_some(Val::Sort(Level::Zero))
             }
+            (
+                Neutral::QElim { motive: p1, method: f1, level: l1, quotient: q1 },
+                Neutral::QElim { motive: p2, method: f2, level: l2, quotient: q2 },
+            ) => {
+                let Val::Quot(quot) = self.conv_neutral(q1, q2)? else {
+                    unreachable!("eliminated a neutral that is not a class")
+                };
+                if !l1.equal(l2) {
+                    return None;
+                }
+                let target = Val::Neutral(q1.clone());
+                let level = l1.clone();
+                let motive_ty = native_pi("_", Val::Quot(quot.clone()), quot.level.clone(), level.succ(), move |_, _| Val::Sort(level.clone()));
+                let (motive, cod_level) = (p1.clone(), l1.clone());
+                let method_ty = native_pi("x", quot.carrier.clone(), quot.level.clone(), cod_level, move |sig, x| {
+                    apply(sig, motive.clone(), Val::QIn(Rc::new(x)))
+                });
+                let same = self.conv(&motive_ty, p1, p2) && self.conv(&method_ty, f1, f2);
+                same.then(|| apply(self.sig, p1.clone(), target))
+            }
             // The proofs are irrelevant.
             (Neutral::Cast { from: f1, to: t1, value: v1, .. }, Neutral::Cast { from: f2, to: t2, value: v2, .. }) => {
                 let same = self.conv_type(f1, f2, false) && self.conv_type(t1, t2, false) && self.conv(f1, v1, v2);
@@ -211,6 +242,10 @@ impl ConversionChecker<'_> {
                     })
             }
             (Val::Top, Val::Top) | (Val::Bottom, Val::Bottom) => true,
+            (Val::Quot(x), Val::Quot(y)) => {
+                let relation = relation_type(x.carrier.clone(), x.level.clone());
+                self.conv_type(&x.carrier, &y.carrier, false) && self.conv(&relation, &x.relation, &y.relation)
+            }
             (Val::Data(x), Val::Data(y)) => {
                 x.data == y.data
                     && levels_equal(&x.levels, &y.levels)

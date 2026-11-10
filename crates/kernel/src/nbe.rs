@@ -48,6 +48,15 @@ pub enum Val {
     Constructor(Rc<ConstructorVal>),
     /// Any proof. See Note [Proofs evaluate to an irrelevant witness].
     Irrelevant,
+    Quot(Rc<QuotVal>),
+    QIn(Rc<Val>),
+}
+
+/// A quotient type: a carrier in `@Type level` and an equivalence relation.
+pub struct QuotVal {
+    pub carrier: Val,
+    pub relation: Val,
+    pub level: Level,
 }
 
 /// A Pi or Sigma type's value, with the sorts of both sides.
@@ -74,6 +83,8 @@ pub enum Neutral {
     Eq { level: Level, ty: Val, a: Val, b: Val },
     /// A cast between types whose heads differ or are neutral.
     Cast { from: Val, to: Val, proof: Val, value: Val },
+    /// A quotient eliminator stuck on its argument.
+    QElim { motive: Val, method: Val, level: Level, quotient: Rc<Neutral> },
 }
 
 /// A binder's body, waiting for the value of its variable.
@@ -184,6 +195,16 @@ pub fn eval(sig: &Signature, env: &Env, t: &Term) -> Val {
             cast(sig, from, to, eval(sig, env, proof), eval(sig, env, value))
         }
         Term::Irrelevant => Val::Irrelevant,
+        Term::Quot(a, r, level) => Val::Quot(Rc::new(QuotVal {
+            carrier: eval(sig, env, a),
+            relation: eval(sig, env, r),
+            level: env.level(level),
+        })),
+        Term::QIn(a) => Val::QIn(Rc::new(eval(sig, env, a))),
+        Term::QElim(p, f, level, q) => {
+            let (motive, method) = (eval(sig, env, p), eval(sig, env, f));
+            qelim(sig, motive, method, env.level(level), eval(sig, env, q))
+        }
     }
 }
 
@@ -224,6 +245,15 @@ pub fn apply(sig: &Signature, f: Val, a: Val) -> Val {
     }
 }
 
+/// `@qelim motive method q`: the method on a class's representative.
+pub fn qelim(sig: &Signature, motive: Val, method: Val, level: Level, q: Val) -> Val {
+    match q {
+        Val::QIn(a) => apply(sig, method, (*a).clone()),
+        Val::Neutral(n) => Val::neutral(Neutral::QElim { motive, method, level, quotient: n }),
+        _ => unreachable!("eliminated a non-quotient: the checker let an ill-typed term through"),
+    }
+}
+
 pub fn fst(p: Val) -> Val {
     match p {
         Val::Pair(pair) => pair.0.clone(),
@@ -257,6 +287,8 @@ pub fn quote(sig: &Signature, depth: Lvl, v: &Val) -> Term {
         Val::Tt => Term::Tt,
         Val::Bottom => Term::Bottom,
         Val::Irrelevant => Term::Irrelevant,
+        Val::Quot(q) => Term::Quot(Rc::new(quote(sig, depth, &q.carrier)), Rc::new(quote(sig, depth, &q.relation)), q.level.clone()),
+        Val::QIn(a) => Term::QIn(Rc::new(quote(sig, depth, a))),
         Val::Data(d) => {
             let head = Term::Global(sig.data(d.data).global, d.levels.clone());
             quote_spine(sig, depth, head, &d.params)
@@ -311,6 +343,10 @@ fn quote_neutral(sig: &Signature, depth: Lvl, n: &Neutral) -> Term {
         Neutral::Cast { from, to, proof, value } => {
             let q = |v| Rc::new(quote(sig, depth, v));
             Term::Cast(q(from), q(to), q(proof), q(value))
+        }
+        Neutral::QElim { motive, method, level, quotient } => {
+            let q = |v| Rc::new(quote(sig, depth, v));
+            Term::QElim(q(motive), q(method), level.clone(), Rc::new(quote_neutral(sig, depth, quotient)))
         }
     }
 }
