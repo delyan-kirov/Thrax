@@ -887,7 +887,7 @@ fn literal_hook_does_not_hijack_default() {
 #[test]
 fn list_literal_defaults_to_vec_with_patterns() {
     // `[...]` builds the default sequence, a `@Vec` (not a linked list). Its
-    // `@ISeqView` instance (in CORE) drives `h :: t` / `[a, b, ..rest]` / `[]`
+    // `@ISeqView` instance (in CORE) drives `h :: t` / `[a, b] ++ rest` / `[]`
     // patterns, and `@vec_*` primitives index it directly.
     let src = "$ @mod M\n\
         $ xs : @Vec @Int = [10, 20, 30]\n\

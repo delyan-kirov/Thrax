@@ -47,7 +47,7 @@ use std::fmt::Display;
 use std::rc::Rc;
 
 use crate::parser::data::{
-    Ast, Binding, EffectRow, EntrySplice, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program,
+    Ast, Binding, EffectRow, EntrySplice, Expr, FieldInit, FieldPat, Item, LamParam, Pattern, Payload, Program,
     RecField, RowEntry, SliceSlot, Ty, UseField,
 };
 use utilities::{Aol, Slice, StrId};
@@ -1541,16 +1541,12 @@ fn free_globals(
         }
         Expr::Variant { fields, .. } => free_globals_field_inits(ast, ast.slice(*fields), globals, bound, out),
 
-        Expr::Let { bindings, body } => {
+        Expr::Let { binding, body } => {
             let mark = bound.len();
             let mut metas = Vec::new();
-            for b in ast.slice(*bindings).iter() {
-                collect_pattern_binders(ast, b.pat, bound, &mut metas);
-            }
+            collect_pattern_binders(ast, binding.pat, bound, &mut metas);
             free_globals_meta_patterns(ast, metas, globals, out);
-            for b in ast.slice(*bindings).iter() {
-                free_globals(ast, b.value, globals, bound, out);
-            }
+            free_globals(ast, binding.value, globals, bound, out);
             free_globals(ast, *body, globals, bound, out);
             bound.truncate(mark);
         }

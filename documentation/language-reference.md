@@ -637,8 +637,7 @@ $ unwrap : Wrap -> @Int = \
     | Wrap.W.{ Opt.Some.{ n } } => n
 ```
 
-An empty match, on a value of an uninhabited type, is `x |> @absurd`. `is` was
-removed; writing it is an error whose fix-it moves the scrutinee in front.
+An empty match, on a value of an uninhabited type, is `x |> @absurd`.
 
 ## 5.2 Literal patterns
 Match integers (any width), Real, and Str by equality (refutable). A numeric
@@ -785,8 +784,10 @@ pattern must match every value of its type. `_`, variables, and struct, tuple,
 and record patterns built from them always do. A pattern that can fail, such as
 a literal or a variant of a union with several, is a compile error
 (`NON_EXHAUSTIVE_MATCH`) naming a value it misses; match it instead,
-`e |> \ | pat => ... | _ => ...`. There is no `let ... else`: `let` is a
-definition, not sugar for applying a lambda.
+`e |> \ | pat => ... | _ => ...`. For a lambda's one unannotated parameter
+the error carries that rewrite as a fix: `\P => B` becomes
+`\ | P => B | _ => ???`. There is no `let ... else`: `let` is a definition, not
+sugar for applying a lambda.
 
 ```ares
 $ Point  : @struct = x: @Int, y: @Int,

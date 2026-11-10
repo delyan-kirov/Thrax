@@ -243,7 +243,6 @@ $ Token : @union =
     Let: @Str,
     In: @Str,
     If: @Str,
-    Is: @Str,
     Else: @Str,
     Do: @Str,
     Ctl: @Str,

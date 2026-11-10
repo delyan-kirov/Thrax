@@ -48,7 +48,6 @@ pub struct Ast {
     variant_decls: Store<VariantDecl>,
     clauses: Store<Clause>,
     arms: Store<Arm>,
-    bindings: Store<Binding>,
     lam_params: Store<LamParam>,
     row_entries: Store<RowEntry>,
     items: Store<Item>,
@@ -98,7 +97,6 @@ sliced! {
     VariantDecl => variant_decls,
     Clause => clauses,
     Arm => arms,
-    Binding => bindings,
     LamParam => lam_params,
     RowEntry => row_entries,
     Item => items,
@@ -640,9 +638,9 @@ pub enum Expr {
         tag: StrId,
         fields: Slice<FieldInit>,
     },
-    /// `let b1, b2 in body`.
+    /// `let p = e in body`.
     Let {
-        bindings: Slice<Binding>,
+        binding: Binding,
         body: Aol<Expr>,
     },
     /// `if cond then a else b`.
@@ -716,8 +714,7 @@ pub struct UseField {
     pub span: Span,
 }
 
-/// One binding of a `let`. A `let` holds several only when the parser recovers
-/// from the removed comma chain.
+/// The binding of a `let`: `p: T = value`.
 #[derive(Clone, Copy, Debug)]
 pub struct Binding {
     pub pat: Aol<Pattern>,

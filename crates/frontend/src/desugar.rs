@@ -852,17 +852,13 @@ impl<'a> Desugarer<'a> {
                 term
             }
 
-            Expr::Let { bindings, body } => {
-                let bindings: Vec<Binding> = self.ast.slice(*bindings).to_vec();
-                let body = *body;
-                for sig in bindings.iter().filter_map(|b| b.sig) {
+            Expr::Let { binding, body } => {
+                let (binding, body) = (*binding, *body);
+                if let Some(sig) = binding.sig {
                     self.collect_meta_types(sig);
                 }
-                let mut term = self.expr(body);
-                for b in bindings.into_iter().rev() {
-                    term = self.binding(&b, term);
-                }
-                term
+                let term = self.expr(body);
+                self.binding(&binding, term)
             }
 
             Expr::Handle { body, handler } => {

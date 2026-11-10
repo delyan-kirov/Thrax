@@ -1,4 +1,0 @@
-$ @mod PARSE_LAMBDA_EQ
-
-# A lambda's body follows `=>`; `=` only names something.
-$ f : @Int -> @Int = \x = x  #~ error[UNEXPECTED_TOKEN]: expected '=>' after the lambda parameters, found '='

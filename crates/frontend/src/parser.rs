@@ -330,8 +330,7 @@ impl<'a> Parser<'a> {
         for (k, &hole) in holes.iter().enumerate().rev() {
             let name = self.intern(&format!("#h{k}"));
             let pat = self.pat(Pattern::Var(name));
-            let bindings = self.ast.make_slice(vec![Binding { pat, sig: None, value: hole }]);
-            out = self.expr(Expr::Let { bindings, body: out });
+            out = self.expr(Expr::Let { binding: Binding { pat, sig: None, value: hole }, body: out });
             self.ast.expr_spans.insert(out, span);
         }
         out
@@ -1719,7 +1718,6 @@ impl<'a> Parser<'a> {
             Kind::LParen => self.parse_group(),
             Kind::Let => self.parse_let(),
             Kind::If => self.parse_if(),
-            Kind::Is => self.parse_match(),
             Kind::Do => self.parse_handle(),
             Kind::Lambda => self.parse_lambda(),
             Kind::LBrack => self.parse_list(),
@@ -1991,12 +1989,6 @@ impl<'a> Parser<'a> {
 
     fn parse_group(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '('
-        // `(@ctx e)` was the explicit context; it is `@use {.d = e}` now.
-        if self.at_ctx()? {
-            return Err(self
-                .ctx_reserved()?
-                .with_help("an explicit instance is a `@use` argument naming the field: `f @use {.d = e} x`"));
-        }
         let e = self.parse_expr(0)?;
         // A trailing `: T` ascribes the group's type, e.g. `([] : List Int)`. The
         // colon is otherwise free inside a group, so this is unambiguous.
@@ -2258,6 +2250,7 @@ impl<'a> Parser<'a> {
                 Ok(self.match_lambda(arms, 1))
             }
             "use" => self.parse_use_arg(),
+            "ctx" => Err(self.ctx_reserved()?),
             "Array" => self.parse_array(),
             "extern" => self.parse_extern(),
             // Any other lowercase `@name` is a reference to a compiler intrinsic
@@ -2358,88 +2351,31 @@ impl<'a> Parser<'a> {
 
     // -- control forms ------------------------------------------------------
 
-    /// `let` and `if` take one binding or arm; a comma once chained several. Report it, recovered, with the
-    /// nested spelling as the fix, so every one is reported (and `ares fix`
-    /// rewrites them all). Returns whether another entry follows.
-    fn chained_comma(&mut self, form: &str, stop: Kind, nested: &str) -> Result<bool> {
-        let t = self.peek()?;
-        if !matches!(t.kind, Kind::Comma) {
-            return Ok(false);
-        }
-        self.bump()?;
-        let more = self.peek_kind()? != stop;
-        let d = Diagnostic::error(Code::UnexpectedToken, t.span, t.line, format!("`{form}` takes no comma-separated list"));
-        let d = if more {
-            d.with_note(format!("chaining with `,` was removed; nest another `{form}`"))
-                .with_fix(format!("write `{}`", nested.trim()), vec![Edit::new(t.span, nested)], Applicability::MachineApplicable)
-        } else {
-            d.with_fix("remove the comma", vec![Edit::new(t.span, "")], Applicability::MachineApplicable)
-        };
-        self.errors.push(d);
-        Ok(more)
-    }
-
     fn parse_let(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'let'
-        let mut bindings = Vec::new();
-        loop {
-            let pat = self.parse_pattern()?;
-            // Any pattern may carry the annotation, as a lambda parameter does: the
-            // type describes the whole binding, not one of its binders.
-            let sig = if self.eat(|k| matches!(k, Kind::Colon))? {
-                Some(self.parse_type()?)
-            } else {
-                None
-            };
-            expect!(self, Kind::Eq, "expected '=' in the 'let' binding");
-            let value = self.parse_expr(0)?;
-            bindings.push(Binding { pat, sig, value });
-            if !self.chained_comma("let", Kind::In, " in let")? {
-                break;
-            }
-        }
+        let pat = self.parse_pattern()?;
+        // Any pattern may carry the annotation, as a lambda parameter does: the
+        // type describes the whole binding, not one of its binders.
+        let sig = if self.eat(|k| matches!(k, Kind::Colon))? {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        expect!(self, Kind::Eq, "expected '=' in the 'let' binding");
+        let value = self.parse_expr(0)?;
         expect!(self, Kind::In, "expected 'in' after the 'let' binding");
         let body = self.parse_expr(0)?;
-        let bindings = self.ast.make_slice(bindings);
-        Ok(self.expr(Expr::Let { bindings, body }))
+        Ok(self.expr(Expr::Let { binding: Binding { pat, sig, value }, body }))
     }
 
     fn parse_if(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'if'
-        let mut arms = Vec::new();
-        loop {
-            let start = self.here()?;
-            let cond = self.parse_expr(0)?;
-            expect!(self, Kind::FatArrow, "expected '=>' after the 'if' condition");
-            let then = self.parse_expr(0)?;
-            arms.push((start, cond, then));
-            if !self.chained_comma("if", Kind::Else, " else if")? {
-                break;
-            }
-        }
+        let cond = self.parse_expr(0)?;
+        expect!(self, Kind::FatArrow, "expected '=>' after the 'if' condition");
+        let then = self.parse_expr(0)?;
         expect!(self, Kind::Else, "expected 'else' in the 'if' expression");
-        let mut node = self.parse_expr(0)?;
-        for (start, cond, then) in arms.into_iter().rev() {
-            node = self.expr(Expr::If { cond, then, alt: node });
-            node = self.stamp(start, node);
-        }
-        Ok(node)
-    }
-
-    /// `is s | ...`, removed: a match is `s |> \ | ...`. Parse the scrutinee so
-    /// the fix-it can move it in front of the arms.
-    fn parse_match(&mut self) -> Result<Aol<Expr>> {
-        let is = self.bump()?; // 'is'
-        let start = self.here()?;
-        self.parse_expr(0)?;
-        let end = self.last_end;
-        Err(Diagnostic::error(Code::UnexpectedToken, is.span, is.line, "`is` was removed")
-            .with_note("a match is a multi-arm lambda applied to the scrutinee")
-            .with_fix(
-                "write `s |> \\ | ...`",
-                vec![Edit::new(Span::new(is.span.start, start), ""), Edit::new(Span::at(end), " |> \\")],
-                Applicability::MaybeIncorrect,
-            ))
+        let alt = self.parse_expr(0)?;
+        Ok(self.expr(Expr::If { cond, then, alt }))
     }
 
     /// One `| p1 | p2 if guard => body` arm, shared by a multi-arm lambda and a
@@ -2527,50 +2463,10 @@ impl<'a> Parser<'a> {
         if self.at_op("|")? {
             return self.parse_arms_lambda();
         }
-        let mut params = Vec::new();
-        loop {
-            let start = self.here()?;
+        let mut params = vec![self.parse_lambda_param()?];
+        while !self.eat(|k| matches!(k, Kind::FatArrow))? {
             params.push(self.parse_lambda_param()?);
-            match self.peek_kind()? {
-                Kind::FatArrow => break,
-                Kind::Eq => {
-                    let t = self.peek()?;
-                    return Err(self
-                        .unexpected(&t, "expected '=>' after the lambda parameters")
-                        .with_fix(
-                            "a lambda's body follows `=>`",
-                            vec![Edit::new(t.span, "=>")],
-                            Applicability::MachineApplicable,
-                        ));
-                }
-                Kind::Colon => {
-                    let t = self.peek()?;
-                    self.bump()?;
-                    self.parse_type()?;
-                    let end = self.last_end;
-                    return Err(Diagnostic::error(
-                        Code::UnexpectedToken,
-                        Span::new(start, end),
-                        t.line,
-                        "an annotated lambda parameter must be parenthesized",
-                    )
-                    .with_fix(
-                        "parenthesize it, so the type ends at `)`",
-                        vec![Edit::new(Span::at(start), "("), Edit::new(Span::at(end), ")")],
-                        Applicability::MachineApplicable,
-                    ));
-                }
-                Kind::Comma => {
-                    let t = self.peek()?;
-                    return Err(self.unexpected(
-                        &t,
-                        "lambda parameters are juxtaposed, as in `\\a b => ...`",
-                    ));
-                }
-                _ => {}
-            }
         }
-        self.bump()?; // '=>'
         let body = self.parse_expr(0)?;
         let params = self.ast.make_slice(params);
         Ok(self.expr(Expr::Lambda { params, body }))
@@ -2770,17 +2666,6 @@ impl<'a> Parser<'a> {
                 atom
             };
             return self.concat_pattern(left, right, &op);
-        }
-        if matches!(self.ast.pats.lookup(atom), Pattern::Str(_))
-            && matches!(self.peek_kind()?, Kind::Dot)
-            && matches!(self.peek_kind_at(1)?, Kind::Dot)
-        {
-            let t = self.peek()?;
-            return Err(self.unexpected(&t, "expected the end of the pattern").with_help(
-                "a string prefix pattern is written `\"abc\" ++ rest`, or `\"abc\" ++ _` \
-                 to ignore the rest"
-                    .to_string(),
-            ));
         }
         // `lo ... hi`: an inclusive numeric range, or `lo ...`: an open range (no
         // upper bound). Both bounds are numeric literals.
@@ -3060,15 +2945,6 @@ impl<'a> Parser<'a> {
         self.bump()?; // '['
         let mut elems = Vec::new();
         while !matches!(self.peek_kind()?, Kind::RBrack) {
-            if matches!(self.peek_kind()?, Kind::Dot) && matches!(self.peek_kind_at(1)?, Kind::Dot)
-            {
-                let t = self.peek()?;
-                return Err(self.unexpected(&t, "expected an element pattern").with_help(
-                    "a list pattern lists exactly its elements; match the rest with `++`, \
-                     as in `[a, b] ++ rest`"
-                        .to_string(),
-                ));
-            }
             elems.push(self.parse_pattern()?);
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;

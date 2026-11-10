@@ -1,4 +1,0 @@
-$ @mod PARSE_IS_REMOVED
-
-# A match is a multi-arm lambda applied to the scrutinee: `s |> \ | ...`.
-$ f : @Int -> @Int = \n => is n | 0 => 1 | _ => 2  #~ error[UNEXPECTED_TOKEN]: `is` was removed

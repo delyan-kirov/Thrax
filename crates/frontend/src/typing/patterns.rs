@@ -498,8 +498,11 @@ impl<'a> Checker<'a> {
     }
 
     /// Reject a typed `let` or lambda-parameter pattern that some value of its
-    /// type fails to match: there is no next arm to fall through to.
-    pub(super) fn check_irrefutable(&mut self, pat: Aol<Pattern>, site: &str) -> Result<()> {
+    /// type fails to match: there is no next arm to fall through to. `arm` is
+    /// the lambda's body when `pat` is its one unannotated parameter: then the
+    /// lambda becomes multi-arm by insertion alone, `\P => B` to
+    /// `\ | P => B | _ => ???`, and the error carries that fix.
+    pub(super) fn check_irrefutable(&mut self, pat: Aol<Pattern>, site: &str, arm: Option<Aol<Expr>>) -> Result<()> {
         if self.holds_meta_e(pat) {
             return Ok(());
         }
@@ -508,11 +511,19 @@ impl<'a> Checker<'a> {
             return Ok(());
         };
         let span = self.ast.pat_span(pat).unwrap_or(Span::at(0));
-        Err(diag!(
+        let d = diag!(
             Code::NonExhaustiveMatch, span, 0,
-            "refutable pattern in {site}: it does not match `{}`", usefulness::show(&missing);
-            help: "match it instead, which can handle every case: `e |> \\ | pat => ... | _ => ...`"
-        ))
+            "refutable pattern in {site}: it does not match `{}`", usefulness::show(&missing)
+        );
+        let body = arm.and_then(|b| self.ast.expr_span(b));
+        Err(match (self.ast.pat_span(pat), body) {
+            (Some(p), Some(b)) => d.with_fix(
+                "match it instead, which can handle every case",
+                vec![Edit::new(Span::at(p.start), " | "), Edit::new(Span::at(b.end), " | _ => ???")],
+                Applicability::HasPlaceholders,
+            ),
+            _ => d.with_help("match it instead, which can handle every case: `e |> \\ | pat => ... | _ => ...`"),
+        })
     }
 
     /// The value range of an integer pattern's type, or `None` when it is not a
