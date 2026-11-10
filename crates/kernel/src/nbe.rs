@@ -35,12 +35,17 @@ pub type Lvl = u32;
 pub enum Val {
     Neutral(Rc<Neutral>),
     Sort(Level),
-    Pi(Rc<PiVal>),
+    Pi(Rc<BindingVal>),
     Lam(Name, Closure),
+    Sigma(Rc<BindingVal>),
+    Pair(Rc<(Val, Val)>),
+    Top,
+    Tt,
+    Bottom,
 }
 
-/// A Pi type's value: `(name: dom) -> cod`, with the sorts of both sides.
-pub struct PiVal {
+/// A Pi or Sigma type's value, with the sorts of both sides.
+pub struct BindingVal {
     pub name: Name,
     pub dom: Val,
     pub cod: Closure,
@@ -53,6 +58,10 @@ pub enum Neutral {
     Var(Lvl),
     Axiom(GlobalId, Rc<[Level]>),
     App(Rc<Neutral>, Val),
+    Fst(Rc<Neutral>),
+    Snd(Rc<Neutral>),
+    /// `@absurd ty proof`, stuck because no proof of `@Bottom` is canonical.
+    Absurd(Val, Val),
 }
 
 /// A binder's body, waiting for the value of its variable.
@@ -149,11 +158,19 @@ pub fn eval(sig: &Signature, env: &Env, t: &Term) -> Val {
         Term::Lam(name, body) => Val::Lam(name.clone(), Closure::Term(env.clone(), body.clone())),
         Term::App(f, a) => apply(sig, eval(sig, env, f), eval(sig, env, a)),
         Term::Let(_, _, val, body) => eval(sig, &env.extend(eval(sig, env, val)), body),
+        Term::Sigma(b) => Val::Sigma(Rc::new(eval_binding(sig, env, b))),
+        Term::Pair(a, b) => Val::Pair(Rc::new((eval(sig, env, a), eval(sig, env, b)))),
+        Term::Fst(e) => fst(eval(sig, env, e)),
+        Term::Snd(e) => snd(eval(sig, env, e)),
+        Term::Top => Val::Top,
+        Term::Tt => Val::Tt,
+        Term::Bottom => Val::Bottom,
+        Term::Absurd(ty, e) => Val::neutral(Neutral::Absurd(eval(sig, env, ty), eval(sig, env, e))),
     }
 }
 
-fn eval_binding(sig: &Signature, env: &Env, b: &Binding) -> PiVal {
-    PiVal {
+fn eval_binding(sig: &Signature, env: &Env, b: &Binding) -> BindingVal {
+    BindingVal {
         name: b.name.clone(),
         dom: eval(sig, env, &b.dom),
         cod: Closure::Term(env.clone(), b.cod.clone()),
@@ -181,7 +198,23 @@ pub fn apply(sig: &Signature, f: Val, a: Val) -> Val {
     match f {
         Val::Lam(_, body) => body.apply(sig, a),
         Val::Neutral(n) => Val::neutral(Neutral::App(n, a)),
-        Val::Sort(_) | Val::Pi(_) => unreachable!("applied a type: the checker let an ill-typed term through"),
+        _ => unreachable!("applied a non-function: the checker let an ill-typed term through"),
+    }
+}
+
+pub fn fst(p: Val) -> Val {
+    match p {
+        Val::Pair(pair) => pair.0.clone(),
+        Val::Neutral(n) => Val::neutral(Neutral::Fst(n)),
+        _ => unreachable!("projected from a non-pair: the checker let an ill-typed term through"),
+    }
+}
+
+pub fn snd(p: Val) -> Val {
+    match p {
+        Val::Pair(pair) => pair.1.clone(),
+        Val::Neutral(n) => Val::neutral(Neutral::Snd(n)),
+        _ => unreachable!("projected from a non-pair: the checker let an ill-typed term through"),
     }
 }
 
@@ -192,14 +225,23 @@ pub fn quote(sig: &Signature, depth: Lvl, v: &Val) -> Term {
     match v {
         Val::Neutral(n) => quote_neutral(sig, depth, n),
         Val::Sort(l) => Term::Sort(l.clone()),
-        Val::Pi(p) => Term::Pi(Rc::new(Binding {
-            name: p.name.clone(),
-            dom: Rc::new(quote(sig, depth, &p.dom)),
-            cod: Rc::new(quote_closure(sig, depth, &p.cod)),
-            dom_level: p.dom_level.clone(),
-            cod_level: p.cod_level.clone(),
-        })),
+        Val::Pi(p) => Term::Pi(Rc::new(quote_binding(sig, depth, p))),
         Val::Lam(name, body) => Term::Lam(name.clone(), Rc::new(quote_closure(sig, depth, body))),
+        Val::Sigma(p) => Term::Sigma(Rc::new(quote_binding(sig, depth, p))),
+        Val::Pair(pair) => Term::Pair(Rc::new(quote(sig, depth, &pair.0)), Rc::new(quote(sig, depth, &pair.1))),
+        Val::Top => Term::Top,
+        Val::Tt => Term::Tt,
+        Val::Bottom => Term::Bottom,
+    }
+}
+
+fn quote_binding(sig: &Signature, depth: Lvl, p: &BindingVal) -> Binding {
+    Binding {
+        name: p.name.clone(),
+        dom: Rc::new(quote(sig, depth, &p.dom)),
+        cod: Rc::new(quote_closure(sig, depth, &p.cod)),
+        dom_level: p.dom_level.clone(),
+        cod_level: p.cod_level.clone(),
     }
 }
 
@@ -216,5 +258,8 @@ fn quote_neutral(sig: &Signature, depth: Lvl, n: &Neutral) -> Term {
         }
         Neutral::Axiom(id, levels) => Term::Global(*id, levels.clone()),
         Neutral::App(f, a) => Term::app(quote_neutral(sig, depth, f), quote(sig, depth, a)),
+        Neutral::Fst(p) => Term::Fst(Rc::new(quote_neutral(sig, depth, p))),
+        Neutral::Snd(p) => Term::Snd(Rc::new(quote_neutral(sig, depth, p))),
+        Neutral::Absurd(ty, e) => Term::Absurd(Rc::new(quote(sig, depth, ty)), Rc::new(quote(sig, depth, e))),
     }
 }

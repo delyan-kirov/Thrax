@@ -45,6 +45,17 @@ pub enum Term {
     App(Rc<Term>, Rc<Term>),
     /// `let name: ty = val in body`, kept so `name` stays transparent.
     Let(Name, Rc<Term>, Rc<Term>, Rc<Term>),
+    /// `(name: dom) * cod`, the dependent pair type.
+    Sigma(Rc<Binding>),
+    Pair(Rc<Term>, Rc<Term>),
+    Fst(Rc<Term>),
+    Snd(Rc<Term>),
+    /// The true proposition and its proof.
+    Top,
+    Tt,
+    /// The false proposition, and its elimination into any type.
+    Bottom,
+    Absurd(Rc<Term>, Rc<Term>),
 }
 
 impl Term {
@@ -68,6 +79,7 @@ pub struct TermDisplay<'a> {
 enum Precedence {
     Top,
     Arrow,
+    Product,
     App,
     Atom,
 }
@@ -136,19 +148,8 @@ impl Printer<'_> {
                 }
                 close(out, Precedence::App);
             }
-            Term::Pi(b) => {
-                open(out, Precedence::Arrow);
-                if mentions(&b.cod, 0) {
-                    out.push_str(&format!("({}: ", b.name));
-                    self.print(out, Precedence::Top, &b.dom);
-                    out.push_str(") -> ");
-                } else {
-                    self.print(out, Precedence::App, &b.dom);
-                    out.push_str(" -> ");
-                }
-                self.bind(&b.name, |p| p.print(out, Precedence::Arrow, &b.cod));
-                close(out, Precedence::Arrow);
-            }
+            Term::Pi(b) => self.binding(out, prec, b, " -> ", Precedence::Arrow),
+            Term::Sigma(b) => self.binding(out, prec, b, " * ", Precedence::Product),
             Term::Lam(name, body) => {
                 open(out, Precedence::Arrow);
                 out.push_str(&format!("\\{name} => "));
@@ -172,6 +173,49 @@ impl Printer<'_> {
                 self.bind(name, |p| p.print(out, Precedence::Top, body));
                 close(out, Precedence::Arrow);
             }
+            Term::Pair(a, b) => {
+                out.push('(');
+                self.print(out, Precedence::Top, a);
+                out.push_str(", ");
+                self.print(out, Precedence::Top, b);
+                out.push(')');
+            }
+            Term::Fst(e) | Term::Snd(e) => {
+                self.print(out, Precedence::Atom, e);
+                out.push_str(if matches!(t, Term::Fst(_)) { ".1" } else { ".2" });
+            }
+            Term::Top => out.push_str("@Top"),
+            Term::Tt => out.push_str("@tt"),
+            Term::Bottom => out.push_str("@Bottom"),
+            Term::Absurd(ty, e) => {
+                open(out, Precedence::App);
+                out.push_str("@absurd ");
+                self.print(out, Precedence::Atom, ty);
+                out.push(' ');
+                self.print(out, Precedence::Atom, e);
+                close(out, Precedence::App);
+            }
+        }
+    }
+
+    /// A Pi or Sigma type, written `(x: A) op B`, or `A op B` when `B` does
+    /// not mention `x`.
+    fn binding(&mut self, out: &mut String, prec: Precedence, b: &Binding, op: &str, own: Precedence) {
+        if prec > own {
+            out.push('(');
+        }
+        if mentions(&b.cod, 0) {
+            out.push_str(&format!("({}: ", b.name));
+            self.print(out, Precedence::Top, &b.dom);
+            out.push(')');
+        } else {
+            let next = if own == Precedence::Arrow { Precedence::Product } else { Precedence::App };
+            self.print(out, next, &b.dom);
+        }
+        out.push_str(op);
+        self.bind(&b.name, |p| p.print(out, own, &b.cod));
+        if prec > own {
+            out.push(')');
         }
     }
 }
@@ -180,8 +224,10 @@ impl Printer<'_> {
 pub fn mentions(t: &Term, ix: Index) -> bool {
     match t {
         Term::Var(i) => *i == ix,
-        Term::Global(..) | Term::Sort(_) => false,
-        Term::Pi(b) => mentions(&b.dom, ix) || mentions(&b.cod, ix + 1),
+        Term::Global(..) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom => false,
+        Term::Pi(b) | Term::Sigma(b) => mentions(&b.dom, ix) || mentions(&b.cod, ix + 1),
+        Term::Pair(a, b) | Term::Absurd(a, b) => mentions(a, ix) || mentions(b, ix),
+        Term::Fst(e) | Term::Snd(e) => mentions(e, ix),
         Term::Lam(_, body) => mentions(body, ix + 1),
         Term::App(f, a) => mentions(f, ix) || mentions(a, ix),
         Term::Let(_, ty, val, body) => mentions(ty, ix) || mentions(val, ix) || mentions(body, ix + 1),

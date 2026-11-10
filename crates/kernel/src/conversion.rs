@@ -4,13 +4,15 @@
 //! Coquand's "Untyped algorithmic equality for Martin-Löf's logical framework
 //! with surjective pairs" (TLCA 2005) extended with the type-directed rules
 //! that need the type: two values of a proposition are always equal (proof
-//! irrelevance), and a function is compared by applying both sides to a fresh
-//! variable (eta). Types are compared structurally, and neutrals by their
-//! heads and then their arguments at the argument types.
+//! irrelevance), a function is compared by applying both sides to a fresh
+//! variable, and a pair by its projections (the eta rules). Types are compared
+//! structurally, and neutrals by their heads and then their arguments at the
+//! argument types.
 //!
 //! Subtyping is equality except at universes: `@Type a <= @Type b` when
 //! `a <= b` and `a` is not `0` (cumulativity starts at level 1, so a
-//! proposition is never data), covariantly in a Pi type's codomain.
+//! proposition is never data), covariantly in a Pi type's codomain and in
+//! both components of a Sigma type.
 //!
 //! The checker hands its context's variable types to a [`ConversionChecker`],
 //! which pushes the types of the fresh variables it introduces and pops them
@@ -19,7 +21,7 @@
 //! Entry points: [`ConversionChecker::conv`], [`ConversionChecker::subtype`].
 
 use crate::level::Level;
-use crate::nbe::{apply, global_type, Lvl, Neutral, Val};
+use crate::nbe::{apply, fst, global_type, snd, Lvl, Neutral, Val};
 use crate::signature::Signature;
 
 pub struct ConversionChecker<'a> {
@@ -52,6 +54,15 @@ impl ConversionChecker<'_> {
                 Val::Pi(p) => p.cod.apply(self.sig, a.clone()),
                 _ => unreachable!("applied a neutral that is not a function"),
             },
+            Neutral::Fst(p) => match self.infer_neutral(p) {
+                Val::Sigma(s) => s.dom.clone(),
+                _ => unreachable!("projected from a neutral that is not a pair"),
+            },
+            Neutral::Snd(p) => match self.infer_neutral(p) {
+                Val::Sigma(s) => s.cod.apply(self.sig, fst(Val::Neutral(p.clone()))),
+                _ => unreachable!("projected from a neutral that is not a pair"),
+            },
+            Neutral::Absurd(ty, _) => ty.clone(),
         }
     }
 
@@ -60,11 +71,13 @@ impl ConversionChecker<'_> {
         match ty {
             Val::Sort(l) => Some(l.succ()),
             Val::Pi(p) => Some(Level::imax(&p.dom_level, &p.cod_level)),
+            Val::Sigma(p) => Some(Level::max(&p.dom_level, &p.cod_level)),
+            Val::Top | Val::Bottom => Some(Level::Zero),
             Val::Neutral(n) => match self.infer_neutral(n) {
                 Val::Sort(l) => Some(l),
                 _ => None,
             },
-            Val::Lam(..) => None,
+            Val::Lam(..) | Val::Pair(_) | Val::Tt => None,
         }
     }
 
@@ -90,9 +103,17 @@ impl ConversionChecker<'_> {
                 let fb = apply(c.sig, b.clone(), x);
                 c.conv(&cod, &fa, &fb)
             }),
+            Val::Sigma(p) => {
+                let (fa, fb) = (fst(a.clone()), fst(b.clone()));
+                self.conv(&p.dom, &fa, &fb) && {
+                    let cod = p.cod.apply(self.sig, fa);
+                    self.conv(&cod, &snd(a.clone()), &snd(b.clone()))
+                }
+            }
             Val::Sort(_) => self.conv_type(a, b, false),
             Val::Neutral(_) => self.conv_by_structure(a, b),
-            Val::Lam(..) => unreachable!("a lambda is not a type"),
+            Val::Top | Val::Bottom => unreachable!("propositions were handled above"),
+            Val::Lam(..) | Val::Pair(_) | Val::Tt => unreachable!("not a type"),
         }
     }
 
@@ -118,6 +139,16 @@ impl ConversionChecker<'_> {
                 Val::Pi(p) => self.conv(&p.dom, x, y).then(|| p.cod.apply(self.sig, x.clone())),
                 _ => unreachable!("applied a neutral that is not a function"),
             },
+            (Neutral::Fst(p), Neutral::Fst(q)) => match self.conv_neutral(p, q)? {
+                Val::Sigma(s) => Some(s.dom.clone()),
+                _ => unreachable!("projected from a neutral that is not a pair"),
+            },
+            (Neutral::Snd(p), Neutral::Snd(q)) => match self.conv_neutral(p, q)? {
+                Val::Sigma(s) => Some(s.cod.apply(self.sig, fst(Val::Neutral(p.clone())))),
+                _ => unreachable!("projected from a neutral that is not a pair"),
+            },
+            // The proofs of `@Bottom` are irrelevant.
+            (Neutral::Absurd(x, _), Neutral::Absurd(y, _)) => self.conv_type(x, y, false).then(|| x.clone()),
             _ => None,
         }
     }
@@ -128,14 +159,18 @@ impl ConversionChecker<'_> {
                 // See Note [Cumulativity starts at data].
                 l.equal(m) || (cumulative && l.is_nonzero() && l.leq(m))
             }
-            (Val::Pi(p), Val::Pi(q)) => {
-                self.conv_type(&p.dom, &q.dom, false)
+            // A function's domain is compared exactly, a pair's components
+            // covariantly.
+            (Val::Pi(p), Val::Pi(q)) | (Val::Sigma(p), Val::Sigma(q)) => {
+                let dom_cumulative = cumulative && matches!(a, Val::Sigma(_));
+                self.conv_type(&p.dom, &q.dom, dom_cumulative)
                     && self.under(p.dom.clone(), |c, x| {
                         let pc = p.cod.apply(c.sig, x.clone());
                         let qc = q.cod.apply(c.sig, x);
                         c.conv_type(&pc, &qc, cumulative)
                     })
             }
+            (Val::Top, Val::Top) | (Val::Bottom, Val::Bottom) => true,
             (Val::Neutral(x), Val::Neutral(y)) => self.conv_neutral(x, y).is_some(),
             _ => false,
         }

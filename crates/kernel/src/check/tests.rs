@@ -134,3 +134,82 @@ fn unannotated_lambdas_need_an_expected_type() {
     reject("$ f = \\x => x\n", "expected `:`");
     reject("$ A : @Type 1\n$ f : @Type 1 = (\\x => x) A\n", "cannot infer the type of `x`");
 }
+
+#[test]
+fn pairs_are_dependent() {
+    let sig = accept(
+        r"
+$ A : @Type 1
+$ B : A -> @Type 1
+$ a : A
+$ b : B a
+$ p : (x: A) * B x = (a, b)
+$ second : B p.1 = p.2
+$ swap : (A * A) -> (A * A) = \q => (q.2, q.1)
+$ again : A * A = swap (swap (a, a))
+",
+    );
+    assert_eq!(normal_form(&sig, "again").unwrap(), "(a, a)");
+    reject("$ A : @Type 1\n$ a : A\n$ p : A * A = (a, @tt)\n", "expected `A`, found `@Top`");
+}
+
+#[test]
+fn pairs_are_compared_up_to_eta() {
+    accept(
+        r"
+$ A : @Type 1
+$ p : A * A
+$ Q : (A * A) -> @Type 1
+$ q : Q p
+$ r : Q (p.1, p.2) = q
+",
+    );
+}
+
+#[test]
+fn a_pair_of_proofs_is_a_proposition() {
+    accept(
+        r"
+$ P : @Type 0
+$ Q : @Type 0
+$ And : @Type 0 = P * Q
+$ p : P
+$ q : Q
+$ both : And = (p, q)
+$ swap : (P * Q) -> (Q * P) = \h => (h.2, h.1)
+",
+    );
+}
+
+#[test]
+fn refined_values_are_data() {
+    // A pair of data and a proof (a refinement, `{x: A if p x}`) is data,
+    // and two of them are equal when their data parts are.
+    accept(
+        r"
+$ A : @Type 1
+$ P : A -> @Type 0
+$ Refined : @Type 1 = (x: A) * P x
+$ a : A
+$ p : P a
+$ p' : P a
+$ Q : Refined -> @Type 1
+$ q : Q (a, p)
+$ r : Q (a, p') = q
+",
+    );
+}
+
+#[test]
+fn bottom_proves_anything() {
+    accept(
+        r"
+$ A : @Type 1
+$ Not : @Type 0 -> @Type 0 = \p => p -> @Bottom
+$ explode : @Bottom -> A = \e => @absurd A e
+$ trivial : @Top = @tt
+$ contradiction : (P: @Type 0) -> P -> Not P -> @Bottom = \P p n => n p
+",
+    );
+    reject("$ A : @Type 1\n$ a : A\n$ bad : A = @absurd A @tt\n", "expected `@Bottom`, found `@Top`");
+}

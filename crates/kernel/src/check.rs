@@ -24,9 +24,9 @@ use utilities::{Code, Diagnostic, Result, Span};
 
 use crate::conversion::ConversionChecker;
 use crate::level::Level;
-use crate::nbe::{eval, global_type, quote, Closure, Env, Lvl, PiVal, Val};
+use crate::nbe::{eval, fst, global_type, quote, BindingVal, Closure, Env, Lvl, Val};
 use crate::signature::{Global, GlobalKind, Signature};
-use crate::syntax::{error, parse_script, Item, ItemBody, Raw, RawKind, RawLevel};
+use crate::syntax::{error, parse_script, Item, ItemBody, LevelArg, Primitive, Raw, RawKind, RawLevel};
 use crate::term::{Binding, Name, Term, TermDisplay};
 
 /// Check every global of a script.
@@ -190,6 +190,12 @@ impl Checker<'_> {
                 })?;
                 Ok(Term::Lam(name.clone(), Rc::new(body)))
             }
+            (RawKind::Pair(a, b), Val::Sigma(sigma)) => {
+                let a = self.check(ctx, a, &sigma.dom)?;
+                let cod = sigma.cod.apply(&self.sig, self.eval(ctx, &a));
+                let b = self.check(ctx, b, &cod)?;
+                Ok(Term::Pair(Rc::new(a), Rc::new(b)))
+            }
             (RawKind::Let(name, ann, val, body), _) => {
                 let (ty, val) = self.let_binding(ctx, ann.as_deref(), val)?;
                 let (ty_val, val_val) = (self.eval(ctx, &ty), self.eval(ctx, &val));
@@ -220,18 +226,36 @@ impl Checker<'_> {
                 Ok((Term::Sort(l.clone()), Val::Sort(l.succ())))
             }
             RawKind::Pi(name, dom, cod) => {
-                let (dom, dom_level) = self.check_type(ctx, dom)?;
-                let dom_val = self.eval(ctx, &dom);
-                let (cod, cod_level) = self.under(ctx, name, dom_val, |c, ctx| c.check_type(ctx, cod))?;
-                let sort = Level::imax(&dom_level, &cod_level);
-                let binding = Binding {
-                    name: name.clone(),
-                    dom: Rc::new(dom),
-                    cod: Rc::new(cod),
-                    dom_level,
-                    cod_level,
-                };
+                let binding = self.binding(ctx, name, dom, cod)?;
+                let sort = Level::imax(&binding.dom_level, &binding.cod_level);
                 Ok((Term::Pi(Rc::new(binding)), Val::Sort(sort)))
+            }
+            RawKind::Sigma(name, dom, cod) => {
+                let binding = self.binding(ctx, name, dom, cod)?;
+                let sort = Level::max(&binding.dom_level, &binding.cod_level);
+                Ok((Term::Sigma(Rc::new(binding)), Val::Sort(sort)))
+            }
+            RawKind::Pair(..) => Err(self.error(
+                Code::TypeAnnotationRequired,
+                raw.span,
+                "cannot infer the type of a pair; annotate it as `(e : (x: A) * B)`",
+            )),
+            RawKind::Fst(e) | RawKind::Snd(e) => {
+                let (t, ty) = self.infer(ctx, e)?;
+                let Val::Sigma(sigma) = &ty else {
+                    return Err(self.error(
+                        Code::TypeMismatch,
+                        e.span,
+                        format!("projected from a value of type `{}`, which is not a pair", self.show(ctx, &ty)),
+                    ));
+                };
+                let t = Rc::new(t);
+                if matches!(raw.kind, RawKind::Fst(_)) {
+                    Ok((Term::Fst(t), sigma.dom.clone()))
+                } else {
+                    let first = fst(self.eval(ctx, &t));
+                    Ok((Term::Snd(t), sigma.cod.apply(&self.sig, first)))
+                }
             }
             RawKind::Lam(name, Some(ann), body) => {
                 let (dom, dom_level) = self.check_type(ctx, ann)?;
@@ -244,7 +268,7 @@ impl Checker<'_> {
                 let Some(cod_level) = cod_level else {
                     return Err(self.error(Code::TypeAnnotationRequired, raw.span, "cannot infer the sort of this lambda's result"));
                 };
-                let ty = Val::Pi(Rc::new(PiVal {
+                let ty = Val::Pi(Rc::new(BindingVal {
                     name: name.clone(),
                     dom: dom_val,
                     cod: Closure::Term(ctx.env.clone(), Rc::new(cod)),
@@ -288,8 +312,37 @@ impl Checker<'_> {
                 let ty_val = self.eval(ctx, &ty);
                 Ok((self.check(ctx, e, &ty_val)?, ty_val))
             }
-            RawKind::Prim(prim, _) => match *prim {},
+            RawKind::Prim(prim, args) => self.infer_primitive(ctx, *prim, args),
         }
+    }
+
+    /// The domain and codomain of a Pi or Sigma type.
+    fn binding(&self, ctx: &mut Context, name: &Name, dom: &Raw, cod: &Raw) -> Result<Binding> {
+        let (dom, dom_level) = self.check_type(ctx, dom)?;
+        let dom_val = self.eval(ctx, &dom);
+        let (cod, cod_level) = self.under(ctx, name, dom_val, |c, ctx| c.check_type(ctx, cod))?;
+        Ok(Binding {
+            name: name.clone(),
+            dom: Rc::new(dom),
+            cod: Rc::new(cod),
+            dom_level,
+            cod_level,
+        })
+    }
+
+    fn infer_primitive(&self, ctx: &mut Context, prim: Primitive, args: &[Raw]) -> Result<(Term, Val)> {
+        let proposition = Val::Sort(Level::Zero);
+        Ok(match prim {
+            Primitive::Top => (Term::Top, proposition),
+            Primitive::Tt => (Term::Tt, Val::Top),
+            Primitive::Bottom => (Term::Bottom, proposition),
+            Primitive::Absurd => {
+                let (ty, _) = self.check_type(ctx, &args[0])?;
+                let proof = self.check(ctx, &args[1], &Val::Bottom)?;
+                let ty_val = self.eval(ctx, &ty);
+                (Term::Absurd(Rc::new(ty), Rc::new(proof)), ty_val)
+            }
+        })
     }
 
     /// The type and value of `let x: ann = val`.
@@ -307,7 +360,7 @@ impl Checker<'_> {
         }
     }
 
-    fn infer_var(&self, ctx: &mut Context, span: Span, name: &Name, level_args: &[crate::syntax::LevelArg]) -> Result<(Term, Val)> {
+    fn infer_var(&self, ctx: &mut Context, span: Span, name: &Name, level_args: &[LevelArg]) -> Result<(Term, Val)> {
         if let Some(level) = ctx.names.iter().rposition(|n| n == name) {
             if let Some(arg) = level_args.first() {
                 return Err(self.error(Code::TypeMismatch, arg.span, format!("`{name}` is a local variable and takes no levels")));

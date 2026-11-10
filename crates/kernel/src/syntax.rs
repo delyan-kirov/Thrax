@@ -43,6 +43,12 @@ pub enum RawKind {
     /// `(e : T)`.
     Ann(Box<Raw>, Box<Raw>),
     Prim(Primitive, Vec<Raw>),
+    /// `(x: A) * B`.
+    Sigma(Name, Box<Raw>, Box<Raw>),
+    Pair(Box<Raw>, Box<Raw>),
+    /// `e.1`, `e.2`.
+    Fst(Box<Raw>),
+    Snd(Box<Raw>),
 }
 
 #[derive(Clone, Debug)]
@@ -63,10 +69,20 @@ pub enum RawLevel {
 
 /// A primitive form `@name arg ...`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Primitive {}
+pub enum Primitive {
+    Top,
+    Tt,
+    Bottom,
+    Absurd,
+}
 
 /// Every primitive's spelling and argument count.
-pub const PRIMITIVES: &[(&str, Primitive, usize)] = &[];
+pub const PRIMITIVES: &[(&str, Primitive, usize)] = &[
+    ("Top", Primitive::Top, 0),
+    ("tt", Primitive::Tt, 0),
+    ("Bottom", Primitive::Bottom, 0),
+    ("absurd", Primitive::Absurd, 2),
+];
 
 #[derive(Clone, Debug)]
 pub struct Item {
@@ -105,6 +121,7 @@ enum Tok {
     Dot,
     Pipe,
     Plus,
+    Star,
     Let,
     In,
     Eof,
@@ -132,6 +149,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Dot => ".",
                 Tok::Pipe => "|",
                 Tok::Plus => "+",
+                Tok::Star => "*",
                 Tok::Let => "let",
                 Tok::In => "in",
                 _ => unreachable!(),
@@ -225,6 +243,7 @@ fn lex(src: &str) -> Result<Vec<(Tok, Span)>> {
                         b'.' => Tok::Dot,
                         b'|' => Tok::Pipe,
                         b'+' => Tok::Plus,
+                        b'*' => Tok::Star,
                         _ => {
                             let end = start + src[start..].chars().next().map_or(1, char::len_utf8);
                             return Err(error(src, Code::UnknownSymbol, Span::new(start, end), "unexpected character"));
@@ -389,25 +408,59 @@ impl Parser<'_> {
             Tok::Let => self.let_in(),
             _ if self.binder_group_ahead() => {
                 let binders = self.binder_group()?;
-                self.expect(Tok::Arrow)?;
-                let cod = self.expr()?;
-                Ok(binders.into_iter().rev().fold(cod, |cod, (name, ty)| {
-                    self.raw(RawKind::Pi(name, Box::new(ty), Box::new(cod)), start)
-                }))
+                let pi = self.eat(&Tok::Arrow);
+                if !pi {
+                    self.expect(Tok::Star)?;
+                }
+                // `(x: A) * B -> C` is `((x: A) * B) -> C`.
+                let cod = if pi { self.expr()? } else { self.product()? };
+                let built = binders.into_iter().rev().fold(cod, |cod, (name, ty)| {
+                    let kind = if pi {
+                        RawKind::Pi(name, Box::new(ty), Box::new(cod))
+                    } else {
+                        RawKind::Sigma(name, Box::new(ty), Box::new(cod))
+                    };
+                    self.raw(kind, start)
+                });
+                self.arrow_tail(built, start)
             }
             _ => {
-                let dom = self.app()?;
-                if self.eat(&Tok::Arrow) {
-                    let cod = self.expr()?;
-                    Ok(self.raw(RawKind::Pi("_".into(), Box::new(dom), Box::new(cod)), start))
-                } else {
-                    Ok(dom)
-                }
+                let dom = self.product()?;
+                self.arrow_tail(dom, start)
             }
         }
     }
 
-    /// `(x y: A)` followed by `->`, told apart from a parenthesized term or
+    fn arrow_tail(&mut self, dom: Raw, start: usize) -> Result<Raw> {
+        if self.eat(&Tok::Arrow) {
+            let cod = self.expr()?;
+            Ok(self.raw(RawKind::Pi("_".into(), Box::new(dom), Box::new(cod)), start))
+        } else {
+            Ok(dom)
+        }
+    }
+
+    /// `A * B * C`, right-nested, binding tighter than `->`.
+    fn product(&mut self) -> Result<Raw> {
+        let start = self.span().start;
+        if self.binder_group_ahead() {
+            let binders = self.binder_group()?;
+            self.expect(Tok::Star)?;
+            let cod = self.product()?;
+            return Ok(binders.into_iter().rev().fold(cod, |cod, (name, ty)| {
+                self.raw(RawKind::Sigma(name, Box::new(ty), Box::new(cod)), start)
+            }));
+        }
+        let first = self.app()?;
+        if self.eat(&Tok::Star) {
+            let rest = self.product()?;
+            Ok(self.raw(RawKind::Sigma("_".into(), Box::new(first), Box::new(rest)), start))
+        } else {
+            Ok(first)
+        }
+    }
+
+    /// `(x y: A)` followed by `->` or `*`, told apart from a parenthesized term or
     /// an ascription by scanning to the matching parenthesis.
     fn binder_group_ahead(&self) -> bool {
         if self.peek(0) != &Tok::LParen || !matches!(self.peek(1), Tok::Ident(_)) {
@@ -424,7 +477,7 @@ impl Parser<'_> {
         loop {
             match self.peek(n) {
                 Tok::LParen => depth += 1,
-                Tok::RParen if depth == 0 => return self.peek(n + 1) == &Tok::Arrow,
+                Tok::RParen if depth == 0 => return matches!(self.peek(n + 1), Tok::Arrow | Tok::Star),
                 Tok::RParen => depth -= 1,
                 Tok::Eof => return false,
                 _ => {}
@@ -512,6 +565,25 @@ impl Parser<'_> {
 
     fn atom(&mut self) -> Result<Raw> {
         let start = self.span().start;
+        let mut e = self.atom_head()?;
+        while self.peek(0) == &Tok::Dot {
+            let kind = match self.peek(1) {
+                Tok::Num(1) => RawKind::Fst(Box::new(e)),
+                Tok::Num(2) => RawKind::Snd(Box::new(e)),
+                _ => {
+                    self.next();
+                    return Err(self.unexpected("`1` or `2` (a pair's projections)"));
+                }
+            };
+            self.next();
+            self.next();
+            e = self.raw(kind, start);
+        }
+        Ok(e)
+    }
+
+    fn atom_head(&mut self) -> Result<Raw> {
+        let start = self.span().start;
         match self.peek(0).clone() {
             Tok::Ident(_) => {
                 let (name, _) = self.ident()?;
@@ -524,6 +596,9 @@ impl Parser<'_> {
                 let kind = if self.eat(&Tok::Colon) {
                     let ty = self.expr()?;
                     RawKind::Ann(Box::new(e), Box::new(ty))
+                } else if self.eat(&Tok::Comma) {
+                    let second = self.expr()?;
+                    RawKind::Pair(Box::new(e), Box::new(second))
                 } else {
                     self.expect(Tok::RParen)?;
                     return Ok(e);
