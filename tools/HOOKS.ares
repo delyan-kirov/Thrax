@@ -53,12 +53,23 @@ $ slug : @Str -> @Str = \title =>
 # Every editor brought up to date with the grammar: Zed's pin moved to its last
 # commit, the highlight queries checked against it, the grammars Zed and Helix
 # compile rebuilt, and VS Code's install repackaged. Neovim compiles nothing.
+# Helix and VS Code get Ares whenever the editor is on PATH, so this is also
+# the first install; the hooks' `editors_refresh` only refreshes one.
 $ editors_update : {} -> <@IO, Fail> {} = \u =>
     pin_zed_grammar {};
     check_queries {};
     zed_build {};
-    (if helix_installed {} => helix_build {} else {});
-    if vscode_installed {} => vscode_build {} else {}
+    say "Zed extension built, restart Zed to load it";
+    (
+        if on_path "hx" =>
+            helix_build {}; say "Helix grammar built"
+        else
+            say "skipping Helix: `hx` is not on PATH"
+    );
+    if on_path "code" =>
+        vscode_build {}; say "VS Code extension installed, reload VS Code to load it"
+    else
+        say "skipping VS Code: `code` is not on PATH"
 
 # What the editors use rebuilt when it is missing or older than its sources, so
 # a commit, checkout or pull never leaves an editor without it. Only for the
@@ -352,6 +363,8 @@ $ config_home : {} -> <@IO> @Str = \u =>
 $ helix_grammar : {} -> <@IO> @Str = \u => config_home {} ++ "/helix/runtime/grammars/ares.so"
 
 $ helix_installed : {} -> <@IO> @Bool = \u => is_some (mtime (helix_grammar {}))
+
+$ on_path : @Str -> <@IO> @Bool = \cmd => succeeds ("command -v " ++ cmd ++ " >/dev/null 2>&1")
 
 # Only Ares's grammar, compiled as `hx --grammar build` would: that builds every
 # grammar Helix knows, and one failing elsewhere would stop it.
