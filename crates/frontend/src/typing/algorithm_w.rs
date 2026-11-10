@@ -281,7 +281,7 @@ impl<'a> Checker<'a> {
                         )?;
                     }
                     self.type_pattern(p.pat, param_ty)?;
-                    self.check_irrefutable(p.pat, "a lambda parameter")?;
+                    self.check_irrefutable(p.pat, "a lambda parameter", sole_param(params, *body))?;
                     exp = rest;
                     body_eff = eff; // the innermost arrow's effect: the body's ambient
                 }
@@ -292,10 +292,10 @@ impl<'a> Checker<'a> {
                 out
             }
             // A `let` has its body's type, so the expected type checks the body.
-            Expr::Let { bindings, body } => {
-                let (bindings, body) = (self.ast.slice(*bindings), *body);
+            Expr::Let { binding, body } => {
+                let (binding, body) = (*binding, *body);
                 self.enter_scope();
-                let out = self.infer_let_group(bindings).and_then(|_| self.check(body, expected));
+                let out = self.infer_binding(&binding).and_then(|_| self.check(body, expected));
                 self.leave_scope();
                 out
             }
@@ -876,10 +876,10 @@ impl<'a> Checker<'a> {
                 Ok(tt)
             }
 
-            Expr::Let { bindings, body } => {
-                let (bindings, body) = (self.ast.slice(*bindings), *body);
+            Expr::Let { binding, body } => {
+                let (binding, body) = (*binding, *body);
                 self.enter_scope();
-                self.infer_let_group(bindings)?;
+                self.infer_binding(&binding)?;
                 let t = self.infer(body);
                 self.leave_scope();
                 t
@@ -896,7 +896,7 @@ impl<'a> Checker<'a> {
                         None => self.unifier.fresh(),
                     };
                     self.type_pattern(p.pat, pv)?;
-                    self.check_irrefutable(p.pat, "a lambda parameter")?;
+                    self.check_irrefutable(p.pat, "a lambda parameter", sole_param(params, body))?;
                     param_tys.push(pv);
                 }
                 // Constructing the closure performs nothing under the current
@@ -1402,14 +1402,7 @@ impl<'a> Checker<'a> {
         })
     }
 
-    pub(super) fn infer_let_group(&mut self, bindings: &'a [Binding]) -> Result<()> {
-        for b in bindings {
-            self.infer_binding(b)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn infer_binding(&mut self, b: &Binding) -> Result<()> {
+    fn infer_binding(&mut self, b: &Binding) -> Result<()> {
         self.unifier.enter_level();
         let declared = match self.pnode(b.pat) {
             Pattern::Var(name) => {
@@ -1446,7 +1439,7 @@ impl<'a> Checker<'a> {
             None => {
                 self.unifier.generalize_except(value_ty, &mono);
                 self.type_pattern(b.pat, value_ty)?;
-                self.check_irrefutable(b.pat, "a `let` binding")?;
+                self.check_irrefutable(b.pat, "a `let` binding", None)?;
             }
         }
         Ok(())
@@ -2448,4 +2441,10 @@ pub(super) fn is_numeric_type(name: &str) -> bool {
 pub(super) enum Spliced {
     Data(Type),
     Code,
+}
+
+/// The body of a lambda whose parameters are one unannotated pattern, which a
+/// refutable-parameter fix turns into the first arm (see `check_irrefutable`).
+fn sole_param(params: &[LamParam], body: Aol<Expr>) -> Option<Aol<Expr>> {
+    matches!(params, [LamParam { sig: None, .. }]).then_some(body)
 }

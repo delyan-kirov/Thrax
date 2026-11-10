@@ -465,15 +465,13 @@ impl<'a> Walk<'a> {
             }
             // A binding is recursive when its body names it, so its binders are
             // in scope in its value too.
-            Expr::Let { bindings, body } => {
+            Expr::Let { binding, body } => {
                 let mark = self.env.len();
-                for b in self.ast.slice(bindings).to_vec() {
-                    self.pattern(b.pat);
-                    if let Some(t) = b.sig {
-                        self.ty(t);
-                    }
-                    self.expr(b.value);
+                self.pattern(binding.pat);
+                if let Some(t) = binding.sig {
+                    self.ty(t);
                 }
+                self.expr(binding.value);
                 self.expr(body);
                 self.env.truncate(mark);
             }

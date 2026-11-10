@@ -145,7 +145,7 @@ fn keywords_recognized() {
             Kind::Let,
             Kind::Word,
             Kind::In,
-            Kind::Is,
+            Kind::Word,
             Kind::Else,
             Kind::Eof,
         ]

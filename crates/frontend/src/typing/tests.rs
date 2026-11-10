@@ -9,6 +9,23 @@ const CORE_SRC: &str = include_str!("../../../../library/CORE.ares");
 /// and imported first (so arithmetic and other CORE names resolve), as the driver
 /// does for every real program.
 fn type_of(src: &str, name: &'static str) -> String {
+    with_checker(src, |checker, prog| {
+        checker.set_inferred(name);
+        let results = checker
+            .check_program(prog)
+            .unwrap_or_else(|e| panic!("{}", e.render(src, "test.ares")));
+        let ty = results
+            .iter()
+            .find(|(n, _)| *n == name)
+            .expect("name present")
+            .1;
+        checker.show(ty)
+    })
+}
+
+/// Parse `src` after CORE and run `f` on a checker that imports CORE, as the
+/// driver sets one up for every real program.
+fn with_checker<R>(src: &str, f: impl FnOnce(&mut Checker, &Program) -> R) -> R {
     let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
     let (ast, prog) = crate::parse_into(ast, src).expect("parse");
     let types = std::rc::Rc::new(crate::Types::new());
@@ -16,46 +33,23 @@ fn type_of(src: &str, name: &'static str) -> String {
     core_checker.check_program(&core).expect("check CORE");
     let mut checker = Checker::new(&ast, types.clone());
     checker.import_from(&core_checker);
-    checker.set_inferred(name);
-    let results = checker
-        .check_program(&prog)
-        .unwrap_or_else(|e| panic!("{}", e.render(src, "test.ares")));
-    let ty = results
-        .iter()
-        .find(|(n, _)| *n == name)
-        .expect("name present")
-        .1;
-    checker.show(ty)
+    f(&mut checker, &prog)
 }
 
 fn errors(src: &str) -> String {
-    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
-    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
-    let types = std::rc::Rc::new(crate::Types::new());
-    let mut core_checker = Checker::new(&ast, types.clone());
-    core_checker.check_program(&core).expect("check CORE");
-    let mut checker = Checker::new(&ast, types.clone());
-    checker.import_from(&core_checker);
-    match checker.check_program(&prog) {
+    with_checker(src, |checker, prog| match checker.check_program(prog) {
         Ok(_) => String::new(),
         Err(e) => format!("{e}"),
-    }
+    })
 }
 
 /// Like [`errors`], but rendered with a caret against `src`, so a test can
 /// assert where the diagnostic points.
 fn rendered_errors(src: &str) -> String {
-    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
-    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
-    let types = std::rc::Rc::new(crate::Types::new());
-    let mut core_checker = Checker::new(&ast, types.clone());
-    core_checker.check_program(&core).expect("check CORE");
-    let mut checker = Checker::new(&ast, types.clone());
-    checker.import_from(&core_checker);
-    match checker.check_program(&prog) {
+    with_checker(src, |checker, prog| match checker.check_program(prog) {
         Ok(_) => String::new(),
         Err(e) => e.render(src, "test.ares"),
-    }
+    })
 }
 
 #[test]
@@ -699,19 +693,14 @@ fn open_effects_permits_io_at_the_shell_top_level() {
 
     // ...but accepted once the shell turns on open effect rows, and the discharged
     // effect does not leak into the binding's type.
-    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
-    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
-    let types = std::rc::Rc::new(crate::Types::new());
-    let mut core_checker = Checker::new(&ast, types.clone());
-    core_checker.check_program(&core).expect("check CORE");
-    let mut checker = Checker::new(&ast, types.clone());
-    checker.import_from(&core_checker);
-    checker.set_open_effects(true);
-    let results = checker
-        .check_program(&prog)
-        .unwrap_or_else(|e| panic!("open effects should accept IO: {}", e.render(src, "test.ares")));
-    let ty = results.iter().find(|(n, _)| *n == "shown").expect("shown").1;
-    assert_eq!(checker.show(ty), "@Int");
+    with_checker(src, |checker, prog| {
+        checker.set_open_effects(true);
+        let results = checker
+            .check_program(prog)
+            .unwrap_or_else(|e| panic!("open effects should accept IO: {}", e.render(src, "test.ares")));
+        let ty = results.iter().find(|(n, _)| *n == "shown").expect("shown").1;
+        assert_eq!(checker.show(ty), "@Int");
+    });
 }
 
 #[test]
@@ -1012,16 +1001,10 @@ fn a_recursive_slot_is_lazy_and_an_arrow_slot_is_not() {
                $ S : @struct t = head : t, tail : S t\n\
                $ P : @struct = x: @Int, y: @Int\n\
                $ z : @Int = 0";
-    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
-    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
-    let types = std::rc::Rc::new(crate::Types::new());
-    let mut core_checker = Checker::new(&ast, types.clone());
-    core_checker.check_program(&core).expect("check CORE");
-    let mut checker = Checker::new(&ast, types.clone());
-    checker.import_from(&core_checker);
-    checker.check_program(&prog).expect("check");
-    let lazy = checker.lazy_slots();
-    let m = checker.module_name;
+    let (lazy, m) = with_checker(src, |checker, prog| {
+        checker.check_program(prog).expect("check");
+        (checker.lazy_slots().clone(), checker.module_name)
+    });
     assert_eq!(lazy.get(&(m, "L".into(), Some("C".into()))), Some(&vec![false, true]));
     assert_eq!(lazy.get(&(m, "S".into(), None)), Some(&vec![false, true]));
     assert_eq!(lazy.get(&(m, "Task".into(), Some("Susp".into()))), None);
@@ -1089,23 +1072,18 @@ fn a_pattern_may_bind_fewer_fields_but_never_more() {
 /// The rendered root of the check's error (empty when it passes) and the
 /// messages-with-location of its warnings, for the exhaustiveness tests.
 fn coverage(src: &str) -> (String, Vec<String>) {
-    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
-    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
-    let types = std::rc::Rc::new(crate::Types::new());
-    let mut core_checker = Checker::new(&ast, types.clone());
-    core_checker.check_program(&core).expect("check CORE");
-    let mut checker = Checker::new(&ast, types.clone());
-    checker.import_from(&core_checker);
-    let err = match checker.check_program(&prog) {
-        Ok(_) => String::new(),
-        Err(e) => format!("{e}"),
-    };
-    let warnings = checker
-        .warnings()
-        .iter()
-        .map(|w| w.render_warning(src, "test.ares").lines().nth(1).unwrap_or("").trim().to_string())
-        .collect();
-    (err, warnings)
+    with_checker(src, |checker, prog| {
+        let err = match checker.check_program(prog) {
+            Ok(_) => String::new(),
+            Err(e) => format!("{e}"),
+        };
+        let warnings = checker
+            .warnings()
+            .iter()
+            .map(|w| w.render_warning(src, "test.ares").lines().nth(1).unwrap_or("").trim().to_string())
+            .collect();
+        (err, warnings)
+    })
 }
 
 const L: &str = "$ @mod T\n$ L : @union = A, B, C,\n";
@@ -1240,6 +1218,24 @@ fn refutable_let_and_lambda_patterns_are_errors() {
     let ok = "$ @mod T\n$ P : @struct = x: @Int, y: @Int,\n\
               $ f : P -> {@Int, @Int} -> @Int = \\P.{ x, _ } {a, b} => let {c, _} = {a, b} in x + c\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
+}
+
+#[test]
+fn a_refutable_sole_parameter_fixes_to_a_multi_arm_lambda() {
+    let m = "$ @mod T\n$ M : @union a = No, Yes: {a},\n";
+    let fixed = |src: &str| {
+        with_checker(src, |checker, prog| {
+            let err = checker.check_program(prog).err().expect("a refutable parameter");
+            let edits: Vec<utilities::Edit> = err.helps().iter().flat_map(|h| h.located_edits().unwrap_or_default()).cloned().collect();
+            (!edits.is_empty()).then(|| utilities::error::apply_edits(src, &edits))
+        })
+    };
+    let src = format!("{m}$ f : M @Int -> @Int = \\.Yes.{{ x }} => x + 1\n");
+    let want = format!("{m}$ f : M @Int -> @Int = \\ | .Yes.{{ x }} => x + 1 | _ => ???\n");
+    assert_eq!(fixed(&src), Some(want));
+    // With an annotation or a second parameter the lambda is not one arm away.
+    assert_eq!(fixed(&format!("{m}$ g : M @Int -> @Int -> @Int = \\.Yes.{{ x }} y => x\n")), None);
+    assert_eq!(fixed(&format!("{m}$ h : M @Int -> @Int = \\(.Yes.{{ x }}: M @Int) => x\n")), None);
 }
 
 const ROPE: &str = "$ @mod T\n$ Rope : @union = Leaf: {@Int}, Node: {Rope, Rope},\n\

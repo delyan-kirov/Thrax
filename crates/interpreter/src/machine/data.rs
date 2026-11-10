@@ -1341,7 +1341,6 @@ fn token_kind_name(kind: frontend::Kind) -> &'static str {
         Let => "Let",
         In => "In",
         If => "If",
-        Is => "Is",
         Else => "Else",
         Do => "Do",
         Ctl => "Ctl",
