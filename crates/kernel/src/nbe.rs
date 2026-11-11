@@ -231,6 +231,7 @@ pub fn eval_global(sig: &Signature, id: GlobalId, levels: Rc<[Level]>) -> Val {
         GlobalKind::Data(data) => data_value(sig, *data, levels),
         GlobalKind::Constructor(data, index) => constructor_value(sig, *data, *index, levels),
         GlobalKind::Recursor(data) => recursor_value(sig, *data, levels),
+        GlobalKind::Projection(..) => Val::Irrelevant,
     }
 }
 

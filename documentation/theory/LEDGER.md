@@ -158,7 +158,7 @@ a conjecture only in that nothing proves the recorded edges complete.
 | Eq-Sigma | PT22 | Section 4.4, Eq-Σ | published-uncovered | PT22 Sigma | - | yes |
 | Eq-Ctor | PT22 | Fig. 4, Eq-zero, Eq-Suc, Eq-zero-suc, Eq-suc-zero, generalised to every constructor | published-uncovered | - | - | yes |
 | Eq-Univ-Data | PT22 | Fig. 4, Eq-Univ for ℕ, extended to every inductive type without parameters | published-uncovered | - | - | yes |
-| Data-Eq-Projection | PLT25 | Section 4.1, the eq_c projections from `Ind a ∼ Ind a'` to the equality of each constructor's field types | published | PLT25 Consistency | #477 | planned |
+| Data-Eq-Projection | PLT25 | Section 4.1, the eq_c projections from `Ind a ∼ Ind a'` to the equality of each constructor's field types | published | PLT25 Consistency | - | yes |
 | Eq-Quot-Class | PT22 | Section 4.1, π(t) ∼ π(u) reduces to R t u | published-uncovered | PT22 Quotients | - | yes |
 | Eq-Quot | PT22 | Section 4.1, equality of two quotient types | published-uncovered | PT22 Quotients | - | yes |
 | Cast-Pi | PT22 | Fig. 4, Cast-Π | published | PT22 Normalisation, PT22 Decidability | - | yes |
