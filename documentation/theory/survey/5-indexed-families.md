@@ -40,4 +40,4 @@ Update (2026-11-11): implemented (#466). A constructor states its result,
 constructor passes through unchanged are parameters, the rest indices. The
 kernel stores the forded type, and the recursor has the indexed motive with a
 cast in iota (Note [Indexed families are forded]). Not yet: index types that
-depend on earlier indices, whose equality fields would be heterogeneous.
+depend on earlier indices, whose equality fields would be heterogeneous (#490).
