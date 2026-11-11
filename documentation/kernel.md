@@ -47,7 +47,7 @@ $ add : Nat -> Nat -> Nat = \m n => Nat.elim @ctx {.m = 1} (\_ => Nat) n (\_ r =
 $ four : add (succ (succ zero)) (succ (succ zero)) ~ succ (succ (succ (succ zero))) = @refl four
 ```
 
-- `$ name : T = e` defines, `$ name : T` postulates, `$ D : (params) -> @Type l = @data | c fields | ...` declares an inductive type.
+- `$ name : T = e` defines, `$ name : T` postulates, `$ D : (params) -> @Type l = @data | c fields | ...` declares an inductive type. A constructor may state its result, `| c fields : D params indices`; the leading binders every constructor passes through unchanged are parameters, the rest indices: `$ Vec : (a: @Type 1) -> (n: Nat) -> @Type 1 = @data | nil : Vec a zero | cons (m: Nat) (h: a) (t: Vec a m) : Vec a (succ m)`.
 - `@ctx {u: @l, ...} ->` at the start of a signature binds levels; a use passes them as `name @ctx {.u = l}`. Kernel levels range over every level, `0` included; the surface default `n >= 1` is a kernel `k + 1`.
 - Terms: `\x => e`, `\(x: A) => e`, `(x: A) -> B`, `A -> B`, `(x: A) * B`, `(a, b)`, `p.1`, `p.2`, `let x: T = e in b`, `(e : T)`, `a ~ b`.
 - Primitives: `@Type l`, `@Top`, `@tt`, `@Bottom`, `@absurd A e`, `@Eq A a b`, `@refl a`, `@transp t B u t' e`, `@cast A B e t`, `@Quot A R rr rs rt`, `@qin a`, `@qelim P f resp q`.
@@ -58,7 +58,7 @@ $ four : add (succ (succ zero)) (succ (succ zero)) ~ succ (succ (succ (succ zero
 - **Universes.** `@Type 0` is the impredicative universe of propositions; the sort of a Pi type is `imax`. Universes are not cumulative, as in CC^obs: a type lives in exactly one universe, so a type in `@Type 1` is not a type in `@Type 2` (#475).
 - **Proof irrelevance.** Conversion is typed. Two values of a proposition are equal, decided from the type. Proofs evaluate to one irrelevant witness (Note [Proofs evaluate to an irrelevant witness]).
 - **Pi and Sigma** with eta. A Sigma of data and a proof is data (the shape a refinement desugars to).
-- **Inductive types**, parameterised, in data universes, with fields that may depend on earlier fields. Recursive fields are whole `D params` only. Each declaration adds the type former, its constructors and `D.elim`, and, when it has parameters, a projection `D.eq.c.f` per constructor field from `D a ~ D a'` to the equality of that field's types (`D.eq.c.argN` for an unnamed field), as CIC^obs's `eq_c` (#477).
+- **Inductive types**, parameterised and indexed, in data universes, with fields that may depend on earlier fields. Recursive fields are whole `D params indices` only. Indexed families are stored forded, as in CIC^obs: indices become parameters and each constructor gets an equality field per index; the recursor has the indexed motive and casts each method's result to the value's indices (Note [Indexed families are forded], #466). An index's type may depend on the parameters, not on earlier indices. Each declaration adds the type former, its constructors and `D.elim`, and, when it has parameters, a projection `D.eq.c.f` per constructor field from `D a ~ D a'` to the equality of that field's types (`D.eq.c.argN` for an unnamed field), as CIC^obs's `eq_c` (#477).
 - **Equality** `a ~ b` computes by its type: pointwise at Pi types (function extensionality), componentwise at Sigma types, constructor-wise at inductive types, structurally at universes (contravariant Pi domains), as the relation at quotients, and as logical equivalence at `@Type 0`. It is not formed at a proposition, since two proofs are already equal by conversion; a proof inside data, such as the second component of a pair, contributes `@Top`.
 - **Cast** computes by the heads of its two types, through lambdas, pairs, constructors and classes.
 - **Quotients** of data by a relation proved reflexive, symmetric and transitive. `@qelim` needs the method to respect the relation.
@@ -73,7 +73,7 @@ each rule's implementation with `// Rule [Name]`, and
 
 - `@cast A B e t` is convertible with `t` when `A` and `B` are convertible (Cast-Refl of CIC^obs, a conversion rule, not a reduction). TT^obs reaches `t` only through its structure; without the rule the outer respect proof of a binary quotient operation meets a stuck cast.
 - Equality between two instances of one inductive type with parameters, `D a ~ D a'`, is left stuck: computing it to `a ~ a'` would make type formers injective, which is inconsistent (#477).
-- Indexed families are not primitive (TT^obs encodes them by fording). Nested and infinitely branching recursive fields are rejected.
+- Index types that depend on earlier indices are rejected, as are nested and infinitely branching recursive fields.
 - Definitions unfold eagerly, so error messages show unfolded terms. Glued evaluation would keep the names.
 - No metavariables or implicit arguments: the kernel checks elaborated terms, and every argument is written.
 

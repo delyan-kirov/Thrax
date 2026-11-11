@@ -31,7 +31,7 @@ use crate::observational::{cast, eq, native_pi, relation_type};
 use crate::inductive::{constructor_type, projection_type, recursor_type};
 use crate::signature::{ConstructorDecl, DataDecl, DataId, Global, GlobalId, GlobalKind, Param, Signature};
 use crate::syntax::{error, parse_script, Item, ItemBody, LevelArg, Primitive, Raw, RawConstructor, RawKind, RawLevel};
-use crate::term::{mentions_global, Binding, Name, Term, TermDisplay};
+use crate::term::{mentions, mentions_global, rename, shift, Binding, Name, Term, TermDisplay};
 
 /// Check every global of a script.
 pub fn check_script(src: &str) -> Result<Signature> {
@@ -168,9 +168,8 @@ impl Checker<'_> {
             return Err(self.error(
                 Code::Unsupported,
                 item.ty.span,
-                "an inductive type's signature must end in `@Type l` after its parameters",
-            )
-            .with_note("indexed families are not primitive: give the index as a parameter and an equality field"));
+                "an inductive type's signature must end in `@Type l` after its parameters and indices",
+            ));
         };
         if !level.is_nonzero() {
             return Err(self.error(
@@ -178,6 +177,23 @@ impl Checker<'_> {
                 item.ty.span,
                 "inductive propositions are not supported: the type must be in `@Type l` with `l >= 1`",
             ));
+        }
+        let uniform = uniform_params(&params, ctors);
+        for (i, index) in params[uniform..].iter().enumerate() {
+            if (0..i as u32).any(|v| mentions(&index.ty, v)) {
+                return Err(self.error(
+                    Code::Unsupported,
+                    item.ty.span,
+                    format!("the type of index `{}` may depend on the parameters, not on earlier indices", index.name),
+                ));
+            }
+            if !index.level.is_nonzero() {
+                return Err(self.error(
+                    Code::Unsupported,
+                    item.ty.span,
+                    format!("index `{}` must be data, in `@Type l` with `l >= 1`, not a proof", index.name),
+                ));
+            }
         }
         let recursor_name: Name = format!("{}.elim", item.name).into();
         let mut taken = vec![item.name.clone(), recursor_name.clone()];
@@ -206,6 +222,7 @@ impl Checker<'_> {
         let data = self.sig.add_data(DataDecl {
             global: self.sig.next_global(),
             params,
+            uniform,
             level: level.clone(),
             constructors: Vec::new(),
             recursor: GlobalId::MAX,
@@ -269,13 +286,16 @@ impl Checker<'_> {
 
     fn check_constructor(&self, data: DataId, level_names: &[Name], level: &Level, c: &RawConstructor) -> Result<ConstructorDecl> {
         let decl = self.sig.data(data);
+        let (np, u) = (decl.params.len(), decl.uniform);
+        let data_name = &self.sig.global(decl.global).name;
+        // The fields see the uniform parameters only; the indices are what the
+        // constructor's result fixes.
         let mut ctx = Context::new(level_names.to_vec());
-        for p in &decl.params {
+        for p in &decl.params[..u] {
             let ty = self.eval(&ctx, &p.ty);
             ctx.bind(p.name.clone(), ty);
         }
-        let np = decl.params.len();
-        let mut fields = Vec::new();
+        let mut surface = Vec::new();
         let mut recursive = Vec::new();
         for (i, (name, raw)) in c.fields.iter().enumerate() {
             // An unnamed field gets a positional name, for printing the
@@ -292,16 +312,15 @@ impl Checker<'_> {
             let ty_val = self.eval(&ctx, &ty);
             // Rule [Positivity-Restricted]
             // See Note [Strict positivity, restricted].
-            let is_self = is_data_at_own_params(&ty_val, data, np);
+            let is_self = is_data_at_own_params(&ty_val, data, np, u) && !spine(&ty)[u..].iter().any(|a| mentions_global(a, decl.global));
             if !is_self && mentions_global(&ty, decl.global) {
-                let name = &self.sig.global(decl.global).name;
                 return Err(self.error(
                     Code::Unsupported,
                     raw.span,
-                    format!("`{name}` may only occur as a whole field, applied to its own parameters"),
+                    format!("`{data_name}` may only occur as a whole field, applied to its own parameters"),
                 ));
             }
-            fields.push(Param {
+            surface.push(Param {
                 name: name.clone(),
                 ty: Rc::new(ty),
                 level: field_level,
@@ -309,11 +328,69 @@ impl Checker<'_> {
             recursive.push(is_self);
             ctx.bind(name, ty_val);
         }
+        let nf = surface.len() as u32;
+        let indices: Vec<Rc<Term>> = match &c.result {
+            None if u < np => {
+                return Err(self.error(
+                    Code::Unsupported,
+                    c.span,
+                    format!("a constructor of the indexed family `{data_name}` must state its result: `| {} fields : {data_name} ...`", c.name),
+                ));
+            }
+            None => Vec::new(),
+            Some(raw) => {
+                let (ty, _) = self.check_type(&mut ctx, raw)?;
+                let ty_val = self.eval(&ctx, &ty);
+                let indices: Vec<Rc<Term>> = match &ty_val {
+                    Val::Data(d) if is_data_at_own_params(&ty_val, data, np, u) => {
+                        d.params[u..].iter().map(|y| Rc::new(quote(&self.sig, ctx.depth(), y))).collect()
+                    }
+                    _ => {
+                        return Err(self.error(
+                            Code::TypeMismatch,
+                            raw.span,
+                            format!("a constructor's result must be `{data_name}` at its own parameters"),
+                        ));
+                    }
+                };
+                if indices.iter().any(|y| mentions_global(y, decl.global)) {
+                    return Err(self.error(Code::Unsupported, raw.span, format!("an index may not mention `{data_name}`")));
+                }
+                indices
+            }
+        };
+
+        // Rule [Data-Ford]
+        // See Note [Indexed families are forded].
+        // The forded fields: the fields over all the parameters, then one
+        // equality per index, `y_i ~ x_i`.
+        let ni = (np - u) as u32;
+        let mut fields: Vec<Param> = surface
+            .iter()
+            .enumerate()
+            .map(|(f, p)| Param { name: p.name.clone(), ty: Rc::new(shift(&p.ty, f as u32, ni)), level: p.level.clone() })
+            .collect();
+        for (i, y) in indices.iter().enumerate() {
+            let i32_ = i as u32;
+            let index = &decl.params[u + i];
+            let depth = np as u32 + nf + i32_;
+            let y = rename(y, 0, &|v| if v < nf { v + i32_ } else { v + i32_ + ni });
+            let x = Term::Var(depth - 1 - (u as u32 + i32_));
+            let ty = shift(&index.ty, 0, ni + nf);
+            fields.push(Param {
+                name: format!("{}_eq", index.name).into(),
+                ty: Rc::new(Term::Eq(index.level.clone(), Rc::new(ty), Rc::new(y), Rc::new(x))),
+                level: Level::Zero,
+            });
+            recursive.push(false);
+        }
         Ok(ConstructorDecl {
             name: c.name.clone(),
             global: GlobalId::MAX,
             fields,
             recursive,
+            surface,
+            indices,
         })
     }
 }
@@ -336,17 +413,62 @@ fn respect_type(quot: Rc<QuotVal>, p: Val, f: Val, level: Level) -> Val {
 }
 
 /// `ty` is `D p0 ... pn` with each `pi` the parameter variable at level `i`.
-fn is_data_at_own_params(ty: &Val, data: DataId, params: usize) -> bool {
+/// `ty` is `D` applied to its own uniform parameters (the first `uniform`
+/// of `params`), at any indices.
+fn is_data_at_own_params(ty: &Val, data: DataId, params: usize, uniform: usize) -> bool {
     let Val::Data(d) = ty else { return false };
     let own = |(i, p): (usize, &Val)| matches!(p, Val::Neutral(n) if matches!(**n, Neutral::Var(l) if l as usize == i));
-    d.data == data && d.params.len() == params && d.params.iter().enumerate().all(own)
+    d.data == data && d.params.len() == params && d.params[..uniform].iter().enumerate().all(own)
+}
+
+/// The arguments of an application spine.
+fn spine(t: &Term) -> Vec<&Term> {
+    let mut args = Vec::new();
+    let mut t = t;
+    while let Term::App(f, a) = t {
+        args.push(&**a);
+        t = f;
+    }
+    args.reverse();
+    args
+}
+
+/// How many leading binders of an inductive type's signature are uniform
+/// parameters: every constructor's stated result passes them through as
+/// themselves. The rest are indices.
+fn uniform_params(params: &[Param], ctors: &[RawConstructor]) -> usize {
+    let raw_spine = |r: &Raw| {
+        let mut args = Vec::new();
+        let mut r = r;
+        while let RawKind::App(f, a) = &r.kind {
+            args.push((**a).clone());
+            r = f;
+        }
+        args.reverse();
+        args
+    };
+    ctors
+        .iter()
+        .map(|c| match &c.result {
+            None => params.len(),
+            Some(result) => {
+                let args = raw_spine(result);
+                let passes = |(p, a): &(&Param, &Raw)| {
+                    let shadowed = c.fields.iter().any(|(f, _)| *f == p.name);
+                    !shadowed && matches!(&a.kind, RawKind::Var(n, levels) if *n == p.name && levels.is_empty())
+                };
+                params.iter().zip(&args).take_while(passes).count()
+            }
+        })
+        .min()
+        .unwrap_or(params.len())
 }
 
 // Note [Strict positivity, restricted]
 //
 // An inductive type may appear in its own constructors only where its
-// recursor can recurse: as a whole field `D params`, with exactly the
-// declaration's parameters. Strict positivity proper also allows
+// recursor can recurse: as a whole field `D params ys`, with exactly the
+// declaration's parameters and any indices `ys` that do not mention `D`. Strict positivity proper also allows
 // `A -> D params` (infinitely branching trees) and nested occurrences such as
 // `List (D params)`; both need more of the recursor's machinery and are
 // rejected for now. Anything that is not positive must be rejected for

@@ -25,7 +25,7 @@ pub type Name = Rc<str>;
 
 /// A dependent binding form, `(name: dom) -> cod`, with the sorts of both
 /// sides (the sort of the whole is computed from them).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Binding {
     pub name: Name,
     pub dom: Rc<Term>,
@@ -34,7 +34,7 @@ pub struct Binding {
     pub cod_level: Level,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Term {
     Var(Index),
     Global(GlobalId, Rc<[Level]>),
@@ -279,7 +279,13 @@ impl Printer<'_> {
 /// the de Bruijn shift that makes room for `by` new binders below `cutoff`
 /// bound variables.
 pub fn shift(t: &Term, cutoff: Index, by: Index) -> Term {
-    let go = |t: &Rc<Term>, cutoff| Rc::new(shift(t, cutoff, by));
+    rename(t, cutoff, &|i| i + by)
+}
+
+/// `t` with every variable at index `cutoff` or above, `cutoff + i`, moved to
+/// `cutoff + f(i)`: a shift, or a move to a context with other binders.
+pub fn rename(t: &Term, cutoff: Index, f: &dyn Fn(Index) -> Index) -> Term {
+    let go = |t: &Rc<Term>, cutoff| Rc::new(rename(t, cutoff, f));
     let binding = |b: &Binding| {
         Rc::new(Binding {
             name: b.name.clone(),
@@ -290,7 +296,7 @@ pub fn shift(t: &Term, cutoff: Index, by: Index) -> Term {
         })
     };
     match t {
-        Term::Var(i) if *i >= cutoff => Term::Var(i + by),
+        Term::Var(i) if *i >= cutoff => Term::Var(cutoff + f(i - cutoff)),
         Term::Var(_) | Term::Global(..) | Term::Sort(_) | Term::Top | Term::Tt | Term::Bottom | Term::Irrelevant => t.clone(),
         Term::Eq(l, ty, a, b) => Term::Eq(l.clone(), go(ty, cutoff), go(a, cutoff), go(b, cutoff)),
         Term::Cast(x, y, e, v) => Term::Cast(go(x, cutoff), go(y, cutoff), go(e, cutoff), go(v, cutoff)),

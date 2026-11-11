@@ -292,3 +292,87 @@ fn inductive_declarations_are_checked() {
     reject("$ Idx : @Type 1 -> @Type 2 = @data | mk\n$ I : @Type 1 = @data | a | a\n", "`a` is already defined");
     reject("$ F : @Type 1 = @data | mk\n$ G : F = @data | mk\n", "must end in `@Type l`");
 }
+
+const VEC: &str = r"
+$ Vec : (a: @Type 1) -> (n: Nat) -> @Type 1 = @data
+    | vnil : Vec a zero
+    | vcons (m: Nat) (h: a) (t: Vec a m) : Vec a (succ m)
+";
+
+#[test]
+fn indexed_families_have_an_indexed_recursor() {
+    let sig = accept(&format!("{NAT}{VEC}"));
+    let elim = sig.lookup("Vec.elim").unwrap();
+    let shown = crate::term::TermDisplay {
+        sig: &sig,
+        names: &[],
+        level_names: &sig.global(elim).level_params,
+        term: &sig.global(elim).ty,
+    };
+    assert_eq!(
+        shown.to_string(),
+        "(a: @Type 1) -> (P: (n: Nat) -> Vec a n -> @Type m) -> P zero (vnil a) \
+         -> ((m: Nat) -> (h: a) -> (t: Vec a m) -> P m t -> P (succ m) (vcons a m h t)) \
+         -> (n: Nat) -> (x: Vec a n) -> P n x"
+    );
+}
+
+#[test]
+fn the_index_rules_out_constructors() {
+    // `head` needs no real case for `vnil`: its motive is `{}`-like at zero.
+    let src = format!(
+        r"{NAT}{VEC}
+$ Unit : @Type 1 = @data | unit
+$ Head : Nat -> @Type 1 = \k => Nat.elim @ctx {{.m = 2}} (\_ => @Type 1) Unit (\_ _ => Nat) k
+$ head : (n: Nat) -> Vec Nat (succ n) -> Nat =
+    \n v => Vec.elim @ctx {{.m = 1}} Nat (\k _ => Head k) unit (\m h t r => h) (succ n) v
+$ h : Nat = head zero (vcons Nat zero four (vnil Nat))
+"
+    );
+    let sig = accept(&src);
+    assert_eq!(normal_form(&sig, "h").unwrap(), "succ (succ (succ (succ zero)))");
+}
+
+#[test]
+fn a_value_at_propositionally_equal_indices_is_a_cast() {
+    let src = format!(
+        r"{NAT}{VEC}
+$ length : (a: @Type 1) -> (n: Nat) -> Vec a n -> Nat =
+    \a n v => Vec.elim @ctx {{.m = 1}} a (\_ _ => Nat) zero (\m h t r => succ r) n v
+$ k : Nat
+$ e : succ zero ~ k
+$ one : Vec Nat (succ zero) = vcons Nat zero two (vnil Nat)
+$ moved : Vec Nat k =
+    @cast (Vec Nat (succ zero)) (Vec Nat k) (@transp (succ zero) (\j => Vec Nat (succ zero) ~ Vec Nat j) (@refl (Vec Nat (succ zero))) k e) one
+$ len : Nat = length Nat k moved
+"
+    );
+    let sig = accept(&src);
+    assert!(normal_form(&sig, "moved").unwrap().starts_with("@cast (Vec Nat (succ zero)) (Vec Nat k) @irrelevant (vcons Nat zero"));
+    assert_eq!(normal_form(&sig, "len").unwrap(), "succ zero");
+}
+
+#[test]
+fn the_identity_type_is_an_indexed_family() {
+    let src = format!(
+        r"{NAT}
+$ Id : (A: @Type 1) -> (x: A) -> (y: A) -> @Type 1 = @data | idrefl : Id A x x
+$ J : (A: @Type 1) -> (x: A) -> (P: (y: A) -> Id A x y -> @Type 1) -> P x (idrefl A x) -> (y: A) -> (p: Id A x y) -> P y p =
+    \A x P d y p => Id.elim @ctx {{.m = 1}} A x P d y p
+$ p : P two
+$ q : P (J Nat two (\_ _ => Nat) two two (idrefl Nat two)) = p
+"
+    );
+    accept(&src);
+}
+
+#[test]
+fn indexed_families_are_restricted() {
+    reject(&format!("{NAT}$ V : (n: Nat) -> @Type 1 = @data | a : V zero | b\n"), "must state its result");
+    reject(&format!("{NAT}$ V : (n: Nat) -> @Type 1 = @data | mk : Nat\n"), "must be `V` at its own parameters");
+    reject(
+        &format!("{NAT}$ V : (n: Nat) -> (f: P n) -> @Type 1 = @data | mk (p: P zero) : V zero p\n"),
+        "may depend on the parameters, not on earlier indices",
+    );
+    reject("$ V : (p: @Top) -> @Type 1 = @data | mk : V @tt\n", "must be data");
+}

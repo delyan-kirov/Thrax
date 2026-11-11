@@ -48,7 +48,12 @@ pub enum GlobalKind {
 #[derive(Clone, Debug)]
 pub struct DataDecl {
     pub global: GlobalId,
+    /// The parameters, then the indices: an indexed family is stored forded,
+    /// with its indices as parameters that constructors do not fix.
+    /// See Note [Indexed families are forded].
     pub params: Vec<Param>,
+    /// How many of `params` are uniform parameters; the rest are indices.
+    pub uniform: usize,
     pub level: Level,
     pub constructors: Vec<ConstructorDecl>,
     pub recursor: GlobalId,
@@ -67,9 +72,16 @@ pub struct Param {
 pub struct ConstructorDecl {
     pub name: Name,
     pub global: GlobalId,
+    /// The forded fields, over all of `params`: the fields as written, then
+    /// one equality per index.
     pub fields: Vec<Param>,
-    /// Which fields are `D params` itself.
+    /// Which fields are `D` itself, at the uniform parameters.
     pub recursive: Vec<bool>,
+    /// The fields as written, over the uniform parameters only.
+    pub surface: Vec<Param>,
+    /// The indices of the constructor's result, over the uniform parameters
+    /// and `surface`.
+    pub indices: Vec<Rc<Term>>,
 }
 
 #[derive(Clone, Debug)]

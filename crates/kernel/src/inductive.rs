@@ -1,11 +1,13 @@
 //! Inductive types: the types of their constructors and recursor, and the
 //! recursor's computation rule.
 //!
-//! An inductive declaration `D (params) : @Type l` lists constructors whose
-//! fields may mention the parameters, earlier fields, and `D params` itself
-//! as a whole field (strict positivity, in the restricted form with no
-//! recursive occurrence under a Pi). Indexed families are not primitive:
-//! TT^obs encodes them by "fording", a parameter plus an equality field.
+//! An inductive declaration `D (params) (indices) : @Type l` lists
+//! constructors whose fields may mention the parameters, earlier fields, and
+//! `D params ys` itself as a whole field (strict positivity, in the
+//! restricted form with no recursive occurrence under a Pi). A constructor of
+//! an indexed family states its result, `: D params ys`. Indexed families are
+//! not primitive: they are stored forded.
+//! See Note [Indexed families are forded].
 //!
 //! The recursor follows Dybjer's schema ("Inductive families", FAC 1994), in
 //! Lean's argument order:
@@ -30,8 +32,9 @@ use std::rc::Rc;
 
 use crate::level::Level;
 use crate::nbe::{apply, eval, Closure, Env, Neutral, Val};
-use crate::signature::{DataDecl, DataId, Param, Signature};
-use crate::term::{shift, Binding, Index, Name, Term};
+use crate::observational::cast;
+use crate::signature::{ConstructorDecl, DataDecl, DataId, Param, Signature};
+use crate::term::{rename, shift, Binding, Index, Name, Term};
 
 // ## Types of the generated globals
 
@@ -84,12 +87,39 @@ fn data_applied_from(decl: &DataDecl, levels: usize, depth: u32, first: u32) -> 
 }
 
 // Rule [Data-Ctor]
-/// `(params) -> (fields) -> D params`.
+/// `(params) -> (fields) -> D params indices`, over the uniform parameters
+/// and the fields as written.
 pub fn constructor_type(decl: &DataDecl, levels: usize, index: usize) -> Term {
     let ctor = &decl.constructors[index];
-    let depth = (decl.params.len() + ctor.fields.len()) as u32;
-    let (fields, sort) = pis(&telescope(&ctor.fields), data_applied(decl, levels, depth), decl.level.clone());
-    pis(&telescope(&decl.params), fields, sort).0
+    let u = decl.uniform as u32;
+    let depth = u + ctor.surface.len() as u32;
+    let params = (0..u).map(|p| var(depth, p));
+    let indices = ctor.indices.iter().map(|y| (**y).clone());
+    let result = apply_all(Term::Global(decl.global, own_levels(levels)), params.chain(indices));
+    let (fields, sort) = pis(&telescope(&ctor.surface), result, decl.level.clone());
+    pis(&telescope(&decl.params[..decl.uniform]), fields, sort).0
+}
+
+/// The arguments after the uniform parameters in the type of recursive
+/// field `field`: the indices it is at.
+fn recursive_indices(decl: &DataDecl, ctor: &ConstructorDecl, field: usize) -> Vec<Term> {
+    let mut args = Vec::new();
+    let mut t = &*ctor.surface[field].ty;
+    while let Term::App(f, a) = t {
+        args.push((**a).clone());
+        t = f;
+    }
+    args.reverse();
+    args.split_off(decl.uniform)
+}
+
+/// Move `t`, a term over the uniform parameters and the first `fields`
+/// fields, to depth `depth`, where the fields start at level `base`.
+fn relocate(t: &Term, uniform: u32, fields: u32, base: u32, depth: u32) -> Term {
+    rename(t, 0, &|v| {
+        let level = if v < fields { base + fields - 1 - v } else { uniform - 1 - (v - fields) };
+        depth - 1 - level
+    })
 }
 
 // Rule [Data-Eq-Projection]
@@ -149,24 +179,42 @@ pub fn projection_type(decl: &DataDecl, levels: usize, index: usize, field: usiz
 // Rule [Data-Elim]
 /// The recursor's type; `levels` counts the declaration's own level
 /// parameters, and the motive's sort is parameter `levels`.
+///
+/// ```text
+/// (params) -> (P: (indices) -> D params indices -> @Type m) -> (methods)
+///   -> (indices) -> (x: D params indices) -> P indices x
+/// ```
 pub fn recursor_type(decl: &DataDecl, levels: usize) -> Term {
-    let np = decl.params.len() as u32;
+    let u = decl.uniform as u32;
+    let ni = (decl.params.len() - decl.uniform) as u32;
     let k = decl.constructors.len() as u32;
     let m = Level::Param(levels as u32);
-    let motive_name: Name = "P".into();
-    let p_level = np;
+    // The major premise, named apart from the parameters and indices so the
+    // type prints unambiguously.
+    let mut x: Name = "x".into();
+    while decl.params.iter().any(|p| p.name == x) {
+        x = format!("{x}'").into();
+    }
+    let indices = &decl.params[decl.uniform..];
 
-    // `(x: D params) -> P x`, under the parameters, the motive and the methods.
-    let target_depth = np + 1 + k;
-    let x: Name = "x".into();
-    let target = pi(
-        &x,
-        data_applied(decl, levels, target_depth),
-        decl.level.clone(),
-        Term::app(var(target_depth + 1, p_level), Term::Var(0)),
-        m.clone(),
+    // `(indices) -> (x: D params indices) -> P indices x`, under the
+    // parameters, the motive and the methods.
+    let outside = 1 + k;
+    let base = u + outside;
+    let depth = base + ni + 1;
+    let p_var = |depth: u32| var(depth, u);
+    let index_vars = |depth: u32| (0..ni).map(move |i| var(depth, base + i));
+    let applied = apply_all(Term::app(apply_all(p_var(depth), index_vars(depth)), Term::Var(0)), []);
+    let data = apply_all(
+        Term::Global(decl.global, own_levels(levels)),
+        (0..u).map(|p| var(depth - 1, p)).chain(index_vars(depth - 1)),
     );
-    let mut rest = (target, Level::imax(&decl.level, &m));
+    let mut rest = (pi(&x, data, decl.level.clone(), applied, m.clone()), Level::imax(&decl.level, &m));
+    for (i, index) in indices.iter().enumerate().rev() {
+        let ty = shift(&index.ty, i as Index, outside);
+        let sort = Level::imax(&index.level, &rest.1);
+        rest = (pi(&index.name, ty, index.level.clone(), rest.0, rest.1), sort);
+    }
 
     let methods: Vec<(Term, Level)> =
         (0..decl.constructors.len()).map(|i| method_type(decl, levels, i, &m)).collect();
@@ -176,39 +224,42 @@ pub fn recursor_type(decl: &DataDecl, levels: usize) -> Term {
         rest = (pi(&name, method, method_level, rest.0, rest.1), sort);
     }
 
-    // `(P: D params -> @Type m) -> ...`.
-    let motive_ty = pi(&x, data_applied(decl, levels, np), decl.level.clone(), Term::Sort(m.clone()), m.succ());
-    let motive_level = Level::imax(&decl.level, &m.succ());
+    // `(P: (indices) -> D params indices -> @Type m) -> ...`.
+    let motive_target = pi(&x, data_applied(decl, levels, u + ni), decl.level.clone(), Term::Sort(m.clone()), m.succ());
+    let (motive_ty, motive_level) = pis(&telescope(indices), motive_target, Level::imax(&decl.level, &m.succ()));
     let sort = Level::imax(&motive_level, &rest.1);
-    let with_motive = (pi(&motive_name, motive_ty, motive_level, rest.0, rest.1), sort);
-    pis(&telescope(&decl.params), with_motive.0, with_motive.1).0
+    let with_motive = (pi(&"P".into(), motive_ty, motive_level, rest.0, rest.1), sort);
+    pis(&telescope(&decl.params[..decl.uniform]), with_motive.0, with_motive.1).0
 }
 
 /// The method for constructor `index`, in the context of the parameters,
-/// the motive and the methods before it.
+/// the motive and the methods before it:
+/// `(fields) -> (P ys f for each recursive field f: D params ys) -> P indices (c params fields)`.
 fn method_type(decl: &DataDecl, levels: usize, index: usize, m: &Level) -> (Term, Level) {
     let ctor = &decl.constructors[index];
-    let np = decl.params.len() as u32;
+    let u = decl.uniform as u32;
     let outside = 1 + index as u32;
-    let base = np + outside;
-    let p_level = np;
+    let base = u + outside;
+    let p_level = u;
     let mut binders: Vec<(Name, Term, Level)> = Vec::new();
-    for (f, field) in ctor.fields.iter().enumerate() {
+    for (f, field) in ctor.surface.iter().enumerate() {
         // A field's type was checked over the parameters and earlier fields;
         // here the motive and earlier methods sit between them.
         binders.push((field.name.clone(), shift(&field.ty, f as Index, outside), field.level.clone()));
     }
-    let nf = ctor.fields.len() as u32;
-    for (f, _) in ctor.recursive.iter().enumerate().filter(|(_, r)| **r) {
+    let nf = ctor.surface.len() as u32;
+    for (f, _) in ctor.recursive.iter().take(ctor.surface.len()).enumerate().filter(|(_, r)| **r) {
         let depth = base + binders.len() as u32;
-        let hypothesis = Term::app(var(depth, p_level), var(depth, base + f as u32));
-        binders.push((format!("ih_{}", ctor.fields[f].name).into(), hypothesis, m.clone()));
+        let ys = recursive_indices(decl, ctor, f).into_iter().map(|y| relocate(&y, u, f as u32, base, depth));
+        let hypothesis = Term::app(apply_all(var(depth, p_level), ys), var(depth, base + f as u32));
+        binders.push((format!("ih_{}", ctor.surface[f].name).into(), hypothesis, m.clone()));
     }
     let depth = base + binders.len() as u32;
-    let params = (0..np).map(|p| var(depth, p));
+    let params = (0..u).map(|p| var(depth, p));
     let fields = (0..nf).map(|f| var(depth, base + f));
     let value = apply_all(Term::Global(ctor.global, own_levels(levels)), params.chain(fields));
-    let result = Term::app(var(depth, p_level), value);
+    let ys = ctor.indices.iter().map(|y| relocate(y, u, nf, base, depth));
+    let result = Term::app(apply_all(var(depth, p_level), ys), value);
     pis(&binders, result, m.clone())
 }
 
@@ -258,7 +309,19 @@ pub struct RecursorArgs {
 
 impl RecursorArgs {
     pub fn motive(&self, sig: &Signature) -> &Val {
-        &self.args[sig.data(self.data).params.len()]
+        &self.args[sig.data(self.data).uniform]
+    }
+
+    /// The indices the major premise is at.
+    pub fn indices(&self, sig: &Signature) -> &[Val] {
+        let decl = sig.data(self.data);
+        &self.args[decl.uniform + 1 + decl.constructors.len()..]
+    }
+
+    /// `P indices major`, the type of the recursor's result.
+    pub fn result_type(&self, sig: &Signature, major: Val) -> Val {
+        let at = self.indices(sig).iter().fold(self.motive(sig).clone(), |f, i| apply(sig, f, i.clone()));
+        apply(sig, at, major)
     }
 }
 
@@ -276,27 +339,42 @@ pub fn data_value(sig: &Signature, data: DataId, levels: Rc<[Level]>) -> Val {
 
 pub fn constructor_value(sig: &Signature, data: DataId, index: usize, levels: Rc<[Level]>) -> Val {
     let decl = sig.data(data);
-    let np = decl.params.len();
-    let fields = decl.constructors[index].fields.iter();
-    let names: Rc<[Name]> = decl.params.iter().chain(fields).map(|p| p.name.clone()).collect();
-    let done = Rc::new(move |_: &Signature, mut args: Vec<Val>| {
-        let fields = args.split_off(np);
-        Val::Constructor(Rc::new(ConstructorVal {
-            data,
-            index,
-            levels: levels.clone(),
-            params: args,
-            fields,
-        }))
+    let u = decl.uniform;
+    let fields = decl.constructors[index].surface.iter();
+    let names: Rc<[Name]> = decl.params[..u].iter().chain(fields).map(|p| p.name.clone()).collect();
+    let done = Rc::new(move |sig: &Signature, mut args: Vec<Val>| {
+        let fields = args.split_off(u);
+        Val::Constructor(Rc::new(canonical(sig, data, index, levels.clone(), args, fields)))
     });
     curry(names, Vec::new(), done, sig)
 }
 
+/// Constructor `index` at the uniform parameters `params` and its written
+/// `fields`, at the indices its result states: the forded value, with the
+/// irrelevant witness for each index equality.
+pub fn canonical(sig: &Signature, data: DataId, index: usize, levels: Rc<[Level]>, params: Vec<Val>, fields: Vec<Val>) -> ConstructorVal {
+    let decl = sig.data(data);
+    let ctor = &decl.constructors[index];
+    let env = params.iter().chain(&fields).fold(Env::with_levels(levels.clone()), |env, v| env.extend(v.clone()));
+    let mut all_params = params;
+    all_params.extend(ctor.indices.iter().map(|y| eval(sig, &env, y)));
+    let mut all_fields = fields;
+    all_fields.extend(ctor.indices.iter().map(|_| Val::Irrelevant));
+    ConstructorVal {
+        data,
+        index,
+        levels,
+        params: all_params,
+        fields: all_fields,
+    }
+}
+
 pub fn recursor_value(sig: &Signature, data: DataId, levels: Rc<[Level]>) -> Val {
     let decl = sig.data(data);
-    let mut names: Vec<Name> = decl.params.iter().map(|p| p.name.clone()).collect();
+    let mut names: Vec<Name> = decl.params[..decl.uniform].iter().map(|p| p.name.clone()).collect();
     names.push("P".into());
     names.extend(decl.constructors.iter().map(|c| Name::from(format!("case_{}", c.name))));
+    names.extend(decl.params[decl.uniform..].iter().map(|p| p.name.clone()));
     names.push("x".into());
     let done = Rc::new(move |sig: &Signature, mut args: Vec<Val>| {
         let major = args.pop().expect("the recursor has a major premise");
@@ -312,19 +390,36 @@ pub fn recursor_value(sig: &Signature, data: DataId, levels: Rc<[Level]>) -> Val
 
 // Rule [Data-Iota]
 /// The recursor applied to a major premise: the method of a constructor, or
-/// stuck on a neutral.
+/// stuck on a neutral. For an indexed family the method's result is at the
+/// constructor's own indices, and is cast to the major premise's.
+/// See Note [Indexed families are forded].
 pub fn iota(sig: &Signature, rec: Rc<RecursorArgs>, major: Val) -> Val {
     match major {
         Val::Constructor(c) => {
             assert_eq!(c.data, rec.data, "the recursor of one type met a constructor of another");
             let decl = sig.data(rec.data);
-            let method = rec.args[decl.params.len() + 1 + c.index].clone();
-            let applied = c.fields.iter().fold(method, |f, a| apply(sig, f, a.clone()));
-            let recursive = decl.constructors[c.index].recursive.iter();
-            c.fields.iter().zip(recursive).filter(|(_, r)| **r).fold(applied, |f, (field, _)| {
-                let hypothesis = iota(sig, rec.clone(), field.clone());
-                apply(sig, f, hypothesis)
-            })
+            let ctor = &decl.constructors[c.index];
+            let (u, nf) = (decl.uniform, ctor.surface.len());
+            let fields = &c.fields[..nf];
+            let method = rec.args[u + 1 + c.index].clone();
+            let applied = fields.iter().fold(method, |f, a| apply(sig, f, a.clone()));
+            let methods = &rec.args[..u + 1 + decl.constructors.len()];
+            let result = (0..nf).filter(|f| ctor.recursive[*f]).fold(applied, |f, r| {
+                let env = c.params[..u].iter().chain(&fields[..r]).fold(Env::with_levels(c.levels.clone()), |env, v| env.extend(v.clone()));
+                let mut args = methods.to_vec();
+                args.extend(recursive_indices(decl, ctor, r).iter().map(|y| eval(sig, &env, y)));
+                let inner = RecursorArgs { data: rec.data, levels: rec.levels.clone(), args };
+                apply(sig, f, iota(sig, Rc::new(inner), fields[r].clone()))
+            });
+            if decl.uniform == decl.params.len() {
+                return result;
+            }
+            // Rule [Data-Ford]
+            let own = canonical(sig, c.data, c.index, c.levels.clone(), c.params[..u].to_vec(), fields.to_vec());
+            let own_rec = RecursorArgs { data: rec.data, levels: rec.levels.clone(), args: methods.iter().cloned().chain(own.params[u..].iter().cloned()).collect() };
+            let from = own_rec.result_type(sig, Val::Constructor(Rc::new(own)));
+            let to = rec.result_type(sig, Val::Constructor(c.clone()));
+            cast(sig, from, to, Val::Irrelevant, result)
         }
         Val::Neutral(n) => Val::neutral(Neutral::Recursor(rec, n)),
         _ => unreachable!("the recursor's major premise is not a value of its type"),
@@ -351,3 +446,29 @@ pub fn param_type(sig: &Signature, d: &DataVal, index: usize) -> Val {
 pub fn data_level(sig: &Signature, d: &DataVal) -> Level {
     sig.data(d.data).level.instantiate(&d.levels)
 }
+
+// Note [Indexed families are forded]
+//
+// An indexed family is elaborated as CIC^obs does it (Pujet, Leray and
+// Tabareau, TOPLAS 2025, Section 4.2): its indices become parameters that
+// the constructors do not fix, and each constructor gets one more field per
+// index, the equality of the index its result states with the actual one.
+// `cons (m: Nat) (h: a) (t: Vec a m) : Vec a (succ m)` is stored as
+// `cons (m: Nat) (h: a) (t: Vec a m) (n_eq: succ m ~ n)` of `Vec a n`.
+//
+// The user sees the family as written. The constructor global takes the
+// fields as written and fills in the index its result states, with the
+// irrelevant witness for the equality (`canonical`). The recursor has the
+// indexed motive `(indices) -> D params indices -> @Type m`, and its method
+// for a constructor returns `P ys (c params fields)` at the constructor's own
+// indices `ys`; iota casts that to `P xs v` at the value's indices `xs`.
+// For a canonical value the two types are convertible, so Cast-Refl makes
+// the cast invisible, which is why CIC^obs needs Cast-Refl in conversion
+// before fording computes. A value cast to indices that are only
+// propositionally equal is a constructor at other indices; quote prints it as
+// that cast of the constructor.
+//
+// Index types may depend on the parameters but not on earlier indices, so
+// each equality field is homogeneous; and an index must be data, since
+// equality is not formed at a proposition.
+// See Rule [Data-Ford].

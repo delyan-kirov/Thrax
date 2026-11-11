@@ -65,7 +65,7 @@ impl ConversionChecker<'_> {
                 _ => unreachable!("projected from a neutral that is not a pair"),
             },
             Neutral::Absurd(ty, _) => ty.clone(),
-            Neutral::Recursor(rec, major) => apply(self.sig, rec.motive(self.sig).clone(), Val::Neutral(major.clone())),
+            Neutral::Recursor(rec, major) => rec.result_type(self.sig, Val::Neutral(major.clone())),
             Neutral::Eq { .. } => Val::Sort(Level::Zero),
             Neutral::Cast { to, .. } => to.clone(),
             Neutral::QElim { motive, quotient, .. } => apply(self.sig, motive.clone(), Val::Neutral(quotient.clone())),
@@ -222,7 +222,7 @@ impl ConversionChecker<'_> {
                     ty = p.cod.apply(self.sig, a.clone());
                 }
                 self.conv_neutral(x, y)?;
-                Some(apply(self.sig, r.motive(self.sig).clone(), Val::Neutral(x.clone())))
+                Some(r.result_type(self.sig, Val::Neutral(x.clone())))
             }
             (Neutral::Eq { level: l, ty: t, a: a1, b: b1 }, Neutral::Eq { level: m, ty: u, a: a2, b: b2 }) => {
                 let same = l.equal(m) && self.conv_type(t, u) && self.conv(t, a1, a2) && self.conv(t, b1, b2);

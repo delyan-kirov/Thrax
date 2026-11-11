@@ -249,7 +249,7 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
         }
         // Rule [Eq-Univ-Data]
         (Val::Data(x), Val::Data(y)) if x.data == y.data && sig.data(x.data).params.is_empty() => Val::Top,
-        // Rule [Eq-Stuck]
+        // Rule [Eq-Data-Stuck]
         // See Note [Equality of two instances of one inductive type is stuck].
         (Val::Data(x), Val::Data(y)) if x.data == y.data => stuck_eq(k.succ(), universe(), a, b),
         // Rule [Eq-Quot]
@@ -364,7 +364,7 @@ fn stuck_cast(a: Val, b: Val, e: Val, t: Val) -> Val {
 // `A ~ B` from `List A ~ List B`, but nothing derives `X ~ Y` for a
 // parameter `X` that is not a field type. A cast into a constructor needs
 // exactly these equalities, and passes the irrelevant witness for them.
-// See Rule [Eq-Stuck].
+// See Rule [Eq-Data-Stuck].
 
 // Note [Proofs evaluate to an irrelevant witness]
 //
