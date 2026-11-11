@@ -32,6 +32,9 @@ The test reads the tables below and checks:
 The test cannot see whether an issue is still open. Closing one means
 updating its rows here.
 
+The design questions behind the rules, compared across systems, are the
+[survey](survey/README.md).
+
 ## Statuses
 
 | Status | Meaning |
@@ -61,8 +64,20 @@ redistributed, or that is not fetched yet, has `-` for its path and hash.
 | Puj22 | Pujet. Computing with Extensionality Principles in Type Theory. PhD thesis, Nantes Université 2022 | https://hal.science/tel-03923041 | Puj22/paper.pdf | 11cd792f3dd0c5e8ce7dab6b274262475ba6ff369342ff00331832e95d055c2b | CC-BY-NC-ND-4.0 |
 | AC20 | Abel, Coquand. Failure of Normalization in Impredicative Type Theory with Proof-Irrelevant Propositional Equality. LMCS 16(2) 2020 | https://doi.org/10.23638/LMCS-16(2:14)2020 | AC20/paper.pdf | a7279158c5d217cf2fe1657a27856d2aec60337123d9b58eb77d3dfd18bc3de5 | CC-BY-4.0 |
 | Lean4 | The Lean 4 kernel, src/kernel/level.cpp, commit 84c7f508f95c62aaa5049cf220f7279d3fcfde1a | https://github.com/leanprover/lean4/blob/84c7f508f95c62aaa5049cf220f7279d3fcfde1a/src/kernel/level.cpp | Lean4/level.cpp | 34526f1009b9c9a08c9944950976bb6b6036d279e38a35eaaf1221ed9f5ceb3b | Apache-2.0 |
-| PT24 | Pujet, Tabareau. Observational Equality Meets CIC. ESOP 2024, LNCS 14576 | https://doi.org/10.1007/978-3-031-57262-3_12 | - | - | CC-BY-4.0, not fetched: the publisher serves a bot check to scripts |
-| MU21 | de Moura, Ullrich. The Lean 4 Theorem Prover and Programming Language. CADE 2021 | https://doi.org/10.1007/978-3-030-79876-5_37 | - | - | CC-BY-4.0, not fetched: the publisher serves a bot check to scripts |
+| PT24 | Pujet, Tabareau. Observational Equality Meets CIC. ESOP 2024, LNCS 14576, pp. 275-301 | https://doi.org/10.1007/978-3-031-57262-3_12 | PT24/paper.pdf | dfca4534381a6bf4649c41f26a416ad562d6b772441c07676c0d37fcc5cad819 | CC-BY-4.0 |
+| MU21 | de Moura, Ullrich. The Lean 4 Theorem Prover and Programming Language. CADE 2021, LNCS 12699, pp. 625-635 | https://doi.org/10.1007/978-3-030-79876-5_37 | MU21/paper.pdf | 501866908f06b30a165662e5ca6a94e89a988dc09fa94426ff6259714612e938 | CC-BY-4.0 |
+| SLK24 | Sirman, Lennon-Bertrand, Krishnaswami. Implementing a Type Theory with Observational Equality, Using Normalisation by Evaluation. TYPES 2024, LIPIcs 336 | https://doi.org/10.4230/LIPIcs.TYPES.2024.5 | SLK24/paper.pdf | b880a8614914151a3f022c7b7f132e8f0a539841aa84629a31358e6c4a6ed171 | CC-BY-4.0 |
+| SLK24-Conversion | Sirman. observational-type-theory, src/Conversion.hs, commit 53982dc5093f69db83a157367c2d40aadbdcd039 | https://github.com/matthew-sirman/observational-type-theory/blob/53982dc5093f69db83a157367c2d40aadbdcd039/src/Conversion.hs | SLK24code/Conversion.hs | 2d100d5dde8dfba0e2457aa270ae8f7f38556211f83c05ba24e84ee2abf9ebbf | BSD-3-Clause |
+| SLK24-Eval | Sirman. observational-type-theory, src/Eval.hs, commit 53982dc5093f69db83a157367c2d40aadbdcd039 | https://github.com/matthew-sirman/observational-type-theory/blob/53982dc5093f69db83a157367c2d40aadbdcd039/src/Eval.hs | SLK24code/Eval.hs | 72b38d728be06a5b5c3776ddd5ff38479f3323080e403d41890d60b392b28a93 | BSD-3-Clause |
+| smalltt | Kovács. smalltt, README.md, commit ea99b0f478e50dcb81ea19e40bfb4262339b22aa | https://github.com/AndrasKovacs/smalltt/blob/ea99b0f478e50dcb81ea19e40bfb4262339b22aa/README.md | smalltt/README.md | 0ae84e3f07972c8678f1e6168bf9f6b4d989b64f75e0d25b5e028a96b228f2e4 | MIT |
+| Lean4-quot | The Lean 4 kernel, src/kernel/quot.cpp, commit 84c7f508f95c62aaa5049cf220f7279d3fcfde1a | https://github.com/leanprover/lean4/blob/84c7f508f95c62aaa5049cf220f7279d3fcfde1a/src/kernel/quot.cpp | Lean4/quot.cpp | 500621538bfa97cd63ebf0c4b0e111b69232f5d4fa34aa56b5f6482599782627 | Apache-2.0 |
+| Lean4-inductive | The Lean 4 kernel, src/kernel/inductive.cpp, commit 84c7f508f95c62aaa5049cf220f7279d3fcfde1a | https://github.com/leanprover/lean4/blob/84c7f508f95c62aaa5049cf220f7279d3fcfde1a/src/kernel/inductive.cpp | Lean4/inductive.cpp | 6f0d3c5d31fc67ae58d727b12dc989d524fadc1bddc79e45d0e7589a6a207c79 | Apache-2.0 |
+| Lean4-type-checker | The Lean 4 kernel, src/kernel/type_checker.cpp, commit 84c7f508f95c62aaa5049cf220f7279d3fcfde1a | https://github.com/leanprover/lean4/blob/84c7f508f95c62aaa5049cf220f7279d3fcfde1a/src/kernel/type_checker.cpp | Lean4/type_checker.cpp | 8bfd17c68b0abf76efdaa8c5ad250e7b9f5c87f35ca59a570df7acbcfea7785d | Apache-2.0 |
+| Lean4-Prelude | Lean 4, src/Init/Prelude.lean, commit 84c7f508f95c62aaa5049cf220f7279d3fcfde1a | https://github.com/leanprover/lean4/blob/84c7f508f95c62aaa5049cf220f7279d3fcfde1a/src/Init/Prelude.lean | Lean4/Prelude.lean | fa2c883cf69beadc203c1d9c33a72b750bf11959d9f460d7c2febfb390c63acd | Apache-2.0 |
+| Lean4-Core | Lean 4, src/Init/Core.lean, commit 84c7f508f95c62aaa5049cf220f7279d3fcfde1a | https://github.com/leanprover/lean4/blob/84c7f508f95c62aaa5049cf220f7279d3fcfde1a/src/Init/Core.lean | Lean4/Core.lean | c59ce725905c3878be557a5569ccbda9fa7affedfb28b2b930429eb245c1263c | Apache-2.0 |
+| Rocq-uGraph | The Rocq kernel, kernel/uGraph.ml, commit dd62e3cfb7999a10b091000ec33b5c8a185b2326 | https://github.com/rocq-prover/rocq/blob/dd62e3cfb7999a10b091000ec33b5c8a185b2326/kernel/uGraph.ml | Rocq/uGraph.ml | 6bf3f594e16ca686f7144ff946f983cd264de6b299b71c32fc6a6de24d97425f | LGPL-2.1 |
+| nanoda-level | nanoda_lib, an independent Lean 4 type checker in Rust, src/level.rs, commit 0da9f98feadd3a0a2ef4b3dbcf52a298a6fef929 | https://github.com/ammkrn/nanoda_lib/blob/0da9f98feadd3a0a2ef4b3dbcf52a298a6fef929/src/level.rs | nanoda/level.rs | a1afb0638fd9f427c6e7693ea44498b9775bd619bb6fff3bdc44dc52f1d587ad | Apache-2.0 |
+| nanoda-tc | nanoda_lib, an independent Lean 4 type checker in Rust, src/tc.rs, commit 0da9f98feadd3a0a2ef4b3dbcf52a298a6fef929 | https://github.com/ammkrn/nanoda_lib/blob/0da9f98feadd3a0a2ef4b3dbcf52a298a6fef929/src/tc.rs | nanoda/tc.rs | 1c74274ec2d979796f2dfa73e93d63db54cbb4ac388d283fda28e472dcd96781 | Apache-2.0 |
 | AMS07 | Altenkirch, McBride, Swierstra. Observational Equality, Now! PLPV 2007 | https://doi.org/10.1145/1292597.1292608 | - | - | ACM copyright, link only |
 | ST14 | Sozeau, Tabareau. Universe Polymorphism in Coq. ITP 2014 | https://doi.org/10.1007/978-3-319-08970-6_32 | - | - | Springer copyright, link only |
 | BS91 | Berger, Schwichtenberg. An Inverse of the Evaluation Functional for Typed λ-calculus. LICS 1991 | https://doi.org/10.1109/LICS.1991.151645 | - | - | IEEE copyright, link only |
@@ -71,6 +86,9 @@ redistributed, or that is not fetched yet, has `-` for its path and hash.
 | PTu00 | Pierce, Turner. Local Type Inference. TOPLAS 22(1) 2000 | https://doi.org/10.1145/345099.345100 | - | - | ACM copyright, link only |
 | DK21 | Dunfield, Krishnaswami. Bidirectional Typing. ACM Computing Surveys 54(5) 2021 | https://doi.org/10.1145/3450952 | - | - | ACM copyright, link only |
 | Dyb94 | Dybjer. Inductive Families. Formal Aspects of Computing 6(4) 1994 | https://doi.org/10.1007/BF01211308 | - | - | Springer copyright, link only |
+| GCST19 | Gilbert, Cockx, Sozeau, Tabareau. Definitional Proof-Irrelevance without K. POPL 2019 | https://doi.org/10.1145/3290316 | GCST19/paper.pdf | 3b14f8d2c37705def11232369b9c0da7c3680f3a463e5b06b5d156ed77387e8e | CC-BY-NC-SA-4.0 |
+| sott | Atkey. sott, Simplified Observational Type Theory, commit 65f684453910d6988f1e5c825ac8e6ee27927469 | https://github.com/bobatkey/sott/tree/65f684453910d6988f1e5c825ac8e6ee27927469 | - | - | no licence, link only |
+| LJB01 | Lee, Jones, Ben-Amram. The Size-Change Principle for Program Termination. POPL 2001 | https://doi.org/10.1145/360204.360210 | - | - | ACM copyright, link only |
 
 ## Theorems
 
@@ -95,13 +113,15 @@ redistributed, or that is not fetched yet, has `-` for its path and hash.
 | Normalisation by evaluation | BS91, Coq96 | not checked: not vendored | published-uncovered | - | yes |
 | Bidirectional checking | PTu00, DK21 | not checked: not vendored | published-uncovered | - | yes |
 | Typed conversion | AC05, PLT25 | PLT25 Fig. 7, algorithmic conversion; AC05 not checked: not vendored | published-uncovered | - | yes |
-| Level comparison by case split | - | - | conjecture | #472 | yes |
+| Level comparison by case split | nanoda-level | level.rs:158-173, leq_imax_by_cases, the same split on a parameter being zero or not | published-uncovered | #479 | yes |
 | Recursor generation | Dyb94 | not checked: not vendored | published-uncovered | - | yes |
-| Transitive axioms | - | - | conjecture | #472 | yes |
+| Transitive axioms | - | - | conjecture | #480 | yes |
 
-The level comparison was attributed to Lean 4 in the code, but Lean's kernel
-does not split cases: `is_geq_core` (Lean4, `level.cpp:483`) is a syntactic
-check, sound but incomplete. The case split needs its own source or proof.
+The level comparison was attributed to Lean 4 in the code, but Lean's C++
+kernel does not split cases: `is_geq_core` (Lean4, `level.cpp:483`) is a
+syntactic check, sound but incomplete. nanoda_lib, an independent Lean kernel
+in Rust, does split (`nanoda/level.rs:158-173`), which is the kernel's
+algorithm; neither has a proof (#479).
 Transitive axioms is graph reachability over what the checker resolved; it is
 a conjecture only in that nothing proves the recorded edges complete.
 
@@ -118,15 +138,15 @@ a conjecture only in that nothing proves the recorded edges complete.
 | Eta-Pi | PT22 | Fig. 3, η-Eq | published | PT22 Decidability | - | yes |
 | Let | PT22 | Fig. 4, β-red; a let is a typed redex whose variable stays transparent | published-uncovered | - | - | yes |
 | Proof-Irrelevance | PT22 | Fig. 3, Proof-Irrelevance | published | PT22 Decidability | - | yes |
-| Cumulativity | PT22 | Fig. 2, Π-Form, whose annotations are the only cumulativity | deviation | - | #472 | yes |
+| Cumulativity | PT22 | Fig. 2, Π-Form, whose annotations are the only cumulativity | deviation | - | #475 | yes |
 | Sigma-Form | PT22 | Section 4.4, Σ-types; for propositions PT23 Fig. 2, &-Form | published-uncovered | PT22 Sigma | - | yes |
 | Sigma-Pair | PT22 | Section 4.4, pairs and projections | published-uncovered | PT22 Sigma | - | yes |
 | Eta-Sigma | AC05 | not checked: not vendored | published-uncovered | - | - | yes |
 | Top | PT22 | Fig. 2, ⊤-Form and ⊤-Intro | published | PT22 Normalisation | - | yes |
 | Bottom | PT22 | Fig. 2, ⊥-Form and ⊥-Elim | published | PT22 Normalisation | - | yes |
 | Eq-Form | PT22 | Fig. 2, Eq-Form | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Eq-Prop | PT22 | Fig. 2, Eq-Form, which forms ∼ only at a type in 𝒰 | deviation | - | #472 | yes |
-| Eq-Stuck | PT22 | Fig. 2, Eq-Form, which needs a type in 𝒰 | deviation | - | #468 | yes |
+| Eq-Prop | PT22 | Fig. 2, Eq-Form, which forms ∼ only at a type in 𝒰 | deviation | - | #476 | yes |
+| Eq-Stuck | PT22, PLT25 | PT22 Fig. 2, Eq-Form, which needs a type in 𝒰; PLT25 Section 2.3, no computation for `Ind a ∼ Ind a'` | deviation | - | #468 | yes |
 | Refl | PT22 | Fig. 2, Refl | published | PT22 Normalisation | - | yes |
 | Transport | PT22 | Fig. 2, Transport-Ω, with the non-dependent motive the paper says suffices | published | PT22 Normalisation | - | yes |
 | Cast | PT22 | Fig. 2, Cast | published | PT22 Normalisation, PT22 Decidability | - | yes |
@@ -138,7 +158,8 @@ a conjecture only in that nothing proves the recorded edges complete.
 | Eq-Pi | PT22 | Fig. 4, Eq-Π | published | PT22 Normalisation, PT22 Decidability | - | yes |
 | Eq-Sigma | PT22 | Section 4.4, Eq-Σ | published-uncovered | PT22 Sigma | - | yes |
 | Eq-Ctor | PT22 | Fig. 4, Eq-zero, Eq-Suc, Eq-zero-suc, Eq-suc-zero, generalised to every constructor | published-uncovered | - | - | yes |
-| Eq-Data | PLT25 | Section 4.1, the eq_c projections | deviation | - | #472 | yes |
+| Eq-Univ-Data | PT22 | Fig. 4, Eq-Univ for ℕ, extended to every inductive type without parameters | published-uncovered | - | - | yes |
+| Data-Eq-Projection | PLT25 | Section 4.1, the eq_c projections from `Ind a ∼ Ind a'` to the equality of each constructor's field types | published | PLT25 Consistency | #477 | planned |
 | Eq-Quot-Class | PT22 | Section 4.1, π(t) ∼ π(u) reduces to R t u | published-uncovered | PT22 Quotients | - | yes |
 | Eq-Quot | PT22 | Section 4.1, equality of two quotient types | published-uncovered | PT22 Quotients | - | yes |
 | Cast-Pi | PT22 | Fig. 4, Cast-Π | published | PT22 Normalisation, PT22 Decidability | - | yes |
@@ -169,11 +190,12 @@ How the deviations differ from their sources:
   equality only at relevant types. It holds in their models by proof
   irrelevance, but no source has the rule.
 - **Eq-Stuck.** Equality at a type whose sort may be `0` is left stuck, and so
-  is equality between instances of an inductive type whose parameters depend
-  on earlier ones.
-- **Eq-Data.** `D a ~ D a'` reduces to the equality of the parameters, which
-  makes type formers injective. CIC^obs only provides projections from it to
-  the equality of each constructor's field types.
+  is `D a ~ D a'` for an inductive type with parameters. Until 2026-11-11 the
+  latter reduced to `a ~ a'`, making type formers injective; CIC^obs Section
+  2.3 shows that is inconsistent once a parameter is larger than the type's
+  universe, and the kernel accepted exactly that (#477). CIC^obs's
+  projections, Data-Eq-Projection, are the planned replacement for using such
+  an equality.
 - **Cast-Refl-Eval.** `@cast A B e t` evaluates to `t` when `A` and `B` are
   syntactically identical values, before any rule by head. CIC^obs puts
   Cast-Refl in conversion, and its Coq implementation reduces only neutral
@@ -191,7 +213,7 @@ How the deviations differ from their sources:
 
 | Assumption | Why it is believed | What would discharge it | Issue |
 |---|---|---|---|
-| Composition | each published rule is covered for its own fragment, and the fragments' models (setoids, sets) look compatible | a logical relation for the whole kernel, or a translation into a system that has one | #472 |
+| Composition | each published rule is covered for its own fragment, and the fragments' models (setoids, sets) look compatible | a logical relation for the whole kernel, or a translation into a system that has one | #478 |
 | Cast-Refl as an evaluation rule | `@cast A A e t ~ t` holds in the setoid model, and cast never computes on proofs | moving the rule into conversion, as Cast-Refl (PLT25 Fig. 3) | #464 |
-| Level comparison is complete | it decides `<=` on max-plus normal forms and splits every undecided `imax` on both values of a parameter | a proof, or a published algorithm to cite | #472 |
+| Level comparison is complete | it decides `<=` on max-plus normal forms and splits every undecided `imax` on both values of a parameter, as nanoda_lib does | a proof | #479 |
 | Proofs need not be kept | every proof the evaluator drops was type-checked, and the published systems contain the proof terms the rules would build | keeping proof terms | #465 |

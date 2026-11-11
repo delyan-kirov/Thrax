@@ -35,7 +35,7 @@
 
 use std::rc::Rc;
 
-use crate::inductive::{field_type, param_type, ConstructorVal};
+use crate::inductive::{field_type, ConstructorVal};
 use crate::level::Level;
 use crate::nbe::{apply, fst, snd, BindingVal, Closure, Lvl, Neutral, Val};
 use crate::signature::Signature;
@@ -249,24 +249,11 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
                 and(doms, cods)
             }
         }
-        // Rule [Eq-Data]
-        (Val::Data(x), Val::Data(y)) if x.data == y.data => {
-            let decl = sig.data(x.data);
-            let same_levels = x.levels.len() == y.levels.len() && x.levels.iter().zip(y.levels.iter()).all(|(l, m)| l.equal(m));
-            let dependent = decl.params.iter().enumerate().any(|(i, p)| (0..i as u32).any(|j| mentions(&p.ty, j)));
-            // Rule [Eq-Stuck]
-            if !same_levels || dependent {
-                return stuck_eq(k.succ(), universe(), a, b);
-            }
-            let mut props = Vec::new();
-            for (i, param) in decl.params.iter().enumerate() {
-                let level = param.level.instantiate(&x.levels);
-                if !level.is_zero() {
-                    props.push(eq(sig, level, param_type(sig, x, i), x.params[i].clone(), y.params[i].clone()));
-                }
-            }
-            and_all(props)
-        }
+        // Rule [Eq-Univ-Data]
+        (Val::Data(x), Val::Data(y)) if x.data == y.data && sig.data(x.data).params.is_empty() => Val::Top,
+        // Rule [Eq-Stuck]
+        // See Note [Equality of two instances of one inductive type is stuck].
+        (Val::Data(x), Val::Data(y)) if x.data == y.data => stuck_eq(k.succ(), universe(), a, b),
         // Rule [Eq-Quot]
         (Val::Quot(x), Val::Quot(y)) => {
             // `A / R ~ A' / R'` is `A ~ A'` and, for every `a b: A`,
@@ -444,6 +431,18 @@ fn stuck_cast(a: Val, b: Val, e: Val, t: Val) -> Val {
 // eliminator `@qelim P f resp` is what keeps it consistent: `f` must send
 // related representatives to equal results (`resp`), so no function can tell
 // two equal classes apart.
+
+// Note [Equality of two instances of one inductive type is stuck]
+//
+// `D a ~ D a'` does not compute to `a ~ a'`. That rule would make every type
+// former injective in its parameters, and with a parameter from a larger
+// universe than the type's own (`D : (X: @Type 1 -> @Type 1) -> @Type 1`) it
+// injects a large type into a small one, which is Russell's paradox in the
+// form CIC^obs rejects (Pujet, Leray, Tabareau, TOPLAS 2025, Section 2.3).
+// CIC^obs instead lets the equality imply only that the constructors' field
+// types are equal (its `eq_c` projections, Section 4.1); a cast into a
+// constructor needs no more, and passes the irrelevant witness for it.
+// See Rule [Eq-Stuck].
 
 // Note [Proofs evaluate to an irrelevant witness]
 //
