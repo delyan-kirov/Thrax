@@ -108,6 +108,7 @@ impl ConversionChecker<'_> {
         if self.is_proposition(ty) {
             return true;
         }
+        let (a, b) = (&self.strip_casts(a), &self.strip_casts(b));
         match ty {
             // Rule [Eta-Pi]
             Val::Pi(p) => self.under(p.dom.clone(), |c, x| {
@@ -157,8 +158,38 @@ impl ConversionChecker<'_> {
         }
     }
 
+    // Rule [Cast-Refl]
+    // See Note [A cast between convertible types is the identity].
+    /// `v` without the casts between convertible types around it.
+    fn strip_casts(&mut self, v: &Val) -> Val {
+        let mut v = v.clone();
+        while let Val::Neutral(n) = &v {
+            match self.strip_cast(n) {
+                Some(inner) => v = inner,
+                None => break,
+            }
+        }
+        v
+    }
+
+    /// The value under `n`, when `n` is a cast between convertible types.
+    fn strip_cast(&mut self, n: &Neutral) -> Option<Val> {
+        let Neutral::Cast { from, to, value, .. } = n else { return None };
+        self.conv_type(from, to, false).then(|| value.clone())
+    }
+
     /// Neutrals with the same head and equal arguments, returning their type.
     fn conv_neutral(&mut self, a: &Neutral, b: &Neutral) -> Option<Val> {
+        // A cast of a canonical value between convertible types computes by
+        // head, so what is left under the cast is another neutral.
+        if let Some(inner) = self.strip_cast(a) {
+            let Val::Neutral(a) = inner else { return None };
+            return self.conv_neutral(&a, b);
+        }
+        if let Some(inner) = self.strip_cast(b) {
+            let Val::Neutral(b) = inner else { return None };
+            return self.conv_neutral(a, &b);
+        }
         match (a, b) {
             (Neutral::Var(x), Neutral::Var(y)) if x == y => Some(self.types[*x as usize].clone()),
             (Neutral::Axiom(x, xl), Neutral::Axiom(y, yl)) if x == y && levels_equal(xl, yl) => {
@@ -283,6 +314,21 @@ fn levels_equal(a: &[Level], b: &[Level]) -> bool {
 // ask whether the type lives in `@Type 0`. A type whose sort is a level
 // parameter that may be zero is not treated as a proposition: its values are
 // compared structurally, which is sound and only loses equations.
+
+// Note [A cast between convertible types is the identity]
+//
+// `@cast A B e t` is `t` when `A` and `B` are convertible (Cast-Refl, PLT25
+// Fig. 3). It is a conversion rule, not a reduction: evaluation leaves the
+// cast stuck, and conversion strips it before comparing, as in Sirman,
+// Lennon-Bertrand and Krishnaswami's implementation. TT^obs reaches `t` only
+// through its structure, so without the rule a cast from a type to itself on
+// a neutral `t` would never equal `t`. Quotient elimination needs it: the
+// respect obligation is stated with a cast from `P (@qin x)` to
+// `P (@qin y)`, and the outer respect proof of a binary operation meets that
+// cast on the inner eliminator applied to a variable. CIC^obs proves
+// conversion decidable with the rule (PLT25 Theorem 5.6); evaluating it
+// instead would break normalisation in an impredicative universe (Abel and
+// Coquand).
 
 // Note [Cumulativity starts at data]
 //

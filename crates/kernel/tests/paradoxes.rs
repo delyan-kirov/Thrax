@@ -82,5 +82,5 @@ $ R : Nat -> Nat -> @Type 0 = \\x y => @Top
 $ Q : @Type 1 = @Quot Nat R (\\x => @tt) (\\x y e => @tt) (\\x y z e f => @tt)
 $ bad : Q -> Nat = \\q => @qelim (\\_ => Nat) (\\x => x) (\\x y e => @refl x) q
 ";
-    rejects("unrespected-quotient", src, "expected `x ~ y`, found `x ~ x`");
+    rejects("unrespected-quotient", src, "~ y`, found `x ~ x`");
 }

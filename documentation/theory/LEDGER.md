@@ -167,8 +167,7 @@ a conjecture only in that nothing proves the recorded edges complete.
 | Cast-Univ | PT22 | Fig. 4, Cast-Univ | published | PT22 Normalisation, PT22 Decidability | - | yes |
 | Cast-Ctor | PLT25 | Section 4.1, the cast rule for a constructor | published-uncovered | PLT25 Consistency | - | yes |
 | Cast-Quot | PT22 | Section 4.1, cast of π(t) | published-uncovered | PT22 Quotients | - | yes |
-| Cast-Refl | PLT25 | Fig. 3, Cast-Refl, a conversion rule | published | PLT25 Decidability, Puj22 Cast-Refl decidability | - | planned |
-| Cast-Refl-Eval | Puj22, PLT25 | Puj22 Section 5.1.3, Cast-Refl-Neutral; PLT25 Section 7.2, Cast-refl-red | deviation | - | #464 | yes |
+| Cast-Refl | PLT25 | Fig. 3, Cast-Refl, a conversion rule | published | PLT25 Decidability, Puj22 Cast-Refl decidability | - | yes |
 | Proof-Witness | PT22 | Fig. 2, Refl and Transport-Ω, whose proof terms the kernel drops | deviation | - | #465 | yes |
 | Data-Form | Dyb94, PLT25 | PLT25 Section 4.1, inductive definitions without indices, outside Ω; Dyb94 not checked | published-uncovered | PLT25 Consistency | - | yes |
 | Data-Ctor | Dyb94, PLT25 | PLT25 Section 4.1; Dyb94 not checked | published-uncovered | PLT25 Consistency | - | yes |
@@ -196,14 +195,6 @@ How the deviations differ from their sources:
   universe, and the kernel accepted exactly that (#477). CIC^obs's
   projections, Data-Eq-Projection, are the planned replacement for using such
   an equality.
-- **Cast-Refl-Eval.** `@cast A B e t` evaluates to `t` when `A` and `B` are
-  syntactically identical values, before any rule by head. CIC^obs puts
-  Cast-Refl in conversion, and its Coq implementation reduces only neutral
-  casts (PLT25 Section 7.2); Puj22 conjectures normalisation for the version
-  on neutral types with a conversion premise (Conjecture 5.1.1). AC20 shows that
-  such a rule breaks normalisation when it computes in an impredicative
-  universe; the kernel only meets proofs there, which it never reduces (see
-  Proof-Witness), the situation Puj22 Section 5.1.3 expects to be safe.
 - **Proof-Witness.** Proofs evaluate to one irrelevant witness, and `@refl`
   and `@transp` elaborate to it, so an elaborated term cannot be re-checked.
 - **Positivity-Restricted.** A restriction of the schema, not an extension:
@@ -214,6 +205,5 @@ How the deviations differ from their sources:
 | Assumption | Why it is believed | What would discharge it | Issue |
 |---|---|---|---|
 | Composition | each published rule is covered for its own fragment, and the fragments' models (setoids, sets) look compatible | a logical relation for the whole kernel, or a translation into a system that has one | #478 |
-| Cast-Refl as an evaluation rule | `@cast A A e t ~ t` holds in the setoid model, and cast never computes on proofs | moving the rule into conversion, as Cast-Refl (PLT25 Fig. 3) | #464 |
 | Level comparison is complete | it decides `<=` on max-plus normal forms and splits every undecided `imax` on both values of a parameter, as nanoda_lib does | a proof | #479 |
 | Proofs need not be kept | every proof the evaluator drops was type-checked, and the published systems contain the proof terms the rules would build | keeping proof terms | #465 |

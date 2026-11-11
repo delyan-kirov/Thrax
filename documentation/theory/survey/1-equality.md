@@ -42,6 +42,9 @@ SLK24code/Conversion.hs:216-243.** The kernel's evaluation rule
 Conjecture 5.1.1, and AC20 shows the hazard of the shape.
 
 Consequence: the respect obligation of a quotient operation, which needed the
-evaluation rule (Note [A cast between identical types is the identity]), is
-met by conversion instead, since conversion is where the checker compares the
-expected and the synthesised type.
+evaluation rule, is met by conversion instead, since conversion is where the
+checker compares the expected and the synthesised type.
+
+Update (2026-11-11): implemented. Conversion strips a cast whose two types
+are convertible (Note [A cast between convertible types is the identity] in
+`crates/kernel/src/conversion.rs`), and `rationals.ott` still checks.

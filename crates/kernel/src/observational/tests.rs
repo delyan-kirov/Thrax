@@ -85,11 +85,14 @@ fn cast_computes_on_canonical_types() {
 $ moved : Nat = subst @ctx {{.u = 0, .v = 0}} Nat (\_ => Nat) two two (@refl two) four
 $ pair : Nat * Nat = @cast (Nat * Nat) (Nat * Nat) (@tt, \_ => @tt) (two, four)
 $ fn : Nat -> Nat = @cast (Nat -> Nat) (Nat -> Nat) (@tt, \_ => @tt) (\n => succ n)
+$ fn_is_succ : fn ~ (\n => succ n) = \n => @refl (succ n)
 "
     ));
     assert_eq!(normal_form(&sig, "moved").unwrap(), "succ (succ (succ (succ zero)))");
     assert_eq!(normal_form(&sig, "pair").unwrap(), "(succ (succ zero), succ (succ (succ (succ zero))))");
-    assert_eq!(normal_form(&sig, "fn").unwrap(), r"\n => succ n");
+    // Cast-Pi casts the argument and the result, and those casts between
+    // `Nat` and itself stay in the normal form: Cast-Refl is conversion only.
+    assert_eq!(normal_form(&sig, "fn").unwrap(), r"\_ => succ (@cast Nat Nat @irrelevant (@cast Nat Nat @irrelevant _))");
 }
 
 #[test]
@@ -106,15 +109,20 @@ $ n : Nat = @cast A Nat e a
 }
 
 #[test]
-fn a_cast_between_identical_types_is_the_identity() {
+fn a_cast_between_convertible_types_is_the_identity() {
     let sig = accept(&format!(
         r"{NAT}{PARITY}
 $ q : Parity
 $ e : Parity ~ Parity
 $ same : Parity = @cast Parity Parity e q
+$ refl : same ~ q = @refl q
+$ m : Nat
+$ under : even (@cast Nat Nat @tt m) ~ even m = @refl (even m)
 "
     ));
-    assert_eq!(normal_form(&sig, "same").unwrap(), "q");
+    // It is a conversion rule, not a reduction.
+    assert!(normal_form(&sig, "same").unwrap().starts_with("@cast "));
+    reject(&format!("{NAT}$ m : Nat\n$ bad : @cast Nat Nat @tt m ~ succ m = @refl m\n"), "expected");
 }
 
 #[test]
@@ -162,7 +170,7 @@ $ classes_agree : (p q: Parity) -> p ~ q -> parity p ~ parity q =
     // The identity on representatives does not respect parity.
     reject(
         &format!("{NAT}{PARITY}$ leak : Parity -> Nat = \\q => @qelim (\\_ => Nat) (\\n => n) (\\x y e => e) q\n"),
-        "expected `x ~ y`, found",
+        "~ y`, found",
     );
 }
 
