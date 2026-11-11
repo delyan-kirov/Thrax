@@ -470,5 +470,6 @@ pub fn data_level(sig: &Signature, d: &DataVal) -> Level {
 //
 // Index types may depend on the parameters but not on earlier indices, so
 // each equality field is homogeneous; and an index must be data, since
-// equality is not formed at a proposition.
+// equality is not formed at a proposition. Lifting the first restriction
+// needs heterogeneous equality fields (#490).
 // See Rule [Data-Ford].

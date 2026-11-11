@@ -73,7 +73,7 @@ each rule's implementation with `// Rule [Name]`, and
 
 - `@cast A B e t` is convertible with `t` when `A` and `B` are convertible (Cast-Refl of CIC^obs, a conversion rule, not a reduction). TT^obs reaches `t` only through its structure; without the rule the outer respect proof of a binary quotient operation meets a stuck cast.
 - Equality between two instances of one inductive type with parameters, `D a ~ D a'`, is left stuck: computing it to `a ~ a'` would make type formers injective, which is inconsistent (#477).
-- Index types that depend on earlier indices are rejected, as are nested and infinitely branching recursive fields.
+- Index types that depend on earlier indices are rejected (#490), as are nested and infinitely branching recursive fields.
 - Definitions unfold eagerly, so error messages show unfolded terms. Glued evaluation would keep the names.
 - No metavariables or implicit arguments: the kernel checks elaborated terms, and every argument is written.
 
