@@ -42,3 +42,8 @@ check is the fallback if no proof is found.
 
 Open: level polymorphism over an observational theory has no published
 proof. It is part of Assume [Composition] (#478).
+
+Update (2026-11-11): cumulativity is removed (#475). A synthesised type
+fits an expected one only when the two are convertible, and equality between
+two type formers is `@Bottom` when the levels of corresponding components
+differ. No explicit lift was needed: `rationals.ott` checks unchanged.

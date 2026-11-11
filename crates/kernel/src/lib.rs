@@ -14,7 +14,7 @@
 //! * [`nbe`] evaluates terms to values and reads them back; [`inductive`]
 //!   gives the declared inductive types their recursors.
 //! * [`observational`] is the computation of equality and cast.
-//! * [`conversion`] decides definitional equality and cumulative subtyping.
+//! * [`conversion`] decides definitional equality.
 //! * [`syntax`] parses scripts and [`check`] elaborates them by bidirectional
 //!   type checking.
 //!

@@ -1,4 +1,4 @@
-//! Definitional equality of values, and cumulative subtyping of types.
+//! Definitional equality of values and of types.
 //!
 //! The algorithm is typed conversion checking by evaluation, as in Abel and
 //! Coquand's "Untyped algorithmic equality for Martin-Löf's logical framework
@@ -9,16 +9,14 @@
 //! structurally, and neutrals by their heads and then their arguments at the
 //! argument types.
 //!
-//! Subtyping is equality except at universes: `@Type a <= @Type b` when
-//! `a <= b` and `a` is not `0` (cumulativity starts at level 1, so a
-//! proposition is never data), covariantly in a Pi type's codomain and in
-//! both components of a Sigma type.
+//! There is no subtyping: universes are not cumulative, as in CC^obs, so a
+//! type fits where another is expected only when the two are convertible.
 //!
 //! The checker hands its context's variable types to a [`ConversionChecker`],
 //! which pushes the types of the fresh variables it introduces and pops them
 //! on the way out.
 //!
-//! Entry points: [`ConversionChecker::conv`], [`ConversionChecker::subtype`].
+//! Entry points: [`ConversionChecker::conv`], [`ConversionChecker::conv_type`].
 
 use std::rc::Rc;
 
@@ -125,7 +123,7 @@ impl ConversionChecker<'_> {
                     self.conv(&cod, &snd(a.clone()), &snd(b.clone()))
                 }
             }
-            Val::Sort(_) => self.conv_type(a, b, false),
+            Val::Sort(_) => self.conv_type(a, b),
             Val::Neutral(_) | Val::Data(_) => self.conv_by_structure(a, b),
             Val::Quot(q) => match (a, b) {
                 (Val::QIn(x), Val::QIn(y)) => self.conv(&q.carrier, x, y),
@@ -175,7 +173,7 @@ impl ConversionChecker<'_> {
     /// The value under `n`, when `n` is a cast between convertible types.
     fn strip_cast(&mut self, n: &Neutral) -> Option<Val> {
         let Neutral::Cast { from, to, value, .. } = n else { return None };
-        self.conv_type(from, to, false).then(|| value.clone())
+        self.conv_type(from, to).then(|| value.clone())
     }
 
     /// Neutrals with the same head and equal arguments, returning their type.
@@ -208,7 +206,7 @@ impl ConversionChecker<'_> {
                 _ => unreachable!("projected from a neutral that is not a pair"),
             },
             // The proofs of `@Bottom` are irrelevant.
-            (Neutral::Absurd(x, _), Neutral::Absurd(y, _)) => self.conv_type(x, y, false).then(|| x.clone()),
+            (Neutral::Absurd(x, _), Neutral::Absurd(y, _)) => self.conv_type(x, y).then(|| x.clone()),
             (Neutral::Recursor(r, x), Neutral::Recursor(s, y)) => {
                 if r.data != s.data || !levels_equal(&r.levels, &s.levels) {
                     return None;
@@ -227,7 +225,7 @@ impl ConversionChecker<'_> {
                 Some(apply(self.sig, r.motive(self.sig).clone(), Val::Neutral(x.clone())))
             }
             (Neutral::Eq { level: l, ty: t, a: a1, b: b1 }, Neutral::Eq { level: m, ty: u, a: a2, b: b2 }) => {
-                let same = l.equal(m) && self.conv_type(t, u, false) && self.conv(t, a1, a2) && self.conv(t, b1, b2);
+                let same = l.equal(m) && self.conv_type(t, u) && self.conv(t, a1, a2) && self.conv(t, b1, b2);
                 same.then_some(Val::Sort(Level::Zero))
             }
             (
@@ -252,35 +250,29 @@ impl ConversionChecker<'_> {
             }
             // The proofs are irrelevant.
             (Neutral::Cast { from: f1, to: t1, value: v1, .. }, Neutral::Cast { from: f2, to: t2, value: v2, .. }) => {
-                let same = self.conv_type(f1, f2, false) && self.conv_type(t1, t2, false) && self.conv(f1, v1, v2);
+                let same = self.conv_type(f1, f2) && self.conv_type(t1, t2) && self.conv(f1, v1, v2);
                 same.then(|| t1.clone())
             }
             _ => None,
         }
     }
 
-    pub fn conv_type(&mut self, a: &Val, b: &Val, cumulative: bool) -> bool {
+    /// `a` and `b` are equal types.
+    pub fn conv_type(&mut self, a: &Val, b: &Val) -> bool {
         match (a, b) {
-            // Rule [Cumulativity]
-            (Val::Sort(l), Val::Sort(m)) => {
-                // See Note [Cumulativity starts at data].
-                l.equal(m) || (cumulative && l.is_nonzero() && l.leq(m))
-            }
-            // A function's domain is compared exactly, a pair's components
-            // covariantly.
+            (Val::Sort(l), Val::Sort(m)) => l.equal(m),
             (Val::Pi(p), Val::Pi(q)) | (Val::Sigma(p), Val::Sigma(q)) => {
-                let dom_cumulative = cumulative && matches!(a, Val::Sigma(_));
-                self.conv_type(&p.dom, &q.dom, dom_cumulative)
+                self.conv_type(&p.dom, &q.dom)
                     && self.under(p.dom.clone(), |c, x| {
                         let pc = p.cod.apply(c.sig, x.clone());
                         let qc = q.cod.apply(c.sig, x);
-                        c.conv_type(&pc, &qc, cumulative)
+                        c.conv_type(&pc, &qc)
                     })
             }
             (Val::Top, Val::Top) | (Val::Bottom, Val::Bottom) => true,
             (Val::Quot(x), Val::Quot(y)) => {
                 let relation = relation_type(x.carrier.clone(), x.level.clone());
-                self.conv_type(&x.carrier, &y.carrier, false) && self.conv(&relation, &x.relation, &y.relation)
+                self.conv_type(&x.carrier, &y.carrier) && self.conv(&relation, &x.relation, &y.relation)
             }
             (Val::Data(x), Val::Data(y)) => {
                 x.data == y.data
@@ -293,11 +285,6 @@ impl ConversionChecker<'_> {
             (Val::Neutral(x), Val::Neutral(y)) => self.conv_neutral(x, y).is_some(),
             _ => false,
         }
-    }
-
-    /// `a` fits where `b` is expected.
-    pub fn subtype(&mut self, a: &Val, b: &Val) -> bool {
-        self.conv_type(a, b, true)
     }
 }
 
@@ -329,10 +316,3 @@ fn levels_equal(a: &[Level], b: &[Level]) -> bool {
 // conversion decidable with the rule (PLT25 Theorem 5.6); evaluating it
 // instead would break normalisation in an impredicative universe (Abel and
 // Coquand).
-
-// Note [Cumulativity starts at data]
-//
-// `@Type 1 <= @Type 2 <= ...`, but `@Type 0` is not below `@Type 1`: a
-// proposition used as a data type would let a proof (all of which are equal)
-// stand for data (which are not). So `@Type a <= @Type b` needs `a` to be at
-// least one under every assignment, as well as `a <= b`.

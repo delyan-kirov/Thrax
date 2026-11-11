@@ -57,6 +57,7 @@ impl Level {
             (Level::Zero, _) => b.clone(),
             (_, Level::Zero) => a.clone(),
             _ if a == b => a.clone(),
+            (Level::Succ(x), Level::Succ(y)) => Level::max(x, y).succ(),
             _ => Level::Max(Rc::new(a.clone()), Rc::new(b.clone())),
         }
     }
