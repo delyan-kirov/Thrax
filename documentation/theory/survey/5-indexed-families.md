@@ -34,3 +34,10 @@
 types with an equality field per constructor (#466).** It depends on decision
 1: Cast-Refl must be a conversion rule first, or matching on a forded family
 does not compute.
+
+Update (2026-11-11): implemented (#466). A constructor states its result,
+`| cons (m: Nat) (h: a) (t: Vec a m) : Vec a (succ m)`; the binders every
+constructor passes through unchanged are parameters, the rest indices. The
+kernel stores the forded type, and the recursor has the indexed motive with a
+cast in iota (Note [Indexed families are forded]). Not yet: index types that
+depend on earlier indices, whose equality fields would be heterogeneous.

@@ -130,6 +130,9 @@ pub struct RawConstructor {
     pub span: Span,
     /// Each field's name (`_` when unnamed) and type.
     pub fields: Vec<(Name, Raw)>,
+    /// The stated result type, `: D params indices`, which an indexed
+    /// family's constructors need.
+    pub result: Option<Raw>,
 }
 
 // ## Lexer
@@ -430,7 +433,8 @@ impl Parser<'_> {
                     break;
                 }
             }
-            ctors.push(RawConstructor { name, span, fields });
+            let result = if self.eat(&Tok::Colon) { Some(self.expr()?) } else { None };
+            ctors.push(RawConstructor { name, span, fields, result });
         }
         Ok(ctors)
     }

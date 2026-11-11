@@ -174,7 +174,16 @@ fn eq_box() {
 // Test [Eq-Stuck]
 #[test]
 fn eq_stuck() {
-    applies("$ r : @ctx {u: @l} -> (A: @Type u) -> (a: A) -> a ~ a = \\A a => @refl a\n");
+    let maybe_proofs = "@ctx {u: @l} -> (A: @Type u) -> (a b: A)";
+    applies(&format!("$ r : {maybe_proofs} -> a ~ a = \\A a b => @refl a\n"));
+    // `@Type u` may be the propositions, but is not known to be.
+    blocked(&format!("$ r : {maybe_proofs} -> a ~ b = \\A a b => @tt\n"), "expected `a ~ b`, found `@Top`");
+}
+
+// Test [Eq-Data-Stuck]
+#[test]
+fn eq_data_stuck() {
+    applies("$ r : (A: @Type 1) -> List @ctx {.u = 0} A ~ List @ctx {.u = 0} A = \\A => @refl (List @ctx {.u = 0} A)\n");
     let lists = "(A B: @Type 1) -> List @ctx {.u = 0} A ~ List @ctx {.u = 0} B";
     blocked(&format!("$ inj : {lists} -> A ~ B = \\A B e => e\n"), "expected `A ~ B`, found `List @ctx {.u = 0} A ~ List @ctx {.u = 0} B`");
 }
@@ -375,6 +384,21 @@ fn data_ctor() {
 fn data_elim() {
     applies("$ pred : Nat -> Nat = \\n => Nat.elim @ctx {.m = 1} (\\_ => Nat) zero (\\k _ => k) n\n");
     blocked("$ pred : Nat -> Nat = \\n => Nat.elim @ctx {.m = 1} (\\_ => Nat) zero (\\k => k) n\n", "expected `Nat -> Nat`, found `Nat`");
+}
+
+// Test [Data-Ford]
+#[test]
+fn data_ford() {
+    let vec = r"
+$ Vec : (a: @Type 1) -> (n: Nat) -> @Type 1 = @data
+    | vnil : Vec a zero
+    | vcons (m: Nat) (h: a) (t: Vec a m) : Vec a (succ m)
+$ vlength : (a: @Type 1) -> (n: Nat) -> Vec a n -> Nat =
+    \a n v => Vec.elim @ctx {.m = 1} a (\_ _ => Nat) zero (\m h t r => succ r) n v
+";
+    let sig = applies(&format!("{vec}$ one : Vec Nat (succ zero) = vcons Nat zero two (vnil Nat)\n$ n : Nat = vlength Nat (succ zero) one\n"));
+    assert_eq!(normal(&sig, "n"), "succ zero");
+    blocked(&format!("{vec}$ bad : Vec Nat (succ zero) = vnil Nat\n"), "expected `Vec Nat (succ zero)`, found `Vec Nat zero`");
 }
 
 // Test [Data-Iota]

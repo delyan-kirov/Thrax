@@ -22,7 +22,7 @@
 
 use std::rc::Rc;
 
-use crate::inductive::{constructor_value, data_value, recursor_value, ConstructorVal, DataVal, RecursorArgs};
+use crate::inductive::{canonical, constructor_value, data_value, recursor_value, ConstructorVal, DataVal, RecursorArgs};
 use crate::level::Level;
 use crate::observational::{cast, eq};
 use crate::signature::{GlobalId, GlobalKind, Signature};
@@ -301,10 +301,26 @@ pub fn quote(sig: &Signature, depth: Lvl, v: &Val) -> Term {
             quote_spine(sig, depth, head, &d.params)
         }
         Val::Constructor(c) => {
-            let global = sig.data(c.data).constructors[c.index].global;
-            let head = Term::Global(global, c.levels.clone());
-            let params = quote_spine(sig, depth, head, &c.params);
-            quote_spine(sig, depth, params, &c.fields)
+            // The constructor as written: the uniform parameters and its
+            // fields, at the indices it states, cast to the value's own
+            // indices when they differ.
+            // See Note [Indexed families are forded].
+            let decl = sig.data(c.data);
+            let ctor = &decl.constructors[c.index];
+            let (u, nf) = (decl.uniform, ctor.surface.len());
+            let head = Term::Global(ctor.global, c.levels.clone());
+            let written = quote_spine(sig, depth, quote_spine(sig, depth, head, &c.params[..u]), &c.fields[..nf]);
+            if u == decl.params.len() {
+                return written;
+            }
+            let own = canonical(sig, c.data, c.index, c.levels.clone(), c.params[..u].to_vec(), c.fields[..nf].to_vec());
+            let at = |params: &[Val]| quote_spine(sig, depth, Term::Global(decl.global, c.levels.clone()), params);
+            let (from, to) = (at(&own.params), at(&c.params));
+            if from == to {
+                written
+            } else {
+                Term::Cast(Rc::new(from), Rc::new(to), Rc::new(Term::Irrelevant), Rc::new(written))
+            }
         }
     }
 }

@@ -145,7 +145,8 @@ a conjecture only in that nothing proves the recorded edges complete.
 | Bottom | PT22 | Fig. 2, ⊥-Form and ⊥-Elim | published | PT22 Normalisation | - | yes |
 | Eq-Form | PT22 | Fig. 2, Eq-Form | published | PT22 Normalisation, PT22 Decidability | - | yes |
 | Eq-Box | PT22, Puj22 | PT22 Section 4.3, the equality of □A; Puj22 Section 3.2.10, Box-Proof-Eq; a proof inside data is read as boxed | published-uncovered | - | - | yes |
-| Eq-Stuck | PT22, PLT25 | PT22 Fig. 2, Eq-Form, which needs a type in 𝒰; PLT25 Section 2.3, no computation for `Ind a ∼ Ind a'` | deviation | - | #468 | yes |
+| Eq-Stuck | PT22 | Fig. 2, Eq-Form, which needs a type in 𝒰; a level parameter can leave that undecided | deviation | - | #478 | yes |
+| Eq-Data-Stuck | PLT25 | Section 2.3, no computation for `Ind a ∼ Ind a'`; Section 4.1, only the eq_c projections use it | published | PLT25 Consistency | - | yes |
 | Refl | PT22 | Fig. 2, Refl | published | PT22 Normalisation | - | yes |
 | Transport | PT22 | Fig. 2, Transport-Ω, with the non-dependent motive the paper says suffices | published | PT22 Normalisation | - | yes |
 | Cast | PT22 | Fig. 2, Cast | published | PT22 Normalisation, PT22 Decidability | - | yes |
@@ -168,7 +169,8 @@ a conjecture only in that nothing proves the recorded edges complete.
 | Cast-Quot | PT22 | Section 4.1, cast of π(t) | published-uncovered | PT22 Quotients | - | yes |
 | Cast-Refl | PLT25 | Fig. 3, Cast-Refl, a conversion rule | published | PLT25 Decidability, Puj22 Cast-Refl decidability | - | yes |
 | Proof-Witness | PT22, AC20 | PT22 Fig. 2, the proof terms of Refl, Transport-Ω and every other proof, which the kernel drops; AC20 Section 2, the loops that dropping them avoids | deviation | - | #465 | yes |
-| Data-Form | Dyb94, PLT25 | PLT25 Section 4.1, inductive definitions without indices, outside Ω; Dyb94 not checked | published-uncovered | PLT25 Consistency | - | yes |
+| Data-Form | Dyb94, PLT25 | PLT25 Section 4.1, inductive definitions without indices, outside Ω (with indices, see Data-Ford); Dyb94 not checked | published-uncovered | PLT25 Consistency | - | yes |
+| Data-Ford | PLT25 | Section 4.2, Fordism: indices as parameters with one equality field per index, and a cast in each branch of a match; index types restricted to depend on the parameters only | published | PLT25 Consistency | - | yes |
 | Data-Ctor | Dyb94, PLT25 | PLT25 Section 4.1; Dyb94 not checked | published-uncovered | PLT25 Consistency | - | yes |
 | Data-Elim | Dyb94 | not checked: not vendored | published-uncovered | - | - | yes |
 | Data-Iota | Dyb94 | not checked: not vendored | published-uncovered | - | - | yes |
@@ -180,13 +182,12 @@ a conjecture only in that nothing proves the recorded edges complete.
 
 How the deviations differ from their sources:
 
-- **Eq-Stuck.** Equality at a type whose sort may be `0` is left stuck, and so
-  is `D a ~ D a'` for an inductive type with parameters. Until 2026-11-11 the
-  latter reduced to `a ~ a'`, making type formers injective; CIC^obs Section
-  2.3 shows that is inconsistent once a parameter is larger than the type's
-  universe, and the kernel accepted exactly that (#477). CIC^obs's
-  projections, Data-Eq-Projection, are the planned replacement for using such
-  an equality.
+- **Eq-Stuck.** Equality at a type whose sort is a level that may or may
+  not be `0` is left stuck, since neither Eq-Form nor Eq-Box applies until the
+  level is known. No source has level parameters over an observational
+  theory, so this is part of Assume [Composition] (#478). (`D a ~ D a'` is
+  stuck too, but that is CIC^obs's rule, Eq-Data-Stuck; until 2026-11-11 it
+  reduced to `a ~ a'`, which was unsound, #477.)
 - **Proof-Witness.** Every term checked against a proposition elaborates to
   one irrelevant witness, so an elaborated term cannot be re-checked. Keeping
   proofs would need another way to stop evaluation from looping on AC20's
