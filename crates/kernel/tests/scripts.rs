@@ -38,7 +38,7 @@ fn the_rationals_reject_wrong_claims() {
         // The numerator of a fraction is not a function of its class.
         (
             format!("{base}\n$ numerator : Q -> Integer = \\q => @qelim (\\_ => Integer) (\\x => x.1) (\\x y e => e) q\n"),
-            "expected `x.1 ~ y.1`",
+            "~ y.1`, found",
         ),
     ];
     for (src, needle) in cases {

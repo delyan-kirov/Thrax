@@ -71,8 +71,8 @@ and where it departs, is in the theory ledger,
 each rule's implementation with `// Rule [Name]`, and
 `crates/kernel/tests/ledger.rs` keeps the two in step. The main departures:
 
-- `@cast A B e t` reduces to `t` when `A` and `B` are the same value (Note [A cast between identical types is the identity]). TT^obs reaches `t` only through its structure; without the rule the outer respect proof of a binary quotient operation meets a stuck cast. CIC^obs has the rule in conversion, not evaluation (#464).
-- Equality at an inductive type whose parameters depend on earlier parameters is left stuck.
+- `@cast A B e t` is convertible with `t` when `A` and `B` are convertible (Cast-Refl of CIC^obs, a conversion rule, not a reduction). TT^obs reaches `t` only through its structure; without the rule the outer respect proof of a binary quotient operation meets a stuck cast.
+- Equality between two instances of one inductive type with parameters, `D a ~ D a'`, is left stuck: computing it to `a ~ a'` would make type formers injective, which is inconsistent (#477).
 - Indexed families are not primitive (TT^obs encodes them by fording). Nested and infinitely branching recursive fields are rejected.
 - Definitions unfold eagerly, so error messages show unfolded terms. Glued evaluation would keep the names.
 - No metavariables or implicit arguments: the kernel checks elaborated terms, and every argument is written.
