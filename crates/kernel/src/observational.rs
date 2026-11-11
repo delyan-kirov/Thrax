@@ -100,7 +100,8 @@ fn stuck_eq(level: Level, ty: Val, a: Val, b: Val) -> Val {
 
 /// `a ~ b` at type `ty`, where `ty : @Type level`.
 pub fn eq(sig: &Signature, level: Level, ty: Val, a: Val, b: Val) -> Val {
-    // Rule [Eq-Prop]
+    // Rule [Eq-Box]
+    // See Note [Equality is not formed at a proposition].
     if level.is_zero() {
         return Val::Top;
     }
@@ -172,22 +173,19 @@ fn eq_fields(sig: &Signature, x: &ConstructorVal, y: &ConstructorVal) -> Val {
     and_all(props)
 }
 
-/// How two components of the same position in two type formers compare:
-/// at the level both live in, or not at all when one is a proposition and the
-/// other data.
+/// How two components of the same position in two type formers compare: at
+/// the level both live in, or not at all when their levels differ (universes
+/// are not cumulative, so a type lives in exactly one).
 enum Component {
     At(Level),
     Mismatch,
     Unknown,
 }
 
-fn component(ambient: &Level, a: &Level, b: &Level) -> Component {
-    if a.is_zero() && b.is_zero() {
-        Component::At(Level::Zero)
-    } else if a.is_nonzero() && b.is_nonzero() {
-        // Both fit in the ambient universe by cumulativity.
-        Component::At(ambient.clone())
-    } else if (a.is_zero() && b.is_nonzero()) || (a.is_nonzero() && b.is_zero()) {
+fn component(a: &Level, b: &Level) -> Component {
+    if a.equal(b) {
+        Component::At(a.clone())
+    } else if a.succ().leq(b) || b.succ().leq(a) {
         Component::Mismatch
     } else {
         Component::Unknown
@@ -218,7 +216,7 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
         }
         (Val::Pi(p), Val::Pi(q)) | (Val::Sigma(p), Val::Sigma(q)) => {
             let is_pi = matches!(a, Val::Pi(_));
-            let (dom, cod) = match (component(k, &p.dom_level, &q.dom_level), component(k, &p.cod_level, &q.cod_level)) {
+            let (dom, cod) = match (component(&p.dom_level, &q.dom_level), component(&p.cod_level, &q.cod_level)) {
                 (Component::At(d), Component::At(c)) => (d, c),
                 // Rule [Eq-Univ-Neq]
                 (Component::Mismatch, _) | (_, Component::Mismatch) => return Val::Bottom,
@@ -367,8 +365,9 @@ fn stuck_cast(a: Val, b: Val, e: Val, t: Val) -> Val {
 // Note [Proofs evaluate to an irrelevant witness]
 //
 // A proof's value never matters: conversion compares proofs by their type
-// alone, and the computation rules of equality and cast only ever need *some* proof to pass
-// along. So `@refl` and `@transp` evaluate to the one value
+// alone, and the computation rules of equality and cast only ever need *some*
+// proof to pass along. So every term the checker checks against a
+// proposition elaborates to `Term::Irrelevant` and evaluates to the one value
 // `Val::Irrelevant`, and the rules above pass it wherever TT^obs builds a
 // proof term (the components of `e : A ~ B` that a cast through a Pi or
 // Sigma type needs, or the congruence proofs a fieldwise cast needs). Those
@@ -376,6 +375,12 @@ fn stuck_cast(a: Val, b: Val, e: Val, t: Val) -> Val {
 // sound; the checker still type-checks every proof the user writes.
 // Eliminating the witness gives the witness again: applying or projecting
 // it, and casting it to another proposition.
+//
+// Erasing every proof, not only `@refl` and `@transp`, is also what keeps
+// evaluation terminating. Abel and Coquand (LMCS 2020) build a proof of `T`
+// that loops when evaluated, by casting `T -> T` to `T` in the impredicative
+// universe; Cast-Pi would unfold such a cast forever. An erased proof is never
+// evaluated, and `tests/paradoxes.rs` checks that both of their terms finish.
 // See Note [Proof irrelevance is decided by the type].
 
 #[cfg(test)]

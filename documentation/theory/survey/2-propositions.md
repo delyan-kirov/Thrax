@@ -38,3 +38,7 @@ elimination; a proof reaches data only through `@absurd` and `@cast`.** `Acc`
 has no large elimination (already agreed on #471; AC20). This is the kernel's
 current design, so the only change is #465: keep proof terms in elaborated
 output, so that it can be re-checked, while still never evaluating them.
+
+Update (2026-11-11): `a ~ b`, `@refl` and `@transp` are rejected at a
+proposition, as Eq-Form has it (#476). Inside data, equality of a proof
+component is `{}`, read as the Box type of PT22 Section 4.3.

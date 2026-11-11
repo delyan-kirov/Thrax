@@ -6,8 +6,9 @@
 //! Also in the suite: `type_formers_are_not_injective` in `tests/scripts.rs`
 //! (Miquel's injection of a large type into a small one, CIC^obs Section 2.3,
 //! #477) and `the_rationals_reject_wrong_claims` (a quotient eliminator that
-//! does not respect the relation). Still missing: Abel and Coquand's looping
-//! cast (LMCS 2020), which needs the full counterexample term.
+//! does not respect the relation). Abel and Coquand's looping casts are not a
+//! proof of `@Bottom` but a loss of normalisation; the kernel must accept them
+//! and still terminate.
 
 /// Check `src` and require an error whose rendering contains `needle`.
 fn rejects(name: &str, src: &str, needle: &str) {
@@ -83,4 +84,59 @@ $ Q : @Type 1 = @Quot Nat R (\\x => @tt) (\\x y e => @tt) (\\x y z e f => @tt)
 $ bad : Q -> Nat = \\q => @qelim (\\_ => Nat) (\\x => x) (\\x y e => @refl x) q
 ";
     rejects("unrespected-quotient", src, "~ y`, found `x ~ x`");
+}
+
+/// Check `src` and then normalise each of `names`, failing if either does
+/// not finish within a few seconds.
+fn terminates(name: &'static str, src: &'static str, names: &'static [&'static str]) {
+    let (done, wait) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = kernel::check_script(src).map(|sig| {
+            names.iter().map(|n| kernel::normal_form(&sig, n).expect("a definition")).collect::<Vec<_>>()
+        });
+        let _ = done.send(outcome.map_err(|e| e.render(src, name)));
+    });
+    match wait.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(Ok(_)) => {}
+        Ok(Err(shown)) => panic!("{name}: rejected:\n{shown}"),
+        Err(_) => panic!("{name}: did not terminate"),
+    }
+}
+
+/// Abel and Coquand (LMCS 2020): a cast that reduces to its argument when its
+/// two types are equal loops in an impredicative universe, given that all
+/// propositions are equal, or given only propositional extensionality. The
+/// kernel never reduces a cast of a proof (it is the irrelevant witness), and
+/// it uses `@cast A A e t ~ t` only when comparing, not when evaluating.
+#[test]
+fn casts_of_proofs_do_not_loop() {
+    terminates(
+        "all-propositions-equal",
+        r"
+$ Bot : @Type 0 = (A: @Type 0) -> A
+$ Tru : @Type 0 = Bot -> Bot
+$ delta : Tru = \z => z Tru z
+$ omega : ((A B: @Type 0) -> A ~ B) -> Bot = \h A => @cast Tru A (h Tru A) delta
+$ Omega : ((A B: @Type 0) -> A ~ B) -> Bot = \h => delta (omega h)
+$ Q : (((A B: @Type 0) -> A ~ B) -> Bot) -> @Type 1
+$ q : Q Omega
+$ r : Q (\h => omega h) = q
+",
+        &["omega", "Omega"],
+    );
+    terminates(
+        "propositional-extensionality",
+        r"
+$ taut : (A B: @Type 0) -> A -> B -> A ~ B = \A B a b => (\_ => b, \_ => a)
+$ T : @Type 0 = (A: @Type 0) -> A -> A
+$ id : T -> T = \x => x
+$ delta : T -> T = \z => z (T -> T) id z
+$ omega : T = \A a => @cast (T -> T) A (taut (T -> T) A id a) delta
+$ Omega : T = delta omega
+$ Q : T -> @Type 1
+$ q : Q Omega
+$ r : Q (delta (delta omega)) = q
+",
+        &["omega", "Omega"],
+    );
 }

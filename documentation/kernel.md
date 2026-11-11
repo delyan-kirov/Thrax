@@ -29,7 +29,7 @@ with respectful quotient elimination. It is `crates/kernel/scripts/rationals.ott
 | `nbe` | evaluation to values and read-back (normalisation by evaluation) |
 | `inductive` | constructor and recursor types, iota reduction |
 | `observational` | the computation of `a ~ b` and `@cast` |
-| `conversion` | typed definitional equality, cumulative subtyping |
+| `conversion` | typed definitional equality |
 | `syntax` | lexer and parser of the script language |
 | `check` | bidirectional elaboration of scripts into core terms |
 
@@ -55,11 +55,11 @@ $ four : add (succ (succ zero)) (succ (succ zero)) ~ succ (succ (succ (succ zero
 
 ## 4. The theory as implemented
 
-- **Universes.** `@Type 0` is the impredicative universe of propositions; the sort of a Pi type is `imax`. Cumulativity starts at level 1: `@Type 1 <= @Type 2`, but `@Type 0` is not below `@Type 1`.
+- **Universes.** `@Type 0` is the impredicative universe of propositions; the sort of a Pi type is `imax`. Universes are not cumulative, as in CC^obs: a type lives in exactly one universe, so a type in `@Type 1` is not a type in `@Type 2` (#475).
 - **Proof irrelevance.** Conversion is typed. Two values of a proposition are equal, decided from the type. Proofs evaluate to one irrelevant witness (Note [Proofs evaluate to an irrelevant witness]).
 - **Pi and Sigma** with eta. A Sigma of data and a proof is data (the shape a refinement desugars to).
 - **Inductive types**, parameterised, in data universes, with fields that may depend on earlier fields. Recursive fields are whole `D params` only. Each declaration adds the type former, its constructors and `D.elim`.
-- **Equality** `a ~ b` computes by its type: pointwise at Pi types (function extensionality), componentwise at Sigma types, constructor-wise at inductive types, structurally at universes (contravariant Pi domains), as the relation at quotients, as logical equivalence at `@Type 0`, and as `@Top` at a proposition.
+- **Equality** `a ~ b` computes by its type: pointwise at Pi types (function extensionality), componentwise at Sigma types, constructor-wise at inductive types, structurally at universes (contravariant Pi domains), as the relation at quotients, and as logical equivalence at `@Type 0`. It is not formed at a proposition, since two proofs are already equal by conversion; a proof inside data, such as the second component of a pair, contributes `@Top`.
 - **Cast** computes by the heads of its two types, through lambdas, pairs, constructors and classes.
 - **Quotients** of data by a relation proved reflexive, symmetric and transitive. `@qelim` needs the method to respect the relation.
 

@@ -46,9 +46,18 @@ fn propositions_are_extensional() {
 $ P : @Type 0
 $ Q : @Type 0
 $ propext : (P -> Q) -> (Q -> P) -> P ~ Q = \f g => (f, g)
-$ proofs : (p q: P) -> p ~ q = \p q => @tt
+$ A : @Type 1
+$ boxed : (u v: (x: A) * P) -> u.1 ~ v.1 -> u ~ v = \u v e => (e, @tt)
 ",
     );
+}
+
+#[test]
+fn equality_is_not_formed_at_a_proposition() {
+    let props = "$ P : @Type 0\n$ p : P\n";
+    reject(&format!("{props}$ bad : p ~ p\n"), "equality is not formed at the proposition `P`");
+    reject(&format!("{props}$ bad : @Top = @refl p\n"), "equality is not formed at the proposition `P`");
+    reject(&format!("{props}$ bad : @Top = @transp p (\\q => @Top) @tt p @tt\n"), "equality is not formed at the proposition `P`");
 }
 
 #[test]
@@ -67,7 +76,7 @@ fn equality_of_types_compares_formers() {
 $ same : Nat ~ Nat = @tt
 $ different : Nat ~ (Nat -> Nat) -> @Bottom = \e => e
 $ universes : @Type 1 ~ @Type 1 = @tt
-$ levels : (@Type 1 : @Type 3) ~ @Type 2 -> @Bottom = \e => e
+$ levels : (@Type 1 -> Nat) ~ (Nat -> @Type 1) -> @Bottom = \e => e
 $ arrows : (Nat -> Nat) ~ (Nat -> Nat) = (@tt, \_ => @tt)
 "
     ));
@@ -105,7 +114,7 @@ $ a : A
 $ n : Nat = @cast A Nat e a
 "
     ));
-    assert_eq!(normal_form(&sig, "n").unwrap(), "@cast A Nat e a");
+    assert_eq!(normal_form(&sig, "n").unwrap(), "@cast A Nat @irrelevant a");
 }
 
 #[test]

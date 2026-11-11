@@ -7,7 +7,7 @@
 //! of Coquand's checker for dependent types. `check` pushes an
 //! expected type into lambdas; `infer` synthesises a type at
 //! variables, applications and annotations, and a synthesised type fits an
-//! expected one by cumulative subtyping. Names are resolved as they are
+//! expected one when the two are convertible. Names are resolved as they are
 //! checked, so the output is a de Bruijn [`Term`].
 //!
 //! Each global is checked in order and added to the [`Signature`]: its level
@@ -381,13 +381,23 @@ impl Checker<'_> {
 
     // Algorithm [Bidirectional checking]
     fn check(&self, ctx: &mut Context, raw: &Raw, expected: &Val) -> Result<Term> {
+        let term = self.check_relevant(ctx, raw, expected)?;
+        // Rule [Proof-Witness]
+        // See Note [Proofs evaluate to an irrelevant witness].
+        if self.conversion(ctx).is_proposition(expected) {
+            return Ok(Term::Irrelevant);
+        }
+        Ok(term)
+    }
+
+    fn check_relevant(&self, ctx: &mut Context, raw: &Raw, expected: &Val) -> Result<Term> {
         match (&raw.kind, expected) {
             // Rule [Fun]
             (RawKind::Lam(name, ann, body), Val::Pi(pi)) => {
                 if let Some(ann) = ann {
                     let (t, _) = self.check_type(ctx, ann)?;
                     let given = self.eval(ctx, &t);
-                    if !self.conversion(ctx).conv_type(&given, &pi.dom, false) {
+                    if !self.conversion(ctx).conv_type(&given, &pi.dom) {
                         return Err(self.mismatch(ctx, ann.span, &pi.dom, &given));
                     }
                 }
@@ -423,7 +433,7 @@ impl Checker<'_> {
             }
             _ => {
                 let (t, found) = self.infer(ctx, raw)?;
-                if self.conversion(ctx).subtype(&found, expected) {
+                if self.conversion(ctx).conv_type(&found, expected) {
                     Ok(t)
                 } else {
                     Err(self.mismatch(ctx, raw.span, expected, &found))
@@ -535,6 +545,7 @@ impl Checker<'_> {
             RawKind::Eq(a, b) => {
                 let (a, ty) = self.infer(ctx, a)?;
                 let level = self.sort_of(ctx, &ty, raw.span)?;
+                self.relevant(ctx, &ty, &level, raw.span)?;
                 let b = self.check(ctx, b, &ty)?;
                 let ty = quote(&self.sig, ctx.depth(), &ty);
                 Ok((Term::Eq(level, Rc::new(ty), Rc::new(a), Rc::new(b)), Val::Sort(Level::Zero)))
@@ -552,6 +563,20 @@ impl Checker<'_> {
                 format!("cannot tell which universe `{}` lives in", self.show(ctx, ty)),
             )),
         }
+    }
+
+    /// Equality is formed only at a type that is not a proposition: two
+    /// proofs are already equal by conversion.
+    /// See Note [Equality is not formed at a proposition].
+    fn relevant(&self, ctx: &mut Context, ty: &Val, level: &Level, span: Span) -> Result<()> {
+        if !level.is_zero() {
+            return Ok(());
+        }
+        Err(self.error(
+            Code::TypeMismatch,
+            span,
+            format!("equality is not formed at the proposition `{}`", self.show(ctx, ty)),
+        ))
     }
 
     /// The domain and codomain of a Pi or Sigma type.
@@ -586,6 +611,7 @@ impl Checker<'_> {
             Primitive::Eq => {
                 let (ty, level) = self.check_type(ctx, &args[0])?;
                 let ty_val = self.eval(ctx, &ty);
+                self.relevant(ctx, &ty_val, &level, args[0].span)?;
                 let a = self.check(ctx, &args[1], &ty_val)?;
                 let b = self.check(ctx, &args[2], &ty_val)?;
                 (Term::Eq(level, Rc::new(ty), Rc::new(a), Rc::new(b)), proposition)
@@ -594,6 +620,7 @@ impl Checker<'_> {
             Primitive::Refl => {
                 let (a, ty) = self.infer(ctx, &args[0])?;
                 let level = self.sort_of(ctx, &ty, args[0].span)?;
+                self.relevant(ctx, &ty, &level, args[0].span)?;
                 let a = self.eval(ctx, &a);
                 (Term::Irrelevant, eq(&self.sig, level, ty, a.clone(), a))
             }
@@ -601,6 +628,7 @@ impl Checker<'_> {
             Primitive::Transp => {
                 let (t, ty) = self.infer(ctx, &args[0])?;
                 let level = self.sort_of(ctx, &ty, args[0].span)?;
+                self.relevant(ctx, &ty, &level, args[0].span)?;
                 let motive_ty = Val::Pi(Rc::new(BindingVal {
                     name: "_".into(),
                     dom: ty.clone(),
@@ -729,7 +757,7 @@ impl Checker<'_> {
             if let Some(ann) = ann {
                 let (t, _) = self.check_type(ctx, ann)?;
                 let given = self.eval(ctx, &t);
-                if !self.conversion(ctx).conv_type(&given, dom, false) {
+                if !self.conversion(ctx).conv_type(&given, dom) {
                     return Err(self.mismatch(ctx, ann.span, dom, &given));
                 }
             }
@@ -740,7 +768,7 @@ impl Checker<'_> {
         if let Val::Pi(pi) = &ty {
             let cod = pi.cod.apply(&self.sig, Val::var(ctx.depth()));
             if let Val::Sort(level) = cod {
-                if self.conversion(ctx).conv_type(&pi.dom, dom, false) {
+                if self.conversion(ctx).conv_type(&pi.dom, dom) {
                     return Ok((t, level));
                 }
             }
@@ -829,6 +857,17 @@ impl Checker<'_> {
         })
     }
 }
+
+// Note [Equality is not formed at a proposition]
+//
+// TT^obs and CC^obs form `t ~ u` only at a type in a relevant universe (PT22
+// and PT23 Fig. 2, Eq-Form), and so do `@refl` and `@transp`: two proofs are
+// equal by conversion, so the equality would say nothing. A type whose
+// universe is a level parameter that may be `0` is allowed, and its equality
+// stays stuck until the level is known. Equality still meets proofs inside
+// data, as the second component of a pair or a field of a constructor; there
+// it is `{}`, as for a Box type.
+// See Rule [Eq-Box].
 
 #[cfg(test)]
 pub(crate) mod tests;

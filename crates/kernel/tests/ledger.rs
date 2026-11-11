@@ -1,13 +1,17 @@
 //! The theory ledger checker: `documentation/theory/LEDGER.md` and the
-//! `// Rule [Name]` and `// Algorithm [Name]` tags in the workspace's Rust
-//! sources must agree, and every vendored source must be in
+//! `// Rule [Name]`, `// Algorithm [Name]` and `// Test [Name]` tags in the
+//! workspace's Rust sources must agree, and every vendored source must be in
 //! `documentation/theory/references` with the hash the ledger gives.
 //!
 //! A tag is a line comment whose whole text is `Rule [Name]` or
-//! `Algorithm [Name]`, beside the code that implements it. A reference is
-//! `See Rule [Name]` or `See Algorithm [Name]` anywhere in a comment, on one
-//! line. Any other `Rule [` or `Algorithm [` in a comment is reported, so a
-//! misspelled tag fails instead of reading as prose. The rules the ledger must
+//! `Algorithm [Name]`, beside the code that implements it, or `Test [Name]`,
+//! above the test of a rule. Every implemented rule needs a test, and the
+//! text from a test tag to the next must call both `applies(` (a case where
+//! the rule fires) and `blocked(` (a near miss where it must not). A
+//! reference is `See Rule [Name]` (or `Algorithm`, `Test`) anywhere in a
+//! comment, on one line. Any other `Rule [`, `Algorithm [` or `Test [` in a
+//! comment is reported, so a misspelled tag fails instead of reading as
+//! prose. The rules the ledger must
 //! satisfy are listed at its top.
 //!
 //! This file is skipped by the scan: its own fixtures would trip it.
@@ -70,13 +74,16 @@ struct Tags {
     implementations: BTreeMap<(String, String), Vec<String>>,
     references: Vec<((String, String), String)>,
     malformed: Vec<(String, String)>,
+    /// The text after each `// Test [Name]` tag, up to the next one.
+    test_bodies: Vec<(String, String, String)>,
 }
 
-const KINDS: [&str; 2] = ["Rule", "Algorithm"];
+const KINDS: [&str; 3] = ["Rule", "Algorithm", "Test"];
 
 impl Tags {
     fn scan(&mut self, file: &str, src: &str) {
-        for (i, line) in src.lines().enumerate() {
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
             let site = format!("{file}:{}", i + 1);
             let trimmed = line.trim();
             let tag = KINDS.iter().find_map(|kind| {
@@ -87,6 +94,11 @@ impl Tags {
                 if name.is_empty() || name.contains(']') {
                     self.malformed.push((trimmed.to_string(), site));
                 } else {
+                    if kind == "Test" {
+                        let rest = &lines[i + 1..];
+                        let end = rest.iter().position(|l| l.trim().starts_with("// Test [")).unwrap_or(rest.len());
+                        self.test_bodies.push((name.clone(), site.clone(), rest[..end].join("\n")));
+                    }
                     self.implementations.entry((kind, name)).or_default().push(site);
                 }
                 continue;
@@ -203,6 +215,9 @@ fn problems(ledger: &str, tags: &Tags, references: Option<&Path>) -> Vec<String>
                 ("yes" | "planned", _) => {}
                 (other, _) => out.push(format!("{what}: Code `{other}` is not `yes` or `planned`")),
             }
+            if kind == "Rule" && row["Code"] == "yes" && !tags.implementations.contains_key(&("Test".to_string(), name.clone())) {
+                out.push(format!("{what} is implemented, but no test is tagged `// Test [{name}]`"));
+            }
         }
         for ((k, name), sites) in &tags.implementations {
             if k == kind && !names.contains(name) {
@@ -212,6 +227,18 @@ fn problems(ledger: &str, tags: &Tags, references: Option<&Path>) -> Vec<String>
         for ((k, name), site) in &tags.references {
             if k == kind && !names.contains(name) {
                 out.push(format!("{site}: See {kind} [{name}] has no ledger entry"));
+            }
+        }
+    }
+
+    let rules: BTreeSet<&String> = table("Rules").iter().map(|row| &row["Rule"]).collect();
+    for (name, site, body) in &tags.test_bodies {
+        if !rules.contains(name) {
+            out.push(format!("{site}: `// Test [{name}]` names no rule in the ledger"));
+        }
+        for call in ["applies(", "blocked("] {
+            if !body.contains(call) {
+                out.push(format!("{site}: the test of Rule [{name}] never calls `{call}..)`"));
             }
         }
     }
@@ -352,6 +379,9 @@ const LEDGER: &str = "\
 | Fine | it is | a proof | #8 |
 ";
 
+/// A test of Rule [Beta] that calls both helpers.
+const TESTED: &str = "// Test [Beta]\nfn beta() { applies(); blocked(); }\n";
+
 fn scanned(files: &[(&str, &str)]) -> Tags {
     let mut tags = Tags::default();
     for (name, src) in files {
@@ -362,7 +392,7 @@ fn scanned(files: &[(&str, &str)]) -> Tags {
 
 #[test]
 fn checker_accepts_a_consistent_ledger() {
-    let tags = scanned(&[("a.rs", "// Rule [Beta]\nfn beta() {}\n// Algorithm [Walk]\n// See Rule [Beta].\n")]);
+    let tags = scanned(&[("a.rs", "// Rule [Beta]\nfn beta() {}\n// Algorithm [Walk]\n// See Rule [Beta].\n"), ("t.rs", TESTED)]);
     assert_eq!(problems(LEDGER, &tags, None), Vec::<String>::new());
 }
 
@@ -397,11 +427,21 @@ fn checker_reports_status_without_its_evidence() {
 }
 
 #[test]
+fn checker_reports_an_untested_rule_and_a_one_sided_test() {
+    let untested = problems(LEDGER, &scanned(&[("a.rs", "// Rule [Beta]\n// Algorithm [Walk]\n")]), None);
+    assert!(untested.iter().any(|p| p.contains("Rule [Beta] is implemented, but no test is tagged")), "{untested:?}");
+    let one_sided = "// Test [Beta]\nfn beta() { applies(); }\n// Test [Gamma]\nfn gamma() { applies(); blocked(); }\n";
+    let found = problems(LEDGER, &scanned(&[("a.rs", "// Rule [Beta]\n// Algorithm [Walk]\n"), ("t.rs", one_sided)]), None);
+    assert!(found.iter().any(|p| p.contains("t.rs:1: the test of Rule [Beta] never calls `blocked(..)`")), "{found:?}");
+    assert!(found.iter().any(|p| p.contains("t.rs:3: `// Test [Gamma]` names no rule")), "{found:?}");
+}
+
+#[test]
 fn checker_reports_a_missing_or_altered_source_file() {
     let dir = std::env::temp_dir().join(format!("ares-ledger-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("p.pdf"), b"abc").unwrap();
-    let tags = scanned(&[("a.rs", "// Rule [Beta]\n// Algorithm [Walk]\n")]);
+    let tags = scanned(&[("a.rs", "// Rule [Beta]\n// Algorithm [Walk]\n"), ("t.rs", TESTED)]);
     let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     let good = LEDGER.replace("| - | - | CC-BY-4.0 |", &format!("| p.pdf | {abc} | CC-BY-4.0 |"));
     assert_eq!(problems(&good, &tags, Some(&dir)), Vec::<String>::new());

@@ -104,11 +104,12 @@ $ tt : True = \p x => x
 }
 
 #[test]
-fn universes_are_cumulative_from_data_up() {
-    accept("$ A : @Type 1\n$ B : @Type 2 = A\n");
+fn universes_are_not_cumulative() {
+    accept("$ A : @Type 1\n$ B : @Type 1 = A\n");
+    reject("$ A : @Type 1\n$ B : @Type 2 = A\n", "expected `@Type 2`, found `@Type 1`");
     reject("$ A : @Type 0\n$ B : @Type 1 = A\n", "expected `@Type 1`, found `@Type 0`");
     reject("$ A : @Type 2\n$ B : @Type 1 = A\n", "expected `@Type 1`, found `@Type 2`");
-    accept("$ F : @Type 1 -> @Type 1\n$ G : @Type 1 -> @Type 2 = F\n");
+    reject("$ F : @Type 1 -> @Type 1\n$ G : @Type 1 -> @Type 2 = F\n", "expected");
 }
 
 #[test]
