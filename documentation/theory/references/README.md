@@ -38,14 +38,18 @@ The hashes live in the ledger only, where the test checks them.
 | Puj22 | Pujet. Computing with Extensionality Principles in Type Theory. PhD thesis, 2022 | CC-BY-NC-ND 4.0 |
 | AC20 | Abel, Coquand. Failure of Normalization in Impredicative Type Theory with Proof-Irrelevant Propositional Equality. LMCS 2020 | CC-BY 4.0 |
 | Lean4 | Lean 4 kernel, `src/kernel/level.cpp`, commit 84c7f508 | Apache-2.0 |
+| PT24 | Pujet, Tabareau. Observational Equality Meets CIC. ESOP 2024 | CC-BY 4.0 |
+| MU21 | de Moura, Ullrich. The Lean 4 Theorem Prover and Programming Language. CADE 2021 | CC-BY 4.0 |
+| SLK24 | Sirman, Lennon-Bertrand, Krishnaswami. Implementing a Type Theory with Observational Equality, Using NbE. TYPES 2024 | CC-BY 4.0 |
+| SLK24code | Sirman's implementation, `src/Conversion.hs` and `src/Eval.hs` | BSD-3-Clause |
+| smalltt | Kovács, smalltt `README.md` (glued evaluation) | MIT |
+| Lean4 | also `quot.cpp`, `inductive.cpp`, `type_checker.cpp`, `Init/Prelude.lean`, `Init/Core.lean` | Apache-2.0 |
+| Rocq | Rocq kernel, `kernel/uGraph.ml` | LGPL-2.1 |
+| GCST19 | Gilbert, Cockx, Sozeau, Tabareau. Definitional Proof-Irrelevance without K. POPL 2019 | CC-BY-NC-SA 4.0 |
+| nanoda | nanoda_lib, a Lean 4 kernel in Rust: `src/level.rs`, `src/tc.rs` | Apache-2.0 |
 
-## Open access, not yet vendored
+Code is pinned to the commit in its `entry.bib`, so a `file:line` citation
+stays valid. Not vendored: sott, whose repository has no licence; the ledger links it.
 
-Both are CC-BY 4.0, but the publisher's site serves a bot check instead of the
-PDF to scripted downloads. Fetch them in a browser, add them as above, and
-fill in the ledger rows' path and hash.
-
-| Key | Publication | URL |
-|---|---|---|
-| PT24 | Pujet, Tabareau. Observational Equality Meets CIC. ESOP 2024 | https://doi.org/10.1007/978-3-031-57262-3_12 (also https://hal.science/hal-04535982) |
-| MU21 | de Moura, Ullrich. The Lean 4 Theorem Prover and Programming Language. CADE 2021 | https://doi.org/10.1007/978-3-030-79876-5_37 |
+PT24 and MU21 are their chapters' pages cut from the open-access proceedings
+volumes, which the publisher only serves to a browser.

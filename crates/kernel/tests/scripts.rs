@@ -121,3 +121,21 @@ $ clean : Nat = succ zero
     assert!(kernel::axioms(&sig, "clean").unwrap().is_empty());
     assert!(kernel::axioms(&sig, "Nat.elim").unwrap().is_empty());
 }
+
+/// CIC^obs Section 2.3: making `D X ~ D Y` compute to `X ~ Y` injects
+/// `@Type 1 -> @Type 1` into `@Type 1`, from which Russell's paradox follows.
+/// The kernel accepted this proof until #477.
+#[test]
+fn type_formers_are_not_injective() {
+    let src = "\
+$ D : (X: @Type 1 -> @Type 1) -> @Type 1 = @data | mk
+$ inj : (X Y: @Type 1 -> @Type 1) -> D X ~ D Y -> X ~ Y = \\X Y e => e
+";
+    match kernel::check_script(src) {
+        Ok(_) => panic!("accepted a proof that `D` is injective"),
+        Err(e) => {
+            let shown = e.render(src, "test");
+            assert!(shown.contains("TYPE_MISMATCH"), "{shown}");
+        }
+    }
+}
