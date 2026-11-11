@@ -1,0 +1,255 @@
+# Rationals as a quotient of fractions over binary integers (issue #406,
+# kernel milestone).
+#
+# `Integer` is user-defined, with a binary representation. A rational is a
+# fraction `a / b` (`b` positive) up to `a * d ~ c * b`. Two classes are
+# equal exactly when their fractions are related, so `1/2 ~ 2/4` holds by
+# computation, and every operation must respect the relation before
+# `@qelim` accepts it.
+#
+# The ring laws of multiplication are postulated: they are true of the
+# integers and provable by induction, which is the job of the proof
+# automation the plan puts last. A postulated proposition never blocks
+# computation, because nothing computes on proofs.
+#
+# A `# axioms:` line above a declaration names the postulates it rests on,
+# transitively and through proofs, and tests/scripts.rs checks it. Every
+# declaration that rests on one has the line.
+
+# ## Binary positive numbers
+
+$ Bool : @Type 1 = @data | false | true
+
+$ Pos : @Type 1 = @data | one | bit0 Pos | bit1 Pos
+
+# Case analysis: the recursor with the induction hypotheses ignored.
+$ pcase : (A: @Type 1) -> A -> (Pos -> A) -> (Pos -> A) -> Pos -> A =
+    \A a f g p => Pos.elim @ctx {.m = 1} (\_ => A) a (\q _ => f q) (\q _ => g q) p
+
+$ psucc : Pos -> Pos =
+    \p => Pos.elim @ctx {.m = 1} (\_ => Pos) (bit0 one) (\q _ => bit1 q) (\_ r => bit0 r) p
+
+$ padd : Pos -> Pos -> Pos =
+    \p => Pos.elim @ctx {.m = 1} (\_ => Pos -> Pos)
+        (\q => pcase Pos (bit0 one) (\q' => bit1 q') (\q' => bit0 (psucc q')) q)
+        (\p' r q => pcase Pos (bit1 p') (\q' => bit0 (r q')) (\q' => bit1 (r q')) q)
+        (\p' r q => pcase Pos (bit0 (psucc p')) (\q' => bit1 (r q')) (\q' => bit0 (psucc (r q'))) q)
+        p
+
+$ pmul : Pos -> Pos -> Pos =
+    \p => Pos.elim @ctx {.m = 1} (\_ => Pos -> Pos) (\q => q) (\_ r q => bit0 (r q)) (\_ r q => padd q (bit0 (r q))) p
+
+# `2p - 1`.
+$ pdouble_pred : Pos -> Pos =
+    \p => Pos.elim @ctx {.m = 1} (\_ => Pos) one (\_ r => bit1 r) (\q _ => bit1 (bit0 q)) p
+
+# ## Binary integers
+
+$ Integer : @Type 1 = @data | zero | pos Pos | neg Pos
+
+$ icase : (A: @Type 1) -> A -> (Pos -> A) -> (Pos -> A) -> Integer -> A =
+    \A a f g z => Integer.elim @ctx {.m = 1} (\_ => A) a f g z
+
+$ ineg : Integer -> Integer = icase Integer zero (\p => neg p) (\p => pos p)
+
+$ idouble : Integer -> Integer = icase Integer zero (\p => pos (bit0 p)) (\p => neg (bit0 p))
+$ isucc_double : Integer -> Integer = icase Integer (pos one) (\p => pos (bit1 p)) (\p => neg (pdouble_pred p))
+$ ipred_double : Integer -> Integer = icase Integer (neg one) (\p => pos (pdouble_pred p)) (\p => neg (bit1 p))
+
+# `p - q`, by recursion on `p` and cases on `q`.
+$ psub : Pos -> Pos -> Integer =
+    \p => Pos.elim @ctx {.m = 1} (\_ => Pos -> Integer)
+        (\q => pcase Integer zero (\q' => neg (pdouble_pred q')) (\q' => neg (bit0 q')) q)
+        (\p' r q => pcase Integer (pos (pdouble_pred p')) (\q' => idouble (r q')) (\q' => ipred_double (r q')) q)
+        (\p' r q => pcase Integer (pos (bit0 p')) (\q' => isucc_double (r q')) (\q' => idouble (r q')) q)
+        p
+
+$ iadd : Integer -> Integer -> Integer =
+    \a b => icase Integer b
+        (\p => icase Integer (pos p) (\q => pos (padd p q)) (\q => psub p q) b)
+        (\p => icase Integer (neg p) (\q => psub q p) (\q => neg (padd p q)) b)
+        a
+
+$ imul : Integer -> Integer -> Integer =
+    \a b => icase Integer zero
+        (\p => icase Integer zero (\q => pos (pmul p q)) (\q => neg (pmul p q)) b)
+        (\p => icase Integer zero (\q => neg (pmul p q)) (\q => pos (pmul p q)) b)
+        a
+
+$ is_zero : Integer -> Bool = icase Bool true (\_ => false) (\_ => false)
+
+# Arithmetic computes: 5 + (-3) = 2, 3 * (-2) = -6.
+$ five : Pos = bit1 (bit0 one)
+$ three : Pos = bit1 one
+$ sum_check : iadd (pos five) (neg three) ~ pos (bit0 one) = @tt
+$ mul_check : imul (pos three) (neg (bit0 one)) ~ neg (bit0 three) = @tt
+
+# ## Equality reasoning on integers
+
+$ isym : (x y: Integer) -> x ~ y -> y ~ x =
+    \x y e => @transp x (\z => z ~ x) (@refl x) y e
+$ itrans : (x y z: Integer) -> x ~ y -> y ~ z -> x ~ z =
+    \x y z e f => @transp y (\w => x ~ w) e z f
+$ iap : (f: Integer -> Integer) -> (x y: Integer) -> x ~ y -> f x ~ f y =
+    \f x y e => @transp x (\z => f x ~ f z) (@refl (f x)) y e
+
+# The postulated ring laws.
+$ mul_comm : (a b: Integer) -> imul a b ~ imul b a
+$ mul_assoc : (a b c: Integer) -> imul (imul a b) c ~ imul a (imul b c)
+$ mul_cancel : (a b: Integer) -> (p: Pos) -> imul a (pos p) ~ imul b (pos p) -> a ~ b
+
+# `(a b) c ~ (a c) b`.
+# axioms: mul_comm mul_assoc
+$ swap_right : (a b c: Integer) -> imul (imul a b) c ~ imul (imul a c) b =
+    \a b c => itrans (imul (imul a b) c) (imul a (imul b c)) (imul (imul a c) b)
+        (mul_assoc a b c)
+        (itrans (imul a (imul b c)) (imul a (imul c b)) (imul (imul a c) b)
+            (iap (imul a) (imul b c) (imul c b) (mul_comm b c))
+            (isym (imul (imul a c) b) (imul a (imul c b)) (mul_assoc a c b)))
+
+# `(a b) (c d) ~ (a c) (b d)`.
+# axioms: mul_comm mul_assoc
+$ swap_middle : (a b c d: Integer) -> imul (imul a b) (imul c d) ~ imul (imul a c) (imul b d) =
+    \a b c d => itrans (imul (imul a b) (imul c d)) (imul (imul (imul a b) c) d) (imul (imul a c) (imul b d))
+        (isym (imul (imul (imul a b) c) d) (imul (imul a b) (imul c d)) (mul_assoc (imul a b) c d))
+        (itrans (imul (imul (imul a b) c) d) (imul (imul (imul a c) b) d) (imul (imul a c) (imul b d))
+            (iap (\t => imul t d) (imul (imul a b) c) (imul (imul a c) b) (swap_right a b c))
+            (mul_assoc (imul a c) b d))
+
+# ## Fractions and the relation
+
+$ Frac : @Type 1 = Integer * Pos
+
+$ same : Frac -> Frac -> @Type 0 = \x y => imul x.1 (pos y.2) ~ imul y.1 (pos x.2)
+
+$ same_refl : (x: Frac) -> same x x = \x => @refl (imul x.1 (pos x.2))
+
+$ same_sym : (x y: Frac) -> same x y -> same y x =
+    \x y e => isym (imul x.1 (pos y.2)) (imul y.1 (pos x.2)) e
+
+# From `a d ~ c b` and `c f ~ e d`: `(a f) d ~ (e b) d`, then cancel `d`.
+# axioms: mul_comm mul_assoc mul_cancel
+$ same_trans : (x y z: Frac) -> same x y -> same y z -> same x z =
+    \x y z h1 h2 =>
+        let a = x.1 in let b = pos x.2 in
+        let c = y.1 in let d = pos y.2 in
+        let e = z.1 in let f = pos z.2 in
+        mul_cancel (imul a f) (imul e b) y.2
+            (itrans (imul (imul a f) d) (imul (imul a d) f) (imul (imul e b) d)
+                (swap_right a f d)
+                (itrans (imul (imul a d) f) (imul (imul c b) f) (imul (imul e b) d)
+                    (iap (\t => imul t f) (imul a d) (imul c b) h1)
+                    (itrans (imul (imul c b) f) (imul (imul c f) b) (imul (imul e b) d)
+                        (swap_right c b f)
+                        (itrans (imul (imul c f) b) (imul (imul e d) b) (imul (imul e b) d)
+                            (iap (\t => imul t b) (imul c f) (imul e d) h2)
+                            (swap_right e d b)))))
+
+# ## Rationals
+
+# axioms: mul_comm mul_assoc mul_cancel
+$ Q : @Type 1 = @Quot Frac same same_refl same_sym same_trans
+
+# axioms: mul_comm mul_assoc mul_cancel
+$ frac : Integer -> Pos -> Q = \a b => @qin (a, b)
+
+# Equal classes, by computation: 1/2 ~ 2/4, and 1/2 is not 1/3.
+# axioms: mul_comm mul_assoc mul_cancel
+$ half : Q = frac (pos one) (bit0 one)
+# axioms: mul_comm mul_assoc mul_cancel
+$ two_quarters : Q = frac (pos (bit0 one)) (bit0 (bit0 one))
+# axioms: mul_comm mul_assoc mul_cancel
+$ half_is_two_quarters : half ~ two_quarters = @tt
+# axioms: mul_comm mul_assoc mul_cancel
+$ half_is_not_a_third : half ~ frac (pos one) three -> @Bottom = \e => e
+
+# Negation respects the relation because `(-a) d ~ -(a d)` holds by
+# computation on each sign of `a` and `d`.
+$ neg_mul : (a b: Integer) -> imul (ineg a) b ~ ineg (imul a b) =
+    \a b => Integer.elim @ctx {.m = 0} (\a => imul (ineg a) b ~ ineg (imul a b))
+        @tt
+        (\p => Integer.elim @ctx {.m = 0} (\b => imul (neg p) b ~ ineg (imul (pos p) b))
+            @tt (\q => @refl (pmul p q)) (\q => @refl (pmul p q)) b)
+        (\p => Integer.elim @ctx {.m = 0} (\b => imul (pos p) b ~ ineg (imul (neg p) b))
+            @tt (\q => @refl (pmul p q)) (\q => @refl (pmul p q)) b)
+        a
+
+# axioms: mul_comm mul_assoc mul_cancel
+$ qneg : Q -> Q =
+    \q => @qelim (\_ => Q) (\x => @qin (ineg x.1, x.2))
+        (\x y e =>
+            itrans (imul (ineg x.1) (pos y.2)) (ineg (imul x.1 (pos y.2))) (imul (ineg y.1) (pos x.2))
+                (neg_mul x.1 (pos y.2))
+                (itrans (ineg (imul x.1 (pos y.2))) (ineg (imul y.1 (pos x.2))) (imul (ineg y.1) (pos x.2))
+                    (iap ineg (imul x.1 (pos y.2)) (imul y.1 (pos x.2)) e)
+                    (isym (imul (ineg y.1) (pos x.2)) (ineg (imul y.1 (pos x.2))) (neg_mul y.1 (pos x.2)))))
+        q
+
+# axioms: mul_comm mul_assoc mul_cancel
+$ neg_half : qneg half ~ frac (neg one) (bit0 one) = @tt
+
+# Whether a rational is zero respects the relation by cases alone: if
+# `a d ~ c b` with `b`, `d` positive, then `a` and `c` are both zero or both
+# not.
+$ zero_iff : (p q: Pos) -> (a c: Integer) -> imul a (pos p) ~ imul c (pos q) -> is_zero a ~ is_zero c =
+    \p q a => Integer.elim @ctx {.m = 0}
+        (\a => (c: Integer) -> imul a (pos p) ~ imul c (pos q) -> is_zero a ~ is_zero c)
+        (\c => Integer.elim @ctx {.m = 0} (\c => imul zero (pos p) ~ imul c (pos q) -> is_zero zero ~ is_zero c)
+            (\h => @tt) (\c' h => h) (\c' h => h) c)
+        (\a' c => Integer.elim @ctx {.m = 0} (\c => imul (pos a') (pos p) ~ imul c (pos q) -> is_zero (pos a') ~ is_zero c)
+            (\h => h) (\c' h => @tt) (\c' h => @tt) c)
+        (\a' c => Integer.elim @ctx {.m = 0} (\c => imul (neg a') (pos p) ~ imul c (pos q) -> is_zero (neg a') ~ is_zero c)
+            (\h => h) (\c' h => @tt) (\c' h => @tt) c)
+        a
+
+# axioms: mul_comm mul_assoc mul_cancel
+$ qis_zero : Q -> Bool =
+    \q => @qelim (\_ => Bool) (\x => is_zero x.1) (\x y e => zero_iff y.2 x.2 x.1 y.1 e) q
+
+# axioms: mul_comm mul_assoc mul_cancel
+$ zero_over_five : qis_zero (frac zero five) ~ true = @tt
+# axioms: mul_comm mul_assoc mul_cancel
+$ half_is_not_zero : qis_zero half ~ false = @tt
+
+# Multiplication: `(a/b) (c/d) = (a c)/(b d)`. The inner method respects the
+# relation in its second argument; the outer one in its first, for every
+# second argument, proved by quotient induction (elimination into a
+# proposition, where respect is trivial).
+$ fmul : Frac -> Frac -> Frac = \x y => (imul x.1 y.1, pmul x.2 y.2)
+
+# axioms: mul_comm mul_assoc mul_cancel
+$ qmul_right : Frac -> Q -> Q =
+    \x q => @qelim (\_ => Q) (\y => @qin (fmul x y))
+        (\y y' e =>
+            let a = x.1 in let b = pos x.2 in
+            itrans (imul (imul a y.1) (imul b (pos y'.2))) (imul (imul a b) (imul y.1 (pos y'.2))) (imul (imul a y'.1) (imul b (pos y.2)))
+                (swap_middle a y.1 b (pos y'.2))
+                (itrans (imul (imul a b) (imul y.1 (pos y'.2))) (imul (imul a b) (imul y'.1 (pos y.2))) (imul (imul a y'.1) (imul b (pos y.2)))
+                    (iap (imul (imul a b)) (imul y.1 (pos y'.2)) (imul y'.1 (pos y.2)) e)
+                    (isym (imul (imul a y'.1) (imul b (pos y.2))) (imul (imul a b) (imul y'.1 (pos y.2))) (swap_middle a y'.1 b (pos y.2)))))
+        q
+
+# axioms: mul_comm mul_assoc mul_cancel
+$ qmul : Q -> Q -> Q =
+    \p => @qelim (\_ => Q -> Q) (\x => qmul_right x)
+        (\x x' h q => @qelim (\q => qmul_right x q ~ qmul_right x' q)
+            (\y =>
+                let c = y.1 in let d = pos y.2 in
+                itrans (imul (imul x.1 c) (imul (pos x'.2) d)) (imul (imul x.1 (pos x'.2)) (imul c d)) (imul (imul x'.1 c) (imul (pos x.2) d))
+                    (swap_middle x.1 c (pos x'.2) d)
+                    (itrans (imul (imul x.1 (pos x'.2)) (imul c d)) (imul (imul x'.1 (pos x.2)) (imul c d)) (imul (imul x'.1 c) (imul (pos x.2) d))
+                        (iap (\t => imul t (imul c d)) (imul x.1 (pos x'.2)) (imul x'.1 (pos x.2)) h)
+                        (isym (imul (imul x'.1 c) (imul (pos x.2) d)) (imul (imul x'.1 (pos x.2)) (imul c d)) (swap_middle x'.1 c (pos x.2) d))))
+            (\y y' e => @tt)
+            q)
+        p
+
+# (1/2) (1/2) ~ 1/4, and (2/4) (1/2) ~ 1/4 although the fractions differ.
+# axioms: mul_comm mul_assoc mul_cancel
+$ quarter : Q = frac (pos one) (bit0 (bit0 one))
+# axioms: mul_comm mul_assoc mul_cancel
+$ half_squared : qmul half half ~ quarter = @tt
+# axioms: mul_comm mul_assoc mul_cancel
+$ two_quarters_times_half : qmul two_quarters half ~ quarter = @tt
+# axioms: mul_comm mul_assoc mul_cancel
+$ minus_half_squared : qmul (qneg half) (qneg half) ~ quarter = @tt

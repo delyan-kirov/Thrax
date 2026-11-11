@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/utilities",
     "crates/frontend",
+    "crates/kernel",
     "crates/interpreter",
     "crates/ccg",
     "crates/ares",
