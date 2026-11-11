@@ -358,8 +358,12 @@ fn stuck_cast(a: Val, b: Val, e: Val, t: Val) -> Val {
 // injects a large type into a small one, which is Russell's paradox in the
 // form CIC^obs rejects (Pujet, Leray, Tabareau, TOPLAS 2025, Section 2.3).
 // CIC^obs instead lets the equality imply only that the constructors' field
-// types are equal (its `eq_c` projections, Section 4.1); a cast into a
-// constructor needs no more, and passes the irrelevant witness for it.
+// types are equal (its `eq_c` projections, Section 4.1). Each inductive type
+// with parameters gets one such projection per constructor field, as the
+// global `D.eq.c.f` (`inductive::projection_type`); `List.eq.cons.h` derives
+// `A ~ B` from `List A ~ List B`, but nothing derives `X ~ Y` for a
+// parameter `X` that is not a field type. A cast into a constructor needs
+// exactly these equalities, and passes the irrelevant witness for them.
 // See Rule [Eq-Stuck].
 
 // Note [Proofs evaluate to an irrelevant witness]

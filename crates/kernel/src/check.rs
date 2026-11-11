@@ -28,7 +28,7 @@ use crate::conversion::ConversionChecker;
 use crate::level::Level;
 use crate::nbe::{apply, eval, fst, global_type, quote, BindingVal, Closure, Env, Lvl, Neutral, QuotVal, Val};
 use crate::observational::{cast, eq, native_pi, relation_type};
-use crate::inductive::{constructor_type, recursor_type};
+use crate::inductive::{constructor_type, projection_type, recursor_type};
 use crate::signature::{ConstructorDecl, DataDecl, DataId, Global, GlobalId, GlobalKind, Param, Signature};
 use crate::syntax::{error, parse_script, Item, ItemBody, LevelArg, Primitive, Raw, RawConstructor, RawKind, RawLevel};
 use crate::term::{mentions_global, Binding, Name, Term, TermDisplay};
@@ -185,6 +185,22 @@ impl Checker<'_> {
             self.fresh_global(&c.name, c.span, &taken)?;
             taken.push(c.name.clone());
         }
+        // `D.eq.c.f` for field `f` of constructor `c`, or `D.eq.c.argN` for the
+        // unnamed `N`th field.
+        let projection_name = |c: &RawConstructor, j: usize| -> Name {
+            match &*c.fields[j].0 {
+                "_" => format!("{}.eq.{}.arg{}", item.name, c.name, j + 1).into(),
+                field => format!("{}.eq.{}.{field}", item.name, c.name).into(),
+            }
+        };
+        let has_params = matches!(ty, Term::Pi(_));
+        for c in ctors.iter().filter(|_| has_params) {
+            for j in 0..c.fields.len() {
+                let name = projection_name(c, j);
+                self.fresh_global(&name, c.span, &taken)?;
+                taken.push(name);
+            }
+        }
         self.fresh_global(&recursor_name, item.span, &[])?;
 
         let data = self.sig.add_data(DataDecl {
@@ -217,6 +233,20 @@ impl Checker<'_> {
                 kind: GlobalKind::Constructor(data, index),
                 uses,
             }));
+        }
+        // A type without parameters is equal only to itself, so its
+        // projections would say nothing.
+        for (index, c) in ctors.iter().enumerate().filter(|_| has_params) {
+            for j in 0..c.fields.len() {
+                let ty = projection_type(self.sig.data(data), level_names.len(), index, j);
+                self.sig.add(Global {
+                    name: projection_name(c, j),
+                    level_params: level_names.clone(),
+                    ty: Rc::new(ty),
+                    kind: GlobalKind::Projection(data, index, j),
+                    uses: vec![former],
+                });
+            }
         }
 
         let mut recursor_levels = level_names.clone();

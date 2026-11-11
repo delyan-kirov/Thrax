@@ -36,6 +36,10 @@ pub enum GlobalKind {
     Constructor(DataId, usize),
     /// The recursor (dependent eliminator) of an inductive type.
     Recursor(DataId),
+    /// The projection out of `D a ~ D a'` for field `.2` of constructor
+    /// `.1`: a proof, so its value is the irrelevant witness.
+    /// See Rule [Data-Eq-Projection].
+    Projection(DataId, usize, usize),
 }
 
 /// An inductive type `D (params) : @Type level` and its constructors. Its

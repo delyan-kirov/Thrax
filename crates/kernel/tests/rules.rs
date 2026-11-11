@@ -265,6 +265,22 @@ fn eq_univ_data() {
     blocked("$ t : Nat ~ Bool = @tt\n", "expected `@Bottom`, found `@Top`");
 }
 
+// Test [Data-Eq-Projection]
+#[test]
+fn data_eq_projection() {
+    let lists = "(A B: @Type 1) -> List @ctx {.u = 0} A ~ List @ctx {.u = 0} B";
+    let sig = applies(&format!("$ inj : {lists} -> A ~ B = \\A B e => List.eq.cons.h @ctx {{.u = 0}} A B e\n"));
+    // A projection is part of the theory, not a postulate.
+    assert_eq!(kernel::axioms(&sig, "inj"), Some(Vec::new()));
+    // Only the field types are equal, not the parameters: `X` is not a field.
+    let family = "$ D : (X: @Type 1 -> @Type 1) -> @Type 1 = @data | mk (x: X Nat)\n";
+    applies(&format!("{family}$ f : (X Y: @Type 1 -> @Type 1) -> D X ~ D Y -> X Nat ~ Y Nat = \\X Y e => D.eq.mk.x X Y e\n"));
+    blocked(
+        &format!("{family}$ f : (X Y: @Type 1 -> @Type 1) -> D X ~ D Y -> X ~ Y = \\X Y e => D.eq.mk.x X Y e\n"),
+        "expected `(_: @Type 1) -> X _ ~ Y _`, found `X Nat ~ Y Nat`",
+    );
+}
+
 // Test [Eq-Quot-Class]
 #[test]
 fn eq_quot_class() {

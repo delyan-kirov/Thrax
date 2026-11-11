@@ -74,7 +74,12 @@ fn telescope(params: &[Param]) -> Vec<(Name, Term, Level)> {
 
 /// `D params`, with the parameters at levels `0..params` seen from `depth`.
 fn data_applied(decl: &DataDecl, levels: usize, depth: u32) -> Term {
-    let params = (0..decl.params.len() as u32).map(|p| var(depth, p));
+    data_applied_from(decl, levels, depth, 0)
+}
+
+/// `D params`, with the parameters at levels `first..first + params`.
+fn data_applied_from(decl: &DataDecl, levels: usize, depth: u32, first: u32) -> Term {
+    let params = (0..decl.params.len() as u32).map(|p| var(depth, first + p));
     apply_all(Term::Global(decl.global, own_levels(levels)), params)
 }
 
@@ -85,6 +90,59 @@ pub fn constructor_type(decl: &DataDecl, levels: usize, index: usize) -> Term {
     let depth = (decl.params.len() + ctor.fields.len()) as u32;
     let (fields, sort) = pis(&telescope(&ctor.fields), data_applied(decl, levels, depth), decl.level.clone());
     pis(&telescope(&decl.params), fields, sort).0
+}
+
+// Rule [Data-Eq-Projection]
+/// The projection out of `D a ~ D a'` for field `field` of constructor
+/// `index`: the equality of that field's types, over the earlier fields at
+/// `a` and their casts to `a'`.
+/// See Note [Equality of two instances of one inductive type is stuck].
+///
+/// ```text
+/// (a: params) -> (a': params) -> D a ~ D a' -> (b_0: B_0[a]) -> ...
+///   -> B_j[a, b] ~ (let b'_0: B_0[a'] = @cast B_0[a] B_0[a'] _ b_0 in ... in B_j[a', b'])
+/// ```
+pub fn projection_type(decl: &DataDecl, levels: usize, index: usize, field: usize) -> Term {
+    let ctor = &decl.constructors[index];
+    let np = decl.params.len() as u32;
+    let j = field as u32;
+    let fields = &ctor.fields;
+
+    // `B_k[a, b_<k]` right under the binders `b_<k`, where its parameters
+    // skip `e` and `a'`; then moved out by `extra` binders.
+    let at_a = |k: usize, extra: u32| shift(&shift(&fields[k].ty, k as Index, np + 1), 0, extra);
+    // `B_k[a', b'_<k]` under the `k` lets that bind `b'_<k`, where its
+    // parameters skip the `b`s and `e`.
+    let at_a2 = |k: usize| shift(&fields[k].ty, k as Index, j + 1);
+
+    let mut primed = at_a2(field);
+    for k in (0..field).rev() {
+        // Under `k` lets, field `b_t` of the outer binders is `j` further
+        // out than right under them, and `b_k` itself is at `j - 1`.
+        let from = at_a(k, j);
+        let value = Term::Var(j - 1);
+        let moved = Term::Cast(Rc::new(from), Rc::new(at_a2(k)), Rc::new(Term::Irrelevant), Rc::new(value));
+        primed = Term::Let(format!("{}'", fields[k].name).into(), Rc::new(at_a2(k)), Rc::new(moved), Rc::new(primed));
+    }
+    let level = fields[field].level.clone();
+    let goal = Term::Eq(level.succ(), Rc::new(Term::Sort(level)), Rc::new(at_a(field, 0)), Rc::new(primed));
+
+    let earlier: Vec<(Name, Term, Level)> =
+        (0..field).map(|k| (fields[k].name.clone(), at_a(k, 0), fields[k].level.clone())).collect();
+    let (body, sort) = pis(&earlier, goal, Level::Zero);
+    let depth = 2 * np;
+    let same = Term::Eq(
+        decl.level.succ(),
+        Rc::new(Term::Sort(decl.level.clone())),
+        Rc::new(data_applied_from(decl, levels, depth, 0)),
+        Rc::new(data_applied_from(decl, levels, depth, np)),
+    );
+    let (body, sort) = pis(&[("e".into(), same, Level::Zero)], body, sort);
+    let mut params = telescope(&decl.params);
+    for p in telescope(&decl.params) {
+        params.push((format!("{}'", p.0).into(), p.1, p.2));
+    }
+    pis(&params, body, sort).0
 }
 
 // Algorithm [Recursor generation]

@@ -35,7 +35,8 @@ equality and cast treat them?
 
 *Update 2026-11-11:* the stuck equality is in the kernel. Its injectivity
 rule was unsound by CIC^obs §2.3, and the kernel accepted the counterexample's
-precondition (#477). The `eq_c` projections are still to do.
+precondition (#477). The `eq_c` projections are in too, as the globals
+`D.eq.c.f`, one per constructor field of a type with parameters.
 
 **CIC^obs's scheme. Equality of two instances of one inductive type no longer
 computes to the equality of their parameters; it stays stuck, with CIC^obs's
