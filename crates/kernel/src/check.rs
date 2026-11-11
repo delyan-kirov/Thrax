@@ -17,6 +17,8 @@
 //!
 //! Entry point: [`check_script`].
 
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use utilities::error::closest;
@@ -36,6 +38,7 @@ pub fn check_script(src: &str) -> Result<Signature> {
     let mut checker = Checker {
         src,
         sig: Signature::new(),
+        uses: RefCell::default(),
     };
     for item in parse_script(src)? {
         checker.check_item(&item)?;
@@ -46,6 +49,9 @@ pub fn check_script(src: &str) -> Result<Signature> {
 struct Checker<'s> {
     src: &'s str,
     sig: Signature,
+    /// The globals resolved since the last [`Checker::take_uses`].
+    /// See Note [Axioms are collected before proofs are erased].
+    uses: RefCell<BTreeSet<GlobalId>>,
 }
 
 /// The variables in scope, outermost first: their names and types, and the
@@ -93,7 +99,12 @@ impl Checker<'_> {
         error(self.src, code, span, msg)
     }
 
+    fn take_uses(&self) -> Vec<GlobalId> {
+        std::mem::take(&mut *self.uses.borrow_mut()).into_iter().collect()
+    }
+
     fn check_item(&mut self, item: &Item) -> Result<()> {
+        self.take_uses();
         if self.sig.lookup(&item.name).is_some() {
             return Err(self.error(Code::DuplicateSymbol, item.span, format!("`{}` is already defined", item.name)));
         }
@@ -122,6 +133,7 @@ impl Checker<'_> {
             level_params: level_names,
             ty: Rc::new(ty),
             kind,
+            uses: self.take_uses(),
         });
         Ok(())
     }
@@ -138,6 +150,7 @@ impl Checker<'_> {
         Ok(())
     }
 
+    // Rule [Data-Form]
     fn check_data(&mut self, item: &Item, level_names: Vec<Name>, ctors: &[RawConstructor]) -> Result<()> {
         let mut ctx = Context::new(level_names.clone());
         let (ty, _) = self.check_type(&mut ctx, &item.ty)?;
@@ -181,23 +194,29 @@ impl Checker<'_> {
             constructors: Vec::new(),
             recursor: GlobalId::MAX,
         });
-        self.sig.add(Global {
+        let former = self.sig.add(Global {
             name: item.name.clone(),
             level_params: level_names.clone(),
             ty: Rc::new(ty),
             kind: GlobalKind::Data(data),
+            uses: self.take_uses(),
         });
+        let mut constructors = Vec::new();
         for (index, c) in ctors.iter().enumerate() {
             let mut decl = self.check_constructor(data, &level_names, &level, c)?;
             decl.global = self.sig.next_global();
             self.sig.data_mut(data).constructors.push(decl);
             let ty = constructor_type(self.sig.data(data), level_names.len(), index);
-            self.sig.add(Global {
+            let mut uses = self.take_uses();
+            uses.retain(|g| *g != former);
+            uses.push(former);
+            constructors.push(self.sig.add(Global {
                 name: c.name.clone(),
                 level_params: level_names.clone(),
                 ty: Rc::new(ty),
                 kind: GlobalKind::Constructor(data, index),
-            });
+                uses,
+            }));
         }
 
         let mut recursor_levels = level_names.clone();
@@ -213,6 +232,7 @@ impl Checker<'_> {
             level_params: recursor_levels,
             ty: Rc::new(ty),
             kind: GlobalKind::Recursor(data),
+            uses: constructors.into_iter().chain([former]).collect(),
         });
         Ok(())
     }
@@ -240,6 +260,7 @@ impl Checker<'_> {
                 ));
             }
             let ty_val = self.eval(&ctx, &ty);
+            // Rule [Positivity-Restricted]
             // See Note [Strict positivity, restricted].
             let is_self = is_data_at_own_params(&ty_val, data, np);
             if !is_self && mentions_global(&ty, decl.global) {
@@ -358,8 +379,10 @@ impl Checker<'_> {
         }
     }
 
+    // Algorithm [Bidirectional checking]
     fn check(&self, ctx: &mut Context, raw: &Raw, expected: &Val) -> Result<Term> {
         match (&raw.kind, expected) {
+            // Rule [Fun]
             (RawKind::Lam(name, ann, body), Val::Pi(pi)) => {
                 if let Some(ann) = ann {
                     let (t, _) = self.check_type(ctx, ann)?;
@@ -374,16 +397,19 @@ impl Checker<'_> {
                 })?;
                 Ok(Term::Lam(name.clone(), Rc::new(body)))
             }
+            // Rule [Sigma-Pair]
             (RawKind::Pair(a, b), Val::Sigma(sigma)) => {
                 let a = self.check(ctx, a, &sigma.dom)?;
                 let cod = sigma.cod.apply(&self.sig, self.eval(ctx, &a));
                 let b = self.check(ctx, b, &cod)?;
                 Ok(Term::Pair(Rc::new(a), Rc::new(b)))
             }
+            // Rule [Quot-Intro]
             (RawKind::Prim(Primitive::QIn, args), Val::Quot(q)) => {
                 let a = self.check(ctx, &args[0], &q.carrier)?;
                 Ok(Term::QIn(Rc::new(a)))
             }
+            // Rule [Let]
             (RawKind::Let(name, ann, val, body), _) => {
                 let (ty, val) = self.let_binding(ctx, ann.as_deref(), val)?;
                 let (ty_val, val_val) = (self.eval(ctx, &ty), self.eval(ctx, &val));
@@ -409,15 +435,18 @@ impl Checker<'_> {
     fn infer(&self, ctx: &mut Context, raw: &Raw) -> Result<(Term, Val)> {
         match &raw.kind {
             RawKind::Var(name, level_args) => self.infer_var(ctx, raw.span, name, level_args),
+            // Rule [Univ]
             RawKind::Sort(l) => {
                 let l = self.level(ctx, l)?;
                 Ok((Term::Sort(l.clone()), Val::Sort(l.succ())))
             }
+            // Rule [Pi-Form]
             RawKind::Pi(name, dom, cod) => {
                 let binding = self.binding(ctx, name, dom, cod)?;
                 let sort = Level::imax(&binding.dom_level, &binding.cod_level);
                 Ok((Term::Pi(Rc::new(binding)), Val::Sort(sort)))
             }
+            // Rule [Sigma-Form]
             RawKind::Sigma(name, dom, cod) => {
                 let binding = self.binding(ctx, name, dom, cod)?;
                 let sort = Level::max(&binding.dom_level, &binding.cod_level);
@@ -470,6 +499,7 @@ impl Checker<'_> {
                 raw.span,
                 format!("cannot infer the type of `{name}`; annotate it as `\\({name}: T) => ...`"),
             )),
+            // Rule [App]
             RawKind::App(f, a) => {
                 let (f_term, f_ty) = self.infer(ctx, f)?;
                 let Val::Pi(pi) = &f_ty else {
@@ -501,6 +531,7 @@ impl Checker<'_> {
                 Ok((self.check(ctx, e, &ty_val)?, ty_val))
             }
             RawKind::Prim(prim, args) => self.infer_primitive(ctx, *prim, args),
+            // Rule [Eq-Form]
             RawKind::Eq(a, b) => {
                 let (a, ty) = self.infer(ctx, a)?;
                 let level = self.sort_of(ctx, &ty, raw.span)?;
@@ -540,8 +571,10 @@ impl Checker<'_> {
     fn infer_primitive(&self, ctx: &mut Context, prim: Primitive, args: &[Raw]) -> Result<(Term, Val)> {
         let proposition = Val::Sort(Level::Zero);
         Ok(match prim {
+            // Rule [Top]
             Primitive::Top => (Term::Top, proposition),
             Primitive::Tt => (Term::Tt, Val::Top),
+            // Rule [Bottom]
             Primitive::Bottom => (Term::Bottom, proposition),
             Primitive::Absurd => {
                 let (ty, _) = self.check_type(ctx, &args[0])?;
@@ -549,6 +582,7 @@ impl Checker<'_> {
                 let ty_val = self.eval(ctx, &ty);
                 (Term::Absurd(Rc::new(ty), Rc::new(proof)), ty_val)
             }
+            // Rule [Eq-Form]
             Primitive::Eq => {
                 let (ty, level) = self.check_type(ctx, &args[0])?;
                 let ty_val = self.eval(ctx, &ty);
@@ -556,12 +590,14 @@ impl Checker<'_> {
                 let b = self.check(ctx, &args[2], &ty_val)?;
                 (Term::Eq(level, Rc::new(ty), Rc::new(a), Rc::new(b)), proposition)
             }
+            // Rule [Refl]
             Primitive::Refl => {
                 let (a, ty) = self.infer(ctx, &args[0])?;
                 let level = self.sort_of(ctx, &ty, args[0].span)?;
                 let a = self.eval(ctx, &a);
                 (Term::Irrelevant, eq(&self.sig, level, ty, a.clone(), a))
             }
+            // Rule [Transport]
             Primitive::Transp => {
                 let (t, ty) = self.infer(ctx, &args[0])?;
                 let level = self.sort_of(ctx, &ty, args[0].span)?;
@@ -581,6 +617,7 @@ impl Checker<'_> {
                 self.check(ctx, &args[4], &eq(&self.sig, level, ty, t, t2.clone()))?;
                 (Term::Irrelevant, apply(&self.sig, motive, t2))
             }
+            // Rule [Cast]
             Primitive::Cast => {
                 let (from, level) = self.check_type(ctx, &args[0])?;
                 let universe = Val::Sort(level.clone());
@@ -604,6 +641,7 @@ impl Checker<'_> {
         })
     }
 
+    // Rule [Quot-Form]
     fn infer_quotient(&self, ctx: &mut Context, args: &[Raw]) -> Result<(Term, Val)> {
         let (carrier, level) = self.check_type(ctx, &args[0])?;
         if !level.is_nonzero() {
@@ -654,6 +692,7 @@ impl Checker<'_> {
         Ok((term, Val::Sort(level)))
     }
 
+    // Rule [Quot-Elim]
     fn infer_quotient_elim(&self, ctx: &mut Context, args: &[Raw]) -> Result<(Term, Val)> {
         let (q, q_ty) = self.infer(ctx, &args[3])?;
         let Val::Quot(quot) = &q_ty else {
@@ -764,7 +803,9 @@ impl Checker<'_> {
                 format!("`{name}` needs its level `{}`: write `{name} @ctx {{.{} = ...}}`", params[i], params[i]),
             ));
         }
+        // Rule [Level-Polymorphism]
         let levels: Rc<[Level]> = levels.into_iter().map(Option::unwrap).collect();
+        self.uses.borrow_mut().insert(id);
         let ty = global_type(&self.sig, id, levels.clone());
         Ok((Term::Global(id, levels), ty))
     }

@@ -33,6 +33,13 @@ pub mod term;
 pub use check::check_script;
 pub use signature::Signature;
 
+/// The names of the axioms global `name` depends on, transitively (Lean's
+/// `#print axioms`).
+pub fn axioms(sig: &Signature, name: &str) -> Option<Vec<String>> {
+    let id = sig.lookup(name)?;
+    Some(sig.axioms(id).into_iter().map(|a| sig.global(a).name.to_string()).collect())
+}
+
 /// The normal form of global `name`'s body, printed (for tests and tools).
 pub fn normal_form(sig: &Signature, name: &str) -> Option<String> {
     let id = sig.lookup(name)?;

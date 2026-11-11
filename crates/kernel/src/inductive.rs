@@ -78,6 +78,7 @@ fn data_applied(decl: &DataDecl, levels: usize, depth: u32) -> Term {
     apply_all(Term::Global(decl.global, own_levels(levels)), params)
 }
 
+// Rule [Data-Ctor]
 /// `(params) -> (fields) -> D params`.
 pub fn constructor_type(decl: &DataDecl, levels: usize, index: usize) -> Term {
     let ctor = &decl.constructors[index];
@@ -86,6 +87,8 @@ pub fn constructor_type(decl: &DataDecl, levels: usize, index: usize) -> Term {
     pis(&telescope(&decl.params), fields, sort).0
 }
 
+// Algorithm [Recursor generation]
+// Rule [Data-Elim]
 /// The recursor's type; `levels` counts the declaration's own level
 /// parameters, and the motive's sort is parameter `levels`.
 pub fn recursor_type(decl: &DataDecl, levels: usize) -> Term {
@@ -249,6 +252,7 @@ pub fn recursor_value(sig: &Signature, data: DataId, levels: Rc<[Level]>) -> Val
     curry(names.into(), Vec::new(), done, sig)
 }
 
+// Rule [Data-Iota]
 /// The recursor applied to a major premise: the method of a constructor, or
 /// stuck on a neutral.
 pub fn iota(sig: &Signature, rec: Rc<RecursorArgs>, major: Val) -> Val {

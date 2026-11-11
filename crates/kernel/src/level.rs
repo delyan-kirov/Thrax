@@ -7,11 +7,15 @@
 //! impredicative system of Pujet and Tabareau, "Impredicative Observational
 //! Equality", POPL 2023).
 //!
-//! Deciding `a <= b` for every assignment of the parameters uses Lean 4's
-//! case split: while some `imax x y` has a `y` that may or may not be zero, pick
-//! a parameter `p` of `y` that keeps it undecided and check both `p := 0` and
+//! Deciding `a <= b` for every assignment of the parameters splits cases:
+//! while some `imax x y` has a `y` that may or may not be zero, pick a
+//! parameter `p` of `y` that keeps it undecided and check both `p := 0` and
 //! `p := p + 1`. Without undecided `imax`, a level is a maximum of `p + k` and
 //! one constant (its max-plus normal form), where `<=` is read off directly.
+//! Lean 4's kernel does not do this: its `is_geq` is a syntactic check, sound
+//! but incomplete. The split has no source yet (the theory ledger,
+//! `documentation/theory/LEDGER.md`, lists it as a conjecture).
+//! See Algorithm [Level comparison by case split].
 //!
 //! Kernel parameters range over every level, `0` included. The surface default
 //! of `n >= 1` is a kernel `k + 1`.
@@ -167,6 +171,7 @@ impl Level {
         })
     }
 
+    // Algorithm [Level comparison by case split]
     /// `self <= other` for every assignment of the parameters.
     pub fn leq(&self, other: &Level) -> bool {
         match self.max_plus().and_then(|a| other.max_plus().map(|b| (a, b))) {

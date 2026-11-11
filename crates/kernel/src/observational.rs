@@ -100,15 +100,18 @@ fn stuck_eq(level: Level, ty: Val, a: Val, b: Val) -> Val {
 
 /// `a ~ b` at type `ty`, where `ty : @Type level`.
 pub fn eq(sig: &Signature, level: Level, ty: Val, a: Val, b: Val) -> Val {
+    // Rule [Eq-Prop]
     if level.is_zero() {
         return Val::Top;
     }
+    // Rule [Eq-Stuck]
     if !level.is_nonzero() {
         // A type whose sort may or may not be a proposition: neither rule
         // applies until the level is known.
         return stuck_eq(level, ty, a, b);
     }
     match &ty {
+        // Rule [Eq-Fun]
         Val::Pi(p) => {
             let p = p.clone();
             let (name, dom, dom_level) = (p.name.clone(), p.dom.clone(), p.dom_level.clone());
@@ -117,6 +120,7 @@ pub fn eq(sig: &Signature, level: Level, ty: Val, a: Val, b: Val) -> Val {
                 eq(sig, p.cod_level.clone(), cod, apply(sig, a.clone(), x.clone()), apply(sig, b.clone(), x))
             })
         }
+        // Rule [Eq-Pair]
         Val::Sigma(p) => {
             let (a1, b1) = (fst(a.clone()), fst(b.clone()));
             let first = eq(sig, p.dom_level.clone(), p.dom.clone(), a1.clone(), b1.clone());
@@ -126,11 +130,13 @@ pub fn eq(sig: &Signature, level: Level, ty: Val, a: Val, b: Val) -> Val {
             and(first, second)
         }
         Val::Sort(k) => eq_types(sig, k, a, b),
+        // Rule [Eq-Ctor]
         Val::Data(_) => match (&a, &b) {
             (Val::Constructor(x), Val::Constructor(y)) if x.index != y.index => Val::Bottom,
             (Val::Constructor(x), Val::Constructor(y)) => eq_fields(sig, x, y),
             _ => stuck_eq(level, ty, a, b),
         },
+        // Rule [Eq-Quot-Class]
         // See Note [Equality on a quotient is its relation].
         Val::Quot(q) => match (&a, &b) {
             (Val::QIn(x), Val::QIn(y)) => apply(sig, apply(sig, q.relation.clone(), (**x).clone()), (**y).clone()),
@@ -191,13 +197,16 @@ fn component(ambient: &Level, a: &Level, b: &Level) -> Component {
 /// `a ~ b` for two types in `@Type k`.
 fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
     let universe = || Val::Sort(k.clone());
+    // Rule [Eq-Omega]
     if k.is_zero() {
         return and(implies(a.clone(), b.clone()), implies(b, a));
     }
+    // Rule [Eq-Stuck]
     if !k.is_nonzero() {
         return stuck_eq(k.succ(), universe(), a, b);
     }
     match (&a, &b) {
+        // Rule [Eq-Univ]
         (Val::Sort(i), Val::Sort(j)) => {
             if i.equal(j) {
                 Val::Top
@@ -211,11 +220,13 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
             let is_pi = matches!(a, Val::Pi(_));
             let (dom, cod) = match (component(k, &p.dom_level, &q.dom_level), component(k, &p.cod_level, &q.cod_level)) {
                 (Component::At(d), Component::At(c)) => (d, c),
+                // Rule [Eq-Univ-Neq]
                 (Component::Mismatch, _) | (_, Component::Mismatch) => return Val::Bottom,
                 _ => return stuck_eq(k.succ(), universe(), a, b),
             };
             let (p, q) = (p.clone(), q.clone());
             if is_pi {
+                // Rule [Eq-Pi]
                 // `(x: A) -> B ~ (x: A') -> B'` is `A' ~ A` and, for every
                 // `a': A'`, `B[cast a'] ~ B'[a']`.
                 let doms = eq_types(sig, &dom, q.dom.clone(), p.dom.clone());
@@ -226,6 +237,7 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
                 });
                 and(doms, cods)
             } else {
+                // Rule [Eq-Sigma]
                 // `(x: A) * B ~ (x: A') * B'` is `A ~ A'` and, for every
                 // `a: A`, `B[a] ~ B'[cast a]`.
                 let doms = eq_types(sig, &dom, p.dom.clone(), q.dom.clone());
@@ -237,10 +249,12 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
                 and(doms, cods)
             }
         }
+        // Rule [Eq-Data]
         (Val::Data(x), Val::Data(y)) if x.data == y.data => {
             let decl = sig.data(x.data);
             let same_levels = x.levels.len() == y.levels.len() && x.levels.iter().zip(y.levels.iter()).all(|(l, m)| l.equal(m));
             let dependent = decl.params.iter().enumerate().any(|(i, p)| (0..i as u32).any(|j| mentions(&p.ty, j)));
+            // Rule [Eq-Stuck]
             if !same_levels || dependent {
                 return stuck_eq(k.succ(), universe(), a, b);
             }
@@ -253,6 +267,7 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
             }
             and_all(props)
         }
+        // Rule [Eq-Quot]
         (Val::Quot(x), Val::Quot(y)) => {
             // `A / R ~ A' / R'` is `A ~ A'` and, for every `a b: A`,
             // `R a b ~ R' (cast a) (cast b)`.
@@ -270,6 +285,7 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
             and(carriers, relations)
         }
         (Val::Neutral(_), _) | (_, Val::Neutral(_)) => stuck_eq(k.succ(), universe(), a, b),
+        // Rule [Eq-Univ-Neq]
         _ => Val::Bottom,
     }
 }
@@ -278,15 +294,19 @@ fn eq_types(sig: &Signature, k: &Level, a: Val, b: Val) -> Val {
 
 /// `@cast a b e t`: `t : a` seen at `b`, along `e : a ~ b`.
 pub fn cast(sig: &Signature, a: Val, b: Val, e: Val, t: Val) -> Val {
-    // See Note [A cast between identical types is the identity].
+    // Rule [Proof-Witness]
     if let Val::Irrelevant = t {
         return t;
     }
+    // Rule [Cast-Refl-Eval]
+    // See Note [A cast between identical types is the identity].
     if identical(sig, &a, &b, IDENTITY_PROBE) {
         return t;
     }
     match (&a, &b) {
+        // Rule [Cast-Univ]
         (Val::Sort(_), Val::Sort(_)) | (Val::Top, Val::Top) | (Val::Bottom, Val::Bottom) => t,
+        // Rule [Cast-Pi]
         (Val::Pi(p), Val::Pi(q)) => {
             let (p, q) = (p.clone(), q.clone());
             Val::Lam(
@@ -298,6 +318,7 @@ pub fn cast(sig: &Signature, a: Val, b: Val, e: Val, t: Val) -> Val {
                 })),
             )
         }
+        // Rule [Cast-Sigma]
         (Val::Sigma(p), Val::Sigma(q)) => {
             let a1 = fst(t.clone());
             let a2 = cast(sig, p.dom.clone(), q.dom.clone(), Val::Irrelevant, a1.clone());
@@ -305,7 +326,9 @@ pub fn cast(sig: &Signature, a: Val, b: Val, e: Val, t: Val) -> Val {
             let b2 = cast(sig, from, to, Val::Irrelevant, snd(t));
             Val::Pair(Rc::new((a2, b2)))
         }
+        // Rule [Cast-Ctor]
         (Val::Data(x), Val::Data(y)) if x.data == y.data => {
+            // Rule [Cast-Refl-Eval]
             if sig.data(x.data).params.is_empty() {
                 return t;
             }
@@ -327,6 +350,7 @@ pub fn cast(sig: &Signature, a: Val, b: Val, e: Val, t: Val) -> Val {
             }
             Val::Constructor(Rc::new(ConstructorVal { fields, ..target }))
         }
+        // Rule [Cast-Quot]
         (Val::Quot(x), Val::Quot(y)) => match &t {
             Val::QIn(v) => Val::QIn(Rc::new(cast(sig, x.carrier.clone(), y.carrier.clone(), Val::Irrelevant, (**v).clone()))),
             _ => stuck_cast(a, b, e, t),
@@ -451,8 +475,17 @@ fn stuck_cast(a: Val, b: Val, e: Val, t: Val) -> Val {
 // justifies TT^obs, where a cast along a proof of `A ~ A` is related to the
 // identity. It is checked syntactically (see `identical`), so it fires on
 // types that are equal without unfolding or eta, which is when the respect
-// obligations above need it. What it does to the decidability argument of
-// the paper is not settled here.
+// obligations above need it.
+//
+// It is the Cast-Refl of CIC^obs used as an evaluation rule, which no
+// published system does. CIC^obs proves conversion decidable with Cast-Refl
+// as a conversion rule, and its Coq implementation reduces only neutral
+// casts; Pujet's thesis conjectures normalisation for a reduction on neutral
+// types. Abel and Coquand show that such a rule breaks normalisation once it
+// computes in an impredicative universe; here it never does, because a cast
+// of a proof returns the irrelevant witness first. The theory ledger,
+// `documentation/theory/LEDGER.md`, has the sources and the status.
+// See Rule [Cast-Refl-Eval].
 
 #[cfg(test)]
 mod tests;

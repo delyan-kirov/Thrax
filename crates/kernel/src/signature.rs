@@ -7,9 +7,12 @@
 //! refer to earlier ones only, so the signature is append-only and a
 //! [`GlobalId`] never dangles.
 //!
+//! Each global also records the globals its source referred to, proofs
+//! included, so [`Signature::axioms`] can report the axioms it rests on.
+//!
 //! Entry point: [`Signature`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 use crate::level::Level;
@@ -71,6 +74,9 @@ pub struct Global {
     pub level_params: Vec<Name>,
     pub ty: Rc<Term>,
     pub kind: GlobalKind,
+    /// The globals its type and body named, before proofs were erased.
+    /// See Note [Axioms are collected before proofs are erased].
+    pub uses: Vec<GlobalId>,
 }
 
 #[derive(Default)]
@@ -122,4 +128,29 @@ impl Signature {
         self.globals.push(global);
         id
     }
+
+    // Algorithm [Transitive axioms]
+    /// The axioms global `id` depends on, itself included when it is one,
+    /// in declaration order.
+    pub fn axioms(&self, id: GlobalId) -> Vec<GlobalId> {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![id];
+        while let Some(g) = stack.pop() {
+            if seen.insert(g) {
+                stack.extend(self.global(g).uses.iter().copied());
+            }
+        }
+        seen.into_iter().filter(|g| matches!(self.global(*g).kind, GlobalKind::Axiom)).collect()
+    }
 }
+
+// Note [Axioms are collected before proofs are erased]
+//
+// A proof evaluates to one irrelevant witness, and `@refl` and `@transp`
+// elaborate to `Term::Irrelevant`, so the stored terms forget which globals a
+// proof used. The checker therefore records every global it resolves while
+// checking a declaration, in `Global::uses`, and the axiom report follows
+// those edges instead of the terms. A global named only inside an erased
+// proof still counts, which is the point: a theorem proved from a postulate
+// rests on it.
+// See Note [Proofs evaluate to an irrelevant witness].

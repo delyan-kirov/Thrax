@@ -11,6 +11,10 @@
 # integers and provable by induction, which is the job of the proof
 # automation the plan puts last. A postulated proposition never blocks
 # computation, because nothing computes on proofs.
+#
+# A `# axioms:` line above a declaration names the postulates it rests on,
+# transitively and through proofs, and tests/scripts.rs checks it. Every
+# declaration that rests on one has the line.
 
 # ## Binary positive numbers
 
@@ -95,6 +99,7 @@ $ mul_assoc : (a b c: Integer) -> imul (imul a b) c ~ imul a (imul b c)
 $ mul_cancel : (a b: Integer) -> (p: Pos) -> imul a (pos p) ~ imul b (pos p) -> a ~ b
 
 # `(a b) c ~ (a c) b`.
+# axioms: mul_comm mul_assoc
 $ swap_right : (a b c: Integer) -> imul (imul a b) c ~ imul (imul a c) b =
     \a b c => itrans (imul (imul a b) c) (imul a (imul b c)) (imul (imul a c) b)
         (mul_assoc a b c)
@@ -103,6 +108,7 @@ $ swap_right : (a b c: Integer) -> imul (imul a b) c ~ imul (imul a c) b =
             (isym (imul (imul a c) b) (imul a (imul c b)) (mul_assoc a c b)))
 
 # `(a b) (c d) ~ (a c) (b d)`.
+# axioms: mul_comm mul_assoc
 $ swap_middle : (a b c d: Integer) -> imul (imul a b) (imul c d) ~ imul (imul a c) (imul b d) =
     \a b c d => itrans (imul (imul a b) (imul c d)) (imul (imul (imul a b) c) d) (imul (imul a c) (imul b d))
         (isym (imul (imul (imul a b) c) d) (imul (imul a b) (imul c d)) (mul_assoc (imul a b) c d))
@@ -122,6 +128,7 @@ $ same_sym : (x y: Frac) -> same x y -> same y x =
     \x y e => isym (imul x.1 (pos y.2)) (imul y.1 (pos x.2)) e
 
 # From `a d ~ c b` and `c f ~ e d`: `(a f) d ~ (e b) d`, then cancel `d`.
+# axioms: mul_comm mul_assoc mul_cancel
 $ same_trans : (x y z: Frac) -> same x y -> same y z -> same x z =
     \x y z h1 h2 =>
         let a = x.1 in let b = pos x.2 in
@@ -140,14 +147,20 @@ $ same_trans : (x y z: Frac) -> same x y -> same y z -> same x z =
 
 # ## Rationals
 
+# axioms: mul_comm mul_assoc mul_cancel
 $ Q : @Type 1 = @Quot Frac same same_refl same_sym same_trans
 
+# axioms: mul_comm mul_assoc mul_cancel
 $ frac : Integer -> Pos -> Q = \a b => @qin (a, b)
 
 # Equal classes, by computation: 1/2 ~ 2/4, and 1/2 is not 1/3.
+# axioms: mul_comm mul_assoc mul_cancel
 $ half : Q = frac (pos one) (bit0 one)
+# axioms: mul_comm mul_assoc mul_cancel
 $ two_quarters : Q = frac (pos (bit0 one)) (bit0 (bit0 one))
+# axioms: mul_comm mul_assoc mul_cancel
 $ half_is_two_quarters : half ~ two_quarters = @tt
+# axioms: mul_comm mul_assoc mul_cancel
 $ half_is_not_a_third : half ~ frac (pos one) three -> @Bottom = \e => e
 
 # Negation respects the relation because `(-a) d ~ -(a d)` holds by
@@ -161,6 +174,7 @@ $ neg_mul : (a b: Integer) -> imul (ineg a) b ~ ineg (imul a b) =
             @tt (\q => @refl (pmul p q)) (\q => @refl (pmul p q)) b)
         a
 
+# axioms: mul_comm mul_assoc mul_cancel
 $ qneg : Q -> Q =
     \q => @qelim (\_ => Q) (\x => @qin (ineg x.1, x.2))
         (\x y e =>
@@ -171,6 +185,7 @@ $ qneg : Q -> Q =
                     (isym (imul (ineg y.1) (pos x.2)) (ineg (imul y.1 (pos x.2))) (neg_mul y.1 (pos x.2)))))
         q
 
+# axioms: mul_comm mul_assoc mul_cancel
 $ neg_half : qneg half ~ frac (neg one) (bit0 one) = @tt
 
 # Whether a rational is zero respects the relation by cases alone: if
@@ -187,10 +202,13 @@ $ zero_iff : (p q: Pos) -> (a c: Integer) -> imul a (pos p) ~ imul c (pos q) -> 
             (\h => h) (\c' h => @tt) (\c' h => @tt) c)
         a
 
+# axioms: mul_comm mul_assoc mul_cancel
 $ qis_zero : Q -> Bool =
     \q => @qelim (\_ => Bool) (\x => is_zero x.1) (\x y e => zero_iff y.2 x.2 x.1 y.1 e) q
 
+# axioms: mul_comm mul_assoc mul_cancel
 $ zero_over_five : qis_zero (frac zero five) ~ true = @tt
+# axioms: mul_comm mul_assoc mul_cancel
 $ half_is_not_zero : qis_zero half ~ false = @tt
 
 # Multiplication: `(a/b) (c/d) = (a c)/(b d)`. The inner method respects the
@@ -199,6 +217,7 @@ $ half_is_not_zero : qis_zero half ~ false = @tt
 # proposition, where respect is trivial).
 $ fmul : Frac -> Frac -> Frac = \x y => (imul x.1 y.1, pmul x.2 y.2)
 
+# axioms: mul_comm mul_assoc mul_cancel
 $ qmul_right : Frac -> Q -> Q =
     \x q => @qelim (\_ => Q) (\y => @qin (fmul x y))
         (\y y' e =>
@@ -210,6 +229,7 @@ $ qmul_right : Frac -> Q -> Q =
                     (isym (imul (imul a y'.1) (imul b (pos y.2))) (imul (imul a b) (imul y'.1 (pos y.2))) (swap_middle a y'.1 b (pos y.2)))))
         q
 
+# axioms: mul_comm mul_assoc mul_cancel
 $ qmul : Q -> Q -> Q =
     \p => @qelim (\_ => Q -> Q) (\x => qmul_right x)
         (\x x' h q => @qelim (\q => qmul_right x q ~ qmul_right x' q)
@@ -225,7 +245,11 @@ $ qmul : Q -> Q -> Q =
         p
 
 # (1/2) (1/2) ~ 1/4, and (2/4) (1/2) ~ 1/4 although the fractions differ.
+# axioms: mul_comm mul_assoc mul_cancel
 $ quarter : Q = frac (pos one) (bit0 (bit0 one))
+# axioms: mul_comm mul_assoc mul_cancel
 $ half_squared : qmul half half ~ quarter = @tt
+# axioms: mul_comm mul_assoc mul_cancel
 $ two_quarters_times_half : qmul two_quarters half ~ quarter = @tt
+# axioms: mul_comm mul_assoc mul_cancel
 $ minus_half_squared : qmul (qneg half) (qneg half) ~ quarter = @tt

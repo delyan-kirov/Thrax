@@ -169,6 +169,7 @@ impl Env {
 
 // ## Evaluation
 
+// Algorithm [Normalisation by evaluation]
 pub fn eval(sig: &Signature, env: &Env, t: &Term) -> Val {
     match t {
         Term::Var(ix) => env.lookup(*ix),
@@ -180,6 +181,7 @@ pub fn eval(sig: &Signature, env: &Env, t: &Term) -> Val {
         Term::Pi(b) => Val::Pi(Rc::new(eval_binding(sig, env, b))),
         Term::Lam(name, body) => Val::Lam(name.clone(), Closure::Term(env.clone(), body.clone())),
         Term::App(f, a) => apply(sig, eval(sig, env, f), eval(sig, env, a)),
+        // Rule [Let]
         Term::Let(_, _, val, body) => eval(sig, &env.extend(eval(sig, env, val)), body),
         Term::Sigma(b) => Val::Sigma(Rc::new(eval_binding(sig, env, b))),
         Term::Pair(a, b) => Val::Pair(Rc::new((eval(sig, env, a), eval(sig, env, b)))),
@@ -194,6 +196,7 @@ pub fn eval(sig: &Signature, env: &Env, t: &Term) -> Val {
             let (from, to) = (eval(sig, env, from), eval(sig, env, to));
             cast(sig, from, to, eval(sig, env, proof), eval(sig, env, value))
         }
+        // Rule [Proof-Witness]
         Term::Irrelevant => Val::Irrelevant,
         Term::Quot(a, r, level) => Val::Quot(Rc::new(QuotVal {
             carrier: eval(sig, env, a),
@@ -238,6 +241,7 @@ pub fn global_type(sig: &Signature, id: GlobalId, levels: Rc<[Level]>) -> Val {
 
 pub fn apply(sig: &Signature, f: Val, a: Val) -> Val {
     match f {
+        // Rule [Beta]
         Val::Lam(_, body) => body.apply(sig, a),
         Val::Neutral(n) => Val::neutral(Neutral::App(n, a)),
         Val::Irrelevant => Val::Irrelevant,
@@ -248,12 +252,14 @@ pub fn apply(sig: &Signature, f: Val, a: Val) -> Val {
 /// `@qelim motive method q`: the method on a class's representative.
 pub fn qelim(sig: &Signature, motive: Val, method: Val, level: Level, q: Val) -> Val {
     match q {
+        // Rule [Quot-Beta]
         Val::QIn(a) => apply(sig, method, (*a).clone()),
         Val::Neutral(n) => Val::neutral(Neutral::QElim { motive, method, level, quotient: n }),
         _ => unreachable!("eliminated a non-quotient: the checker let an ill-typed term through"),
     }
 }
 
+// Rule [Sigma-Pair]
 pub fn fst(p: Val) -> Val {
     match p {
         Val::Pair(pair) => pair.0.clone(),

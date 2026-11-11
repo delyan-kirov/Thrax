@@ -1,18 +1,25 @@
-//! Checks every kernel script under `scripts/`: each must be accepted.
+//! Checks every kernel script under `scripts/`: each must be accepted, and
+//! the axioms its globals rest on must match the `# axioms:` lines in it.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-#[test]
-fn every_script_checks() {
+fn scripts() -> Vec<PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts");
     let mut paths: Vec<_> = std::fs::read_dir(&dir)
         .expect("the scripts directory exists")
         .map(|e| e.expect("a readable entry").path())
+        // FIXME(#473): `.ott` until the kernel reads Ares, then `.ares`.
         .filter(|p| p.extension().is_some_and(|e| e == "ott"))
         .collect();
     paths.sort();
     assert!(!paths.is_empty(), "no scripts in {}", dir.display());
-    for path in paths {
+    paths
+}
+
+#[test]
+fn every_script_checks() {
+    for path in scripts() {
         let src = std::fs::read_to_string(&path).expect("a readable script");
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         if let Err(e) = kernel::check_script(&src) {
@@ -43,4 +50,74 @@ fn the_rationals_reject_wrong_claims() {
             }
         }
     }
+}
+
+/// The axioms each global rests on, for every global that is not itself an
+/// axiom and rests on at least one.
+fn axioms_of(sig: &kernel::Signature) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for name in sig.names() {
+        let axioms = kernel::axioms(sig, name).expect("a declared name");
+        if !axioms.is_empty() && axioms != [name] {
+            out.insert(name.to_string(), axioms.join(" "));
+        }
+    }
+    out
+}
+
+/// The `# axioms: a b` lines, each keyed by the declaration below it.
+fn pinned_axioms(src: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let mut pending: Option<String> = None;
+    for line in src.lines() {
+        if let Some(axioms) = line.strip_prefix("# axioms:") {
+            pending = Some(axioms.split_whitespace().collect::<Vec<_>>().join(" "));
+        } else if let Some(pin) = pending.take() {
+            let name = line.strip_prefix("$ ").and_then(|l| l.split([' ', ':']).next());
+            let name = name.unwrap_or_else(|| panic!("a `# axioms:` line is not directly above a declaration: {line}"));
+            out.insert(name.to_string(), pin);
+        }
+    }
+    out
+}
+
+#[test]
+fn every_script_pins_its_axioms() {
+    for path in scripts() {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let src = std::fs::read_to_string(&path).expect("a readable script");
+        let sig = kernel::check_script(&src).unwrap_or_else(|e| panic!("{}", e.render(&src, &name)));
+        let (actual, pinned) = (axioms_of(&sig), pinned_axioms(&src));
+        let mut problems = Vec::new();
+        for (global, axioms) in &actual {
+            match pinned.get(global) {
+                Some(pin) if pin == axioms => {}
+                Some(pin) => problems.push(format!("`{global}` rests on `{axioms}`, but its pin says `{pin}`")),
+                None => problems.push(format!("`{global}` rests on `{axioms}` and needs `# axioms: {axioms}`")),
+            }
+        }
+        for (global, pin) in &pinned {
+            if !actual.contains_key(global) {
+                problems.push(format!("`{global}` rests on no axiom, but is pinned to `{pin}`"));
+            }
+        }
+        assert!(problems.is_empty(), "{name}:\n{}", problems.join("\n"));
+    }
+}
+
+#[test]
+fn axioms_used_only_inside_a_proof_are_reported() {
+    let src = "\
+$ Nat : @Type 1 = @data | zero | succ Nat
+$ ax : zero ~ succ zero
+$ pr : (P: Nat -> @Type 0) -> P zero -> P (succ zero) = \\P p => @transp zero (\\x => P x) p (succ zero) ax
+$ uses_pr : (P: Nat -> @Type 0) -> P zero -> P (succ zero) = pr
+$ clean : Nat = succ zero
+";
+    let sig = kernel::check_script(src).unwrap_or_else(|e| panic!("{}", e.render(src, "test")));
+    assert_eq!(kernel::axioms(&sig, "pr").unwrap(), ["ax"]);
+    assert_eq!(kernel::axioms(&sig, "uses_pr").unwrap(), ["ax"]);
+    assert_eq!(kernel::axioms(&sig, "ax").unwrap(), ["ax"]);
+    assert!(kernel::axioms(&sig, "clean").unwrap().is_empty());
+    assert!(kernel::axioms(&sig, "Nat.elim").unwrap().is_empty());
 }

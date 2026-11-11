@@ -23,9 +23,9 @@ with respectful quotient elimination. It is `crates/kernel/scripts/rationals.ott
 
 | Module | Job |
 |---|---|
-| `level` | universe levels, `imax`, the Lean-style case split that decides `<=` |
+| `level` | universe levels, `imax`, the case split that decides `<=` |
 | `term` | core terms with de Bruijn indices, printing, shifting |
-| `signature` | the checked globals and inductive declarations |
+| `signature` | the checked globals and inductive declarations, and the axioms each rests on |
 | `nbe` | evaluation to values and read-back (normalisation by evaluation) |
 | `inductive` | constructor and recursor types, iota reduction |
 | `observational` | the computation of `a ~ b` and `@cast` |
@@ -65,11 +65,25 @@ $ four : add (succ (succ zero)) (succ (succ zero)) ~ succ (succ (succ (succ zero
 
 ## 5. Departures and gaps
 
-- `@cast A B e t` reduces to `t` when `A` and `B` are the same value (Note [A cast between identical types is the identity]). TT^obs reaches `t` only through its structure; without the rule the outer respect proof of a binary quotient operation meets a stuck cast. Sound in the setoid model; its effect on decidability is open.
+Every rule the kernel implements, where it comes from, what theorem covers it
+and where it departs, is in the theory ledger,
+[`documentation/theory/LEDGER.md`](theory/LEDGER.md) (#472). The code tags
+each rule's implementation with `// Rule [Name]`, and
+`crates/kernel/tests/ledger.rs` keeps the two in step. The main departures:
+
+- `@cast A B e t` reduces to `t` when `A` and `B` are the same value (Note [A cast between identical types is the identity]). TT^obs reaches `t` only through its structure; without the rule the outer respect proof of a binary quotient operation meets a stuck cast. CIC^obs has the rule in conversion, not evaluation (#464).
 - Equality at an inductive type whose parameters depend on earlier parameters is left stuck.
 - Indexed families are not primitive (TT^obs encodes them by fording). Nested and infinitely branching recursive fields are rejected.
 - Definitions unfold eagerly, so error messages show unfolded terms. Glued evaluation would keep the names.
 - No metavariables or implicit arguments: the kernel checks elaborated terms, and every argument is written.
+
+## 5.1 Axioms
+
+`kernel::axioms` lists the postulates a global rests on, transitively and
+through proofs (Lean's `#print axioms`). A script pins them with a
+`# axioms: a b` line above each declaration that rests on any, which
+`tests/scripts.rs` checks, so a new dependence on a postulate fails a test. `rationals.ott` rests on `mul_comm`,
+`mul_assoc` and `mul_cancel` (#463).
 
 ## 6. Next steps
 

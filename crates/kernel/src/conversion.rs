@@ -100,19 +100,23 @@ impl ConversionChecker<'_> {
 // ## Conversion
 
 impl ConversionChecker<'_> {
+    // Algorithm [Typed conversion]
     /// `a` and `b` are equal values of type `ty`.
     pub fn conv(&mut self, ty: &Val, a: &Val, b: &Val) -> bool {
+        // Rule [Proof-Irrelevance]
         // See Note [Proof irrelevance is decided by the type].
         if self.is_proposition(ty) {
             return true;
         }
         match ty {
+            // Rule [Eta-Pi]
             Val::Pi(p) => self.under(p.dom.clone(), |c, x| {
                 let cod = p.cod.apply(c.sig, x.clone());
                 let fa = apply(c.sig, a.clone(), x.clone());
                 let fb = apply(c.sig, b.clone(), x);
                 c.conv(&cod, &fa, &fb)
             }),
+            // Rule [Eta-Sigma]
             Val::Sigma(p) => {
                 let (fa, fb) = (fst(a.clone()), fst(b.clone()));
                 self.conv(&p.dom, &fa, &fb) && {
@@ -226,6 +230,7 @@ impl ConversionChecker<'_> {
 
     pub fn conv_type(&mut self, a: &Val, b: &Val, cumulative: bool) -> bool {
         match (a, b) {
+            // Rule [Cumulativity]
             (Val::Sort(l), Val::Sort(m)) => {
                 // See Note [Cumulativity starts at data].
                 l.equal(m) || (cumulative && l.is_nonzero() && l.leq(m))
