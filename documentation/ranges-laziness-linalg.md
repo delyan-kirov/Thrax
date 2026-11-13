@@ -1,5 +1,10 @@
 # Deferred design: ranges, laziness, and the linear-algebra extension
 
+**Superseded syntax (2026-11-12).** This log writes sized tensors as `[n]T` and
+`[m, n]T`; they are now `@Tensor n T` and `@Tensor m (@Tensor n T)` (`LA.Matrix m
+n T`), and the per-axis variance of increment 4 (`@co`/`@contra`) was removed
+(#366). See documentation/language-reference.md section 9 for the current form.
+
 **Status: SHIPPED.** Ranges (pattern form) are done. The codata discussion below
 is historical: `@codata` was removed on 2026-09-28 and laziness became a property
 of a recursive slot in any declared type (documentation/language-reference.md 6.5,

@@ -326,7 +326,7 @@ impl<'a> Checker<'a> {
                 let (lhs, rhs) = (*lhs, *rhs);
                 self.check_applied_lambda(lhs, rhs, expected)
             }
-            // `[..]` where a sized tensor `[n]T` is expected: the literal's length
+            // `[..]` where a sized tensor `@Tensor n T` is expected: the literal's length
             // fixes `n`, and every element is checked against `T`. Lowering builds
             // a vector.
             Expr::List(items) if self.tensor_parts(expected).is_some() => {
@@ -344,24 +344,24 @@ impl<'a> Checker<'a> {
                 self.tensor_exprs.insert(e);
                 Ok(())
             }
-            // A range `[lo ... hi]` where a sized tensor `[n]T` is expected. The
+            // A range `[lo ... hi]` where a sized tensor `@Tensor n T` is expected. The
             // length must be a COMPILE-TIME constant, so the bounds must be literals;
             // it fixes `n = hi - lo + 1` (0 when `hi < lo`). Bounds are checked
-            // against the element type, so `[4]Nat = [1 ... 4]` types the ends as Nat.
+            // against the element type, so `@Tensor 4 Nat = [1 ... 4]` types the ends as Nat.
             Expr::Range { lo, hi } if self.tensor_parts(expected).is_some() => {
                 let lo = *lo;
                 let Some(hi) = *hi else {
                     return Err(diag!(
                         Code::TypeMismatch, Span::at(0), 0,
                         "an open range `[lo ...]` is infinite and cannot build a sized \
-                         tensor `[n]T`; it builds a `Stream`"
+                         tensor `@Tensor n T`; it builds a `Stream`"
                     ));
                 };
                 let (size, elem) = self.tensor_parts(expected).expect("guarded");
                 let (Some(l), Some(h)) = (self.int_literal(lo), self.int_literal(hi)) else {
                     return Err(diag!(
                         Code::TypeMismatch, Span::at(0), 0,
-                        "a range building a sized tensor `[n]T` needs literal bounds, \
+                        "a range building a sized tensor `@Tensor n T` needs literal bounds, \
                          so its length is known at compile time";
                         note: "a compile-time-constant bound (e.g. `let a = 4 in [1 ... a]`) \
                                is not resolved yet";
@@ -858,7 +858,7 @@ impl<'a> Checker<'a> {
             // A range builds whatever its `@IRange` / `@IRangeFrom`
             // instance returns (CORE: a `@Vec` for `[lo ... hi]`, a
             // `Stream` for the unbounded `[lo ...]`). The sized-tensor target is
-            // reached only through `check` against a `[n]T`.
+            // reached only through `check` against a `@Tensor n T`.
             Expr::Range { lo, hi } => {
                 let (lo, hi) = (*lo, *hi);
                 self.range_hook(e, lo, hi, None)
@@ -1189,31 +1189,28 @@ impl<'a> Checker<'a> {
         }
         let elem = self.unifier.fresh();
         let dims: Vec<Type> = (0..slots.len()).map(|_| self.unifier.fresh_nat()).collect();
-        // A fresh variance var per sliced axis, so the receiver may have any
-        // variance and each kept axis carries its own variance through unchanged.
-        let vars: Vec<Type> = (0..slots.len()).map(|_| self.unifier.fresh()).collect();
         let mut expected = elem;
         for i in (0..slots.len()).rev() {
-            expected = tensor_type(&self.unifier.types, vars[i], dims[i], expected);
+            expected = tensor_type(&self.unifier.types, dims[i], expected);
         }
         self.unifier.unify(rt, expected, "slicing a tensor")?;
 
         let int = self.unifier.types.con(ty::INT);
-        let mut kept: Vec<(Type, Type)> = Vec::new();
+        let mut kept: Vec<Type> = Vec::new();
         for (i, s) in slots.iter().enumerate() {
             match s {
                 SliceSlot::Index(x) => self.check(*x, int)?,
                 SliceSlot::Range(lo, hi) => {
                     self.check(*lo, int)?;
                     self.check(*hi, int)?;
-                    kept.push((vars[i], self.unifier.fresh_nat()));
+                    kept.push(self.unifier.fresh_nat());
                 }
-                SliceSlot::Full => kept.push((vars[i], dims[i])),
+                SliceSlot::Full => kept.push(dims[i]),
             }
         }
         let mut result = elem;
-        for (v, d) in kept.iter().rev() {
-            result = tensor_type(&self.unifier.types, *v, *d, result);
+        for d in kept.iter().rev() {
+            result = tensor_type(&self.unifier.types, *d, result);
         }
         Ok(result)
     }

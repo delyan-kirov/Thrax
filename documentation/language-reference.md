@@ -339,13 +339,15 @@ $ tag   : { x: @Int | r } -> { x: @Int, t: @Int | r } = \p => { .t = 99, ..p }
 ```
 
 ## 3.9 Sized tensors
-`[n]T` is a vector of `n` elements; `n` is a type-level natural (its own kind).
-`[m, n]T` is sugar for nested `[m][n]T`. Sizes may be arithmetic
-(`[n+m]a`), decided by a canonical form. See section 9.
+`@Tensor n T` is a vector of `n` elements; `n` is a type-level natural (its own
+kind). A matrix is a tensor of tensors, `@Tensor m (@Tensor n T)`, which `LA`
+names `Matrix m n T`. `@Tensor` heads its application (as an argument it is
+parenthesized). A size is a literal, a size variable, or parenthesized arithmetic
+(`@Tensor (n + m) a`), decided by a canonical form. See section 9.
 
 ```ares
-$ v : [3]@Int = [10, 20, 30]
-$ g : [2][2]@Int = [ [1,2], [3,4] ]
+$ v : @Tensor 3 @Int = [10, 20, 30]
+$ g : @Tensor 2 (@Tensor 2 @Int) = [ [1,2], [3,4] ]
 ```
 
 ## 3.10 Type aliases `@alias`
@@ -720,14 +722,14 @@ $ ext    : @Str -> @Str = \s => s |> \ | name ++ ".ares" => name | _ => s
 $ ends   : @Array -> @Int = \a => a |> \ | [x] ++ mid ++ [z] => x + z | _ => 0
 ```
 
-A sized tensor `[n]T` (3.9) knows its length, so its patterns are checked at
-compile time instead of tested: `[x, y, z]` covers a `[3]T` with no `_` arm, a
-wrong length is a type error, and the middle of a split gets an exact size
-(`[a] ++ r` on a `[3]T` binds `r : [2]T`). The size must be concrete there.
+A sized tensor `@Tensor n T` (3.9) knows its length, so its patterns are checked
+at compile time instead of tested: `[x, y, z]` covers a `@Tensor 3 T` with no `_`
+arm, a wrong length is a type error, and the middle of a split gets an exact size
+(`[a] ++ r` on a `@Tensor 3 T` binds `r : @Tensor 2 T`). The size must be concrete there.
 A rank-2 tensor splits along its first axis, one row per element.
 
 ```ares
-$ sum3 : [3] @Int -> @Int = \t => t |> \ | [x, y, z] => x + y + z
+$ sum3 : @Tensor 3 @Int -> @Int = \t => t |> \ | [x, y, z] => x + y + z
 ```
 
 ## 5.8 Or-patterns and guards
@@ -1181,50 +1183,49 @@ $ with_file : @Str -> (@Int -> @Int) -> @Int = \path body =>
 # 9. Sized tensors and linear algebra
 
 ## 9.1 Tensor literals and indexing
-`[n]T` is built from a `[..]` literal whose length fixes `n` (a mismatch is a
-type error). Read with modular indexing `t.[i]` (the index reduces mod the size,
-so it is total, `t.[n]` wraps to `t.[0]`). Indexing an empty `[0]T` is the sole
-fault.
+`@Tensor n T` is built from a `[..]` literal whose length fixes `n` (a mismatch
+is a type error). Read with modular indexing `t.[i]` (the index reduces mod the
+size, so it is total, `t.[n]` wraps to `t.[0]`). Indexing an empty `@Tensor 0 T`
+is the sole fault.
 
 ```ares
 $ @import LA
-$ v : [3]@Int = [10, 20, 30]
+$ v : @Tensor 3 @Int = [10, 20, 30]
 $ a : @Int = v.[1]        # 20
 $ b : @Int = v.[3]        # wraps to v.[0] = 10
 ```
 
 ## 9.2 Multi-dimensional and multi-axis indexing
-`[m, n]T` is nested `[m][n]T`. `t.[i, j]` reads one element (`t.[i].[j]`).
+A matrix is a tensor of tensors, `Matrix m n T` = `@Tensor m (@Tensor n T)`.
+`t.[i, j]` reads one element (`t.[i].[j]`).
 
 ```ares
 $ @import LA
-$ g : [2][2]@Int = [ [1,2], [3,4] ]
+$ g : Matrix 2 2 @Int = [ [1,2], [3,4] ]
 $ z : @Int = g.[1, 0]     # 3
 ```
 
 ## 9.3 Size arithmetic
 A size may be `+`/`*` over literals and size variables, evaluated mod 2^64 and
-compared by a canonical form (`[n+m]` equals `[m+n]`; `[n+n]` is `[2*n]`). This
+compared by a canonical form (`n + m` equals `m + n`; `n + n` is `2 * n`). This
 drives size-changing operations, whose result size is computed at compile time.
 
 ```ares
 $ @import LA
 # LA provides `concat`, its result size computed at compile time:
-#   concat : [n]a -> [m]a -> [n+m]a
-$ joined : [5]@Int = concat [1, 2] [3, 4, 5]      # [2+3] = [5]
+#   concat : @Tensor n a -> @Tensor m a -> @Tensor (n + m) a
+$ joined : @Tensor 5 @Int = concat [1, 2] [3, 4, 5]      # 2 + 3 = 5
 ```
 
-## 9.4 Slicing and variance
+## 9.4 Slicing
 Multi-axis slicing `t.[s0, s1, ...]`: `i` indexes an axis, `p ... q` narrows it
 to an inclusive range, `..` keeps it whole. Every result is an O(1) strided view.
-Each axis may carry a variance tag `@contra` (upper index / column) or `@co`
-(lower index / row); `matmul` contracts a `@co` axis against a `@contra` axis.
 
 ```ares
 $ @import LA
-$ row : [m][n]a -> @Int -> [n]a = \m i => m.[i]
-$ col : [m][n]a -> @Int -> [m]a = \m j => m.[.., j]
-$ sub : [8]@Int -> [4]@Int = \m => m.[2 ... 5]      # inclusive 2..5, four elements
+$ row : Matrix m n a -> @Int -> @Tensor n a = \m i => m.[i]
+$ col : Matrix m n a -> @Int -> @Tensor m a = \m j => m.[.., j]
+$ sub : @Tensor 8 @Int -> @Tensor 4 @Int = \m => m.[2 ... 5]      # inclusive 2..5, four elements
 ```
 
 ## 9.5 Tensor primitives and the `LA` library
@@ -1235,7 +1236,7 @@ by defining an instance. A multi-axis slice stays tensor-only: its result shape 
 computed from the slots.
 
 ```ares
-$ transpose : [m][n]a -> [n][m]a = \t =>
+$ transpose : Matrix m n a -> Matrix n m a = \t =>
 	@tensor_create (@tensor_index t 0)
 		(\j => @tensor_create t (\i => @tensor_index (@tensor_index t i) j))
 ```
@@ -1250,9 +1251,9 @@ A sized tensor is the exception: literal bounds fix `n`, and the compiler builds
 directly.
 
 ```ares
-$ tv : [4]@Int     = [1 ... 4]     # tensor, n = 4
-$ ns : @Vec @Int   = [1 ... 5]     # vector (the bare closed range)
-$ s  : Stream @Int = [1 ...]       # unbounded (the bare open range)
+$ tv : @Tensor 4 @Int = [1 ... 4]     # tensor, n = 4
+$ ns : @Vec @Int      = [1 ... 5]     # vector (the bare closed range)
+$ s  : Stream @Int    = [1 ...]       # unbounded (the bare open range)
 ```
 
 A `@Vec` range materializes every element, so a large bound costs that much work
@@ -1374,8 +1375,7 @@ builtin is curried. Only CORE may declare one, and no module may redefine one.
 The operators the parser rewrites (`;`, `|>`, `<|`) are declared the same way, for
 their types: `$ (|>) : a -> (a -> <e> b) -> <e> b = @extern "ares"`. A few primitives stay inside the
 compiler because their types have no surface syntax: `@cast` is checked
-specially, and the `@tensor_*` primitives are polymorphic over axis
-variance.
+specially, and the `@tensor_*` primitives are typed in the compiler (#342).
 
 ---
 
@@ -1726,7 +1726,7 @@ A quick index of the `@`-forms and where each is documented above.
 | `@Int8..64` `@Nat8..64` `@Float32/64` | sized numerics | 3.2 |
 | `@I*` | blessed literal / indexing / range / interpolation interfaces | 1.4, 1.6, 9.5 |
 | `@Ptr` `@Array` `@Vec` | built-in containers/pointer | 3.3, 12 |
-| `@co` `@contra` | tensor axis variance | 9.4 |
+| `@Tensor` | sized tensor type | 3.9 |
 | `@array_len/get/set/push/slice/alloc` | array primitives | 12.2 |
 | `@vec_new/push/get/set/len/fill` | vector primitives | 12.3 |
 | `@tensor_index/length/create/concat/slice/...` | tensor primitives | 9.5 |

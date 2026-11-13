@@ -53,7 +53,7 @@ pub struct Unifier {
     /// `{ x | r }` is expected. A generic struct instance `App(Con("Box"), Int)`
     /// bridges by substituting its arguments for the parameter vars.
     struct_rows: std::collections::HashMap<StrId, (Vec<VarId>, Type)>,
-    /// Variables of the `Nat` kind (a size in `[n]T`). A `Nat` variable unifies
+    /// Variables of the `Nat` kind (a size in `@Tensor n T`). A `Nat` variable unifies
     /// only with another `Nat` variable or a `TypeNode::Nat`; kind mismatches are
     /// rejected in [`Unifier::bind`]. Snapshotted by save/restore so a rolled-back
     /// trial cannot leave a stale id that a reused var slot would inherit.
@@ -358,16 +358,6 @@ impl Unifier {
                 self.unify(a1, b1, where_)?;
                 self.unify(a2, b2, where_)?;
                 self.unify(ae, be, where_)
-            }
-            // Sized tensors carry a per-axis variance in their spine, unified by the
-            // compatibility rule (Neutral is a wildcard, Co and Contra clash) rather
-            // than plain structural App equality.
-            _ if self.tensor_spine(a).is_some() && self.tensor_spine(b).is_some() => {
-                let (va, sa, ea) = self.tensor_spine(a).expect("checked");
-                let (vb, sb, eb) = self.tensor_spine(b).expect("checked");
-                self.unify_variance(va, vb, where_)?;
-                self.unify(sa, sb, where_)?;
-                self.unify(ea, eb, where_)
             }
             (TypeNode::App(a1, a2), TypeNode::App(b1, b2)) => {
                 self.unify(a1, b1, where_)?;

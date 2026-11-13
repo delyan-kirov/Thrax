@@ -685,14 +685,14 @@ fn nominal_struct_update_with_pipe() {
 
 #[test]
 fn sized_tensor_construction_and_modular_index() {
-    // `[n]T` is a sized vector; a `[..]` literal's length fixes the size, and
+    // `@Tensor n T` is a sized vector; a `[..]` literal's length fixes the size, and
     // `@tensor_index` reads modulo the size (total: index n wraps to 0). Functions may be
-    // size-polymorphic (`[n]a`), the size unifying at the call. (`.[..]` surface
+    // size-polymorphic (`@Tensor n a`), the size unifying at the call. (`.[..]` surface
     // sugar, which routes through the LA `index`, is covered by the TENSORS corpus.)
     let src = "$ @mod M\n\
-               $ v : [3]@Int = [10, 20, 30]\n\
-               $ head : [n]a -> a = \\t => @tensor_index t 0\n\
-               $ grid : [2][2]@Int = [ [1, 2], [3, 4] ]\n\
+               $ v : @Tensor 3 @Int = [10, 20, 30]\n\
+               $ head : @Tensor n a -> a = \\t => @tensor_index t 0\n\
+               $ grid : @Tensor 2 (@Tensor 2 @Int) = [ [1, 2], [3, 4] ]\n\
                $ r : @Int = @tensor_index v 1 + @tensor_index v 3 + @tensor_index v 7 + head v + @tensor_index (@tensor_index grid 1) 0";
     // 20 + v[0]=10 + v[1]=20 + head=10 + grid[1][0]=3
     assert_eq!(run(src, "r"), "63");
@@ -700,17 +700,17 @@ fn sized_tensor_construction_and_modular_index() {
 
 #[test]
 fn tensor_size_arithmetic() {
-    // `@tensor_concat : [n]a -> [m]a -> [n+m]a` computes the result size forward; the
+    // `@tensor_concat : @Tensor n a -> @Tensor m a -> @Tensor (n + m) a` computes the result size forward; the
     // Z/2^64 polynomial normalizer decides `n+n == 2*n` and `n+m == m+n`. (Full
     // library `concat`/`matmul`/`dot`/`transpose` are exercised end-to-end, both
     // engines, by the TENSORS corpus example, which imports `LA`.)
     let src = "$ @mod M\n\
-               $ a : [2]@Int = [1, 2]\n\
-               $ b : [3]@Int = [3, 4, 5]\n\
-               $ c : [5]@Int = @tensor_concat a b\n\
-               $ dup : [n]x -> [2*n]x = \\t => @tensor_concat t t\n\
-               $ flip : [n]x -> [m]x -> [m+n]x = \\p q => @tensor_concat p q\n\
-               $ d : [4]@Int = dup a\n\
+               $ a : @Tensor 2 @Int = [1, 2]\n\
+               $ b : @Tensor 3 @Int = [3, 4, 5]\n\
+               $ c : @Tensor 5 @Int = @tensor_concat a b\n\
+               $ dup : @Tensor n x -> @Tensor (2*n) x = \\t => @tensor_concat t t\n\
+               $ flip : @Tensor n x -> @Tensor m x -> @Tensor (m+n) x = \\p q => @tensor_concat p q\n\
+               $ d : @Tensor 4 @Int = dup a\n\
                $ r : @Int = @tensor_index c 4 + @tensor_index d 3"; // 5 + (dup a = [1,2,1,2])[3]=2
     assert_eq!(run(src, "r"), "7");
 }
@@ -720,10 +720,10 @@ fn generate_length_build_tensors_in_source() {
     // The `@tensor_create`/`@tensor_length` primitives (higher-order: the runtime applies the
     // closure per index) let a tensor op be written in source: here, transpose.
     let src = "$ @mod M\n\
-               $ myT : [m][n]a -> [n][m]a = \\t =>\n\
+               $ myT : @Tensor m (@Tensor n a) -> @Tensor n (@Tensor m a) = \\t =>\n\
                \t@tensor_create (@tensor_index t 0) (\\j => @tensor_create t (\\i => @tensor_index (@tensor_index t i) j))\n\
-               $ a : [2][3]@Int = [ [1,2,3], [4,5,6] ]\n\
-               $ at : [3][2]@Int = myT a\n\
+               $ a : @Tensor 2 (@Tensor 3 @Int) = [ [1,2,3], [4,5,6] ]\n\
+               $ at : @Tensor 3 (@Tensor 2 @Int) = myT a\n\
                $ r : @Int = @tensor_length a + @tensor_index (@tensor_index at 0) 1 + @tensor_index (@tensor_index at 2) 0"; // 2 + 4 + 3
     assert_eq!(run(src, "r"), "9");
 }
@@ -732,12 +732,12 @@ fn generate_length_build_tensors_in_source() {
 fn overloadable_index_and_shape_sugar() {
     // `.[..]` desugars to the `@IIndex` interface, so two local instances (a tensor
     // one and a custom-type one) both drive `.[..]`, resolved by receiver type. Also
-    // exercises `[m, n]T` shape sugar and `t.[i, j]`.
+    // exercises a tensor of tensors and `t.[i, j]`.
     let src = "$ @mod M\n\
-               $ ix_t : @IIndex ([n]a) @Int a = .{ .index = \\t i => @tensor_index t i }\n\
+               $ ix_t : @IIndex (@Tensor n a) @Int a = .{ .index = \\t i => @tensor_index t i }\n\
                $ Box : @struct = base: @Int\n\
                $ ix_box : @IIndex Box @Int @Int = .{ .index = \\b i => b.base + i }\n\
-               $ g : [2, 2]@Int = [ [1, 2], [3, 4] ]\n\
+               $ g : @Tensor 2 (@Tensor 2 @Int) = [ [1, 2], [3, 4] ]\n\
                $ bx : Box = .{ .base = 100 }\n\
                $ r : @Int = g.[1, 0] + g.[1].[1] + bx.[5]"; // 3 + 4 + 105
     assert_eq!(run(src, "r"), "112");
@@ -748,10 +748,10 @@ fn multi_axis_slice_syntax() {
     // `..` keeps an axis, a range narrows it, an index reduces it, mixed freely.
     // The checker computes the result shape; all are O(1) strided views.
     let src = "$ @mod M\n\
-               $ ix_t : @IIndex ([n]a) @Int a = .{ .index = \\t i => @tensor_index t i }\n\
-               $ m : [3, 4]@Int = [ [1,2,3,4], [5,6,7,8], [9,10,11,12] ]\n\
-               $ colv : [3]@Int = m.[.., 1]\n\
-               $ blk : [2, 2]@Int = m.[1 ... 2, 1 ... 2]\n\
+               $ ix_t : @IIndex (@Tensor n a) @Int a = .{ .index = \\t i => @tensor_index t i }\n\
+               $ m : @Tensor 3 (@Tensor 4 @Int) = [ [1,2,3,4], [5,6,7,8], [9,10,11,12] ]\n\
+               $ colv : @Tensor 3 @Int = m.[.., 1]\n\
+               $ blk : @Tensor 2 (@Tensor 2 @Int) = m.[1 ... 2, 1 ... 2]\n\
                $ r : @Int = colv.[2] + blk.[0, 0] + blk.[1, 1] + m.[0, 1 ... 2].[1]";
     // colv = col1 = [2,6,10], colv[2]=10 ; blk = [[6,7],[10,11]], [0,0]=6, [1,1]=11 ;
     // m.[0,1...2] = [2,3], [1]=3 -> 10+6+11+3 = 30
@@ -763,9 +763,9 @@ fn inclusive_range_slice_syntax() {
     // `t.[p ... q]` is an INCLUSIVE leading-axis slice (a view), matching the range
     // pattern syntax `...`. `v.[1 ... 3]` keeps v[1], v[2], v[3].
     let src = "$ @mod M\n\
-               $ ix_t : @IIndex ([n]a) @Int a = .{ .index = \\t i => @tensor_index t i }\n\
-               $ v : [5]@Int = [10, 20, 30, 40, 50]\n\
-               $ s : [3]@Int = v.[1 ... 3]\n\
+               $ ix_t : @IIndex (@Tensor n a) @Int a = .{ .index = \\t i => @tensor_index t i }\n\
+               $ v : @Tensor 5 @Int = [10, 20, 30, 40, 50]\n\
+               $ s : @Tensor 3 @Int = v.[1 ... 3]\n\
                $ r : @Int = s.[0] + s.[1] + s.[2]"; // 20+30+40
     assert_eq!(run(src, "r"), "90");
 }
@@ -1004,10 +1004,10 @@ fn strided_views_transpose_row_col_slice() {
     // Over the flat strided rep, transpose/index/slice are O(1) VIEWS sharing the
     // buffer. A transposed column is a strided view; a slice narrows an axis.
     let src = "$ @mod M\n\
-               $ mA : [3][3]@Int = [ [1,2,3], [4,5,6], [7,8,9] ]\n\
-               $ tA : [3][3]@Int = @tensor_transpose mA\n\
-               $ colv : [3]@Int = @tensor_index tA 2\n\
-               $ sl : [2]@Int = @tensor_slice (@tensor_index mA 0) 1 3\n\
+               $ mA : @Tensor 3 (@Tensor 3 @Int) = [ [1,2,3], [4,5,6], [7,8,9] ]\n\
+               $ tA : @Tensor 3 (@Tensor 3 @Int) = @tensor_transpose mA\n\
+               $ colv : @Tensor 3 @Int = @tensor_index tA 2\n\
+               $ sl : @Tensor 2 @Int = @tensor_slice (@tensor_index mA 0) 1 3\n\
                $ r : @Int = @tensor_index (@tensor_index tA 0) 2\n\
                \t+ @tensor_index colv 0 + @tensor_index sl 1";
     // tA[0][2] = mA[2][0] = 7 ; colv = column 2 = [3,6,9], colv[0]=3 ; sl=[2,3], sl[1]=3

@@ -131,8 +131,8 @@ $ ck_roots : @Int =
 # LA passes the element arithmetic as a `@ctx` dictionary, so a complex tensor
 # reduces with no tensor-side support: the three CORE overloads are enough.
 
-$ xs : [2] Cpx = [Cpx.{ 1.0, 1.0 }, Cpx.{ 2.0, 0.0 }]
-$ ys : [2] Cpx = [Cpx.{ 0.0, 1.0 }, Cpx.{ 1.0, 1.0 }]
+$ xs : @Tensor 2 Cpx = [Cpx.{ 1.0, 1.0 }, Cpx.{ 2.0, 0.0 }]
+$ ys : @Tensor 2 Cpx = [Cpx.{ 0.0, 1.0 }, Cpx.{ 1.0, 1.0 }]
 # (1+i)(i) + (2)(1+i) = (-1+i) + (2+2i)
 $ ck_dot : @Int = if near (dot xs ys) (Cpx.{ 1.0, 3.0 }) => 0 else 1
 

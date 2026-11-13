@@ -1,0 +1,4 @@
+$ @mod TENSOR_NO_VARIANCE
+
+# A tensor axis has a size and nothing else: the `@co`/`@contra` variance tags are gone (#366).
+$ v : @Tensor (@co 2) @Int = [1, 2]  #~ error[UNEXPECTED_TOKEN]: expected a size

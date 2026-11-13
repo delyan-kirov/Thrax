@@ -179,10 +179,10 @@ fn declared_type_params() {
 
 #[test]
 fn sized_tensor_type_parses() {
-    let p = prog("$ @mod M\n$ v : [3]@Int = [1, 2, 3]\n$ f : [n]a -> a = \\t => t.[0]");
+    let p = prog("$ @mod M\n$ v : @Tensor 3 @Int = [1, 2, 3]\n$ f : @Tensor n a -> a = \\t => t.[0]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
-            Ty::Sized { size, elem, .. } => {
+            Ty::Sized { size, elem } => {
                 assert!(matches!(p.ast.ty(*size), Ty::Nat(3)));
                 assert!(matches!(p.ast.ty(*elem), Ty::Con { .. }));
             }
@@ -193,18 +193,16 @@ fn sized_tensor_type_parses() {
 }
 
 #[test]
-fn axis_variance_parses() {
-    // `[@contra m, @co n]T` desugars to nested `Sized`, outer axis contra, inner co.
-    let p = prog("$ @mod M\n$ f : [@contra 2, @co 3]@Int -> @Int = \\m => 0");
+fn tensor_of_tensor_nests() {
+    // A matrix is a tensor of tensors; a compound size is parenthesized.
+    let p = prog("$ @mod M\n$ g : @Tensor 2 (@Tensor (n + 1) @Int) -> @Int = \\t => 0");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Arrow { from, .. } => match p.ast.ty(*from) {
-                Ty::Sized {
-                    variance, elem, ..
-                } => {
-                    assert_eq!(*variance, Variance::Contra);
+                Ty::Sized { size, elem } => {
+                    assert!(matches!(p.ast.ty(*size), Ty::Nat(2)));
                     match p.ast.ty(*elem) {
-                        Ty::Sized { variance, .. } => assert_eq!(*variance, Variance::Co),
+                        Ty::Sized { size, .. } => assert!(matches!(p.ast.ty(*size), Ty::SizeAdd(..))),
                         other => panic!("expected a nested Sized, got {other:?}"),
                     }
                 }
@@ -214,33 +212,20 @@ fn axis_variance_parses() {
         },
         other => panic!("expected a def, got {other:?}"),
     }
-    // A bare axis is Neutral.
-    let p = prog("$ @mod M\n$ v : [3]@Int = [1, 2, 3]");
-    match &p.ast.slice(p.program.items)[0] {
-        Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
-            Ty::Sized { variance, .. } => assert_eq!(*variance, Variance::Neutral),
-            other => panic!("expected a sized type, got {other:?}"),
-        },
-        other => panic!("expected a def, got {other:?}"),
-    }
 }
 
 #[test]
-fn shape_sugar_nests() {
-    // `[m, n]T` desugars to the nested `[m][n]T` (`Sized` of `Sized`).
-    let p = prog("$ @mod M\n$ g : [2, 3]@Int = [ [1,2,3], [4,5,6] ]");
-    match &p.ast.slice(p.program.items)[0] {
-        Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
-            Ty::Sized { size, elem, .. } => {
-                assert!(matches!(p.ast.ty(*size), Ty::Nat(2)));
-                match p.ast.ty(*elem) {
-                    Ty::Sized { size, .. } => assert!(matches!(p.ast.ty(*size), Ty::Nat(3))),
-                    other => panic!("expected a nested Sized, got {other:?}"),
-                }
-            }
-            other => panic!("expected a sized type, got {other:?}"),
-        },
-        other => panic!("expected a def, got {other:?}"),
+fn removed_and_ambiguous_type_forms_are_rejected() {
+    for bad in [
+        "$ v : [3] @Int = [1, 2, 3]",            // the old `[n]T`
+        "$ v : List @Tensor 3 @Int = []",        // `@Tensor` is only a head
+        "$ v : @Tensor (@co 2) @Int = [1, 2]",   // axis variance is gone (#366)
+        "$ v : @Vec &f @Int = []",               // a splice is never an argument
+        "$ f : @Int -> @Int = \\x .Tag => x",    // a later parameter starts with `.`
+        "$ f : @Int -> @Int = \\x &p => x",      // a splice parameter
+    ] {
+        let src = format!("$ @mod M\n{bad}");
+        assert!(parse(&src).is_err(), "{bad} should not parse");
     }
 }
 

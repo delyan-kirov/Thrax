@@ -13,7 +13,6 @@ use std::cell::RefCell;
 
 use utilities::{Aol, Slice, Store, StrId};
 
-use crate::parser::data::Variance;
 
 /// Identity of a unification variable: an index into the unifier's var store.
 pub type VarId = u32;
@@ -36,7 +35,7 @@ pub enum TypeNode {
     /// A nullary type constructor: `@Int`, `@Str`, unit `{}`, or a user-declared
     /// type name.
     Con(StrId),
-    /// A type-level natural (the size in a sized tensor `[n]T`). A distinct KIND
+    /// A type-level natural (the size in a sized tensor `@Tensor n T`). A distinct KIND
     /// from ordinary types: a `Nat` unifies only with another `Nat` or a
     /// Nat-kinded variable, never with a type. Modular (Z/2^64).
     Nat(u64),
@@ -302,9 +301,6 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
     ) {
         match types.node(ty) {
             TypeNode::Var(id) => out.push_str(&namer(id)),
-            // The axis-variance markers (`@co`/`@contra`/`@neutral`) read back in
-            // their source spelling when they surface on their own (a variance
-            // mismatch); a whole tensor renders via the `[..]` path below.
             TypeNode::Con(name) => out.push_str(types.name(name)),
             TypeNode::Nat(n) => out.push_str(&n.to_string()),
             TypeNode::NatAdd(a, b) => paren(out, prec > 2, |out| {
@@ -318,19 +314,13 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
                 go(types, b, namer, out, 3);
             }),
             TypeNode::App(head, arg) => {
-                if let Some((variance, size, elem)) = tensor_spine_raw(types, ty) {
-                    out.push('[');
-                    if let TypeNode::Con(n) = types.node(variance) {
-                        let n = types.name(n);
-                        if n == "@contra" {
-                            out.push_str("@contra ");
-                        } else if n == "@co" {
-                            out.push_str("@co ");
-                        }
-                    }
-                    go(types, size, namer, out, 0);
-                    out.push(']');
-                    go(types, elem, namer, out, 2);
+                if let Some((size, elem)) = tensor_spine_raw(types, ty) {
+                    paren(out, prec > 1, |out| {
+                        out.push_str("@Tensor ");
+                        go(types, size, namer, out, 4);
+                        out.push(' ');
+                        go(types, elem, namer, out, 2);
+                    });
                 } else {
                     let wrap = prec > 1;
                     paren(out, wrap, |out| {
@@ -459,15 +449,13 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
     out
 }
 
-/// Peel a literal (already-zonked) sized-tensor spine `@tensor variance size elem`
-/// for pretty-printing as `[..]`.
-fn tensor_spine_raw(types: &Types, ty: Type) -> Option<(Type, Type, Type)> {
+/// Peel one axis of a literal (already-zonked) sized-tensor spine
+/// `@tensor size elem` for pretty-printing as `@Tensor size elem`.
+fn tensor_spine_raw(types: &Types, ty: Type) -> Option<(Type, Type)> {
     if let TypeNode::App(head, elem) = types.node(ty) {
-        if let TypeNode::App(head2, size) = types.node(head) {
-            if let TypeNode::App(con, variance) = types.node(head2) {
-                if matches!(types.node(con), TypeNode::Con(n) if types.name(n) == "@tensor") {
-                    return Some((variance, size, elem));
-                }
+        if let TypeNode::App(con, size) = types.node(head) {
+            if matches!(types.node(con), TypeNode::Con(n) if types.name(n) == TENSOR) {
+                return Some((size, elem));
             }
         }
     }
@@ -575,33 +563,16 @@ pub(crate) fn is_base_type(name: &str) -> bool {
 }
 
 /// The internal constructor name of a sized tensor. Its type is the application
-/// spine `@tensor variance size elem`, one layer per axis. `@`-prefixed so it
-/// cannot collide with a user type; the whole thing is erased before runtime.
+/// spine `@tensor size elem`, one layer per axis (`@Tensor m (@Tensor n a)`
+/// is `@tensor m (@tensor n a)`). Lowercase so the source name `@Tensor` never
+/// resolves to it; the whole thing is erased before runtime.
 pub(crate) const TENSOR: &str = "@tensor";
 
-/// The three axis-variance markers, carried as nullary constructors in the
-/// `variance` position of the `@tensor` spine (see [`Variance`]).
-pub(crate) const VAR_NEUTRAL: &str = "@neutral";
-
-pub(crate) const VAR_CO: &str = "@co";
-
-pub(crate) const VAR_CONTRA: &str = "@contra";
-
-/// The `Type` constructor for a source-level axis variance.
-pub(crate) fn variance_con(types: &Types, v: Variance) -> Type {
-    types.con(match v {
-        Variance::Neutral => VAR_NEUTRAL,
-        Variance::Co => VAR_CO,
-        Variance::Contra => VAR_CONTRA,
-    })
-}
-
-/// Build a sized-tensor type from its axis variance, size, and element type.
-pub(crate) fn tensor_type(types: &Types, variance: Type, size: Type, elem: Type) -> Type {
+/// Build one axis of a sized-tensor type from its size and element type.
+pub(crate) fn tensor_type(types: &Types, size: Type, elem: Type) -> Type {
     let con = types.con(TENSOR);
-    let a = types.app(con, variance);
-    let b = types.app(a, size);
-    types.app(b, elem)
+    let a = types.app(con, size);
+    types.app(a, elem)
 }
 
 /// The blessed interface each desugar site resolves. CORE declares them as

@@ -52,7 +52,7 @@ pub enum Value<'p> {
         fields: Vec<PVal<'p>>,
     },
     Vector(Rc<Vec<PVal<'p>>>),
-    /// A sized tensor `[n]T`: a strided view over a flat element buffer.
+    /// A sized tensor `@Tensor n T`: a strided view over a flat element buffer.
     Tensor(Rc<Tensor<'p>>),
     /// A partially applied built-in; it runs once `args` reaches its arity.
     Builtin {

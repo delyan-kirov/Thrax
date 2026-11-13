@@ -1,55 +1,55 @@
 $ @mod TENSORS
 
 # \file tensors.ares
-# \info Sized tensors: `[n]T` is a vector of `n` elements of type `T`, with the
+# \info Sized tensors: `@Tensor n T` is a vector of `n` elements of type `T`, with the
 #       size `n` tracked at the type level (a distinct KIND from ordinary types).
 #       A `[..]` literal's length fixes the size. Indexing `t.[i]` is TOTAL and
 #       MODULAR: the index is reduced mod the size, so it never goes out of
 #       bounds (`t.[n]` wraps to `t.[0]`). Functions can be polymorphic in the
-#       size: `[n]T -> ...` accepts a tensor of any length, with `n` unified.
+#       size: `@Tensor n T -> ...` accepts a tensor of any length, with `n` unified.
 #       The compiler provides only the `@`-primitives; the operations (`index`
 #       that `.[..]` uses, `matmul`, `dot`, `transpose`, `concat`) live in `LA`.
 
 $ @import LA
 
-$ v : [3] @Int = [10, 20, 30]
+$ v : @Tensor 3 @Int = [10, 20, 30]
 
 # Modular indexing wraps: index 3 -> 0, index 7 -> 1.
 $ ck_get : @Int = if v.[1] == 20 => 0 else 1
 $ ck_wrap : @Int = if v.[3] == 10 => 0 else 2
 $ ck_wrap2: @Int = if v.[7] == 20 => 0 else 4
 
-# Size-polymorphic: `first` takes `[n]@Int` for any `n` (the size unifies).
-$ first : [n] @Int -> @Int = \t => t.[0]
+# Size-polymorphic: `first` takes `@Tensor n @Int` for any `n` (the size unifies).
+$ first : @Tensor n @Int -> @Int = \t => t.[0]
 $ ck_poly : @Int = if first v == 10 => 0 else 8
 
-# The element type is polymorphic too; `head` works for any `[n]a`.
-$ head : [n] a -> a = \t => t.[0]
+# The element type is polymorphic too; `head` works for any `@Tensor n a`.
+$ head : @Tensor n a -> a = \t => t.[0]
 $ ck_elem : @Int = if head [7, 8, 9] == 7 => 0 else 16
 
-# A rank-2 tensor is `[m, n]T` (sugar for the nested `[m][n]T`). Multi-axis
-# indexing `grid.[i, j]` reads an element.
-$ grid : [2, 2] @Int = [[1, 2], [3, 4]]
+# A rank-2 tensor nests: `@Tensor m (@Tensor n T)`, which `LA.Matrix m n T`
+# names. Multi-axis indexing `grid.[i, j]` reads an element.
+$ grid : Matrix 2 2 @Int = [[1, 2], [3, 4]]
 $ ck_nested : @Int = if grid.[1, 0] == 3 => 0 else 32
 
 # Type-level size ARITHMETIC (modular, Z/2^64). `concat` joins two tensors and
 # its result size is `n + m`, checked at compile time.
-$ ab : [5] @Int = concat v [40, 50] # 3 + 2 = 5
+$ ab : @Tensor 5 @Int = concat v [40, 50] # 3 + 2 = 5
 $ ck_cat : @Int = if ab.[4] == 50 => 0 else 64
 
 # The normalizer decides equality: `n + n` is `2 * n`, and `+` commutes.
-$ dup : [n] a -> [2 * n] a = \t => concat t t
-$ flip : [n] a -> [m] a -> [m + n] a = \x y => concat x y
-$ dd : [6] @Int = dup v # 2 * 3 = 6
+$ dup : @Tensor n a -> @Tensor (2 * n) a = \t => concat t t
+$ flip : @Tensor n a -> @Tensor m a -> @Tensor (m + n) a = \x y => concat x y
+$ dd : @Tensor 6 @Int = dup v # 2 * 3 = 6
 $ ck_dup : @Int = if dd.[5] == 30 => 0 else 128
 
 # Linear algebra with COMPILE-TIME shape checking. Multi-axis indexing `m.[i, j]`
 # reads an element. `matmul`'s shared inner dimension `k` must unify, so a shape
 # mismatch is a type error, not a runtime one.
-$ mA : [2, 3] @Int = [[1, 2, 3], [4, 5, 6]]
-$ mB : [3, 2] @Int = [[1, 0], [0, 1], [1, 1]]
-$ mC : [2, 2] @Int = matmul mA mB # (2x3)(3x2) = 2x2
-$ mT : [3, 2] @Int = transpose mA # 2x3 -> 3x2
+$ mA : Matrix 2 3 @Int = [[1, 2, 3], [4, 5, 6]]
+$ mB : Matrix 3 2 @Int = [[1, 0], [0, 1], [1, 1]]
+$ mC : Matrix 2 2 @Int = matmul mA mB # (2x3)(3x2) = 2x2
+$ mT : Matrix 3 2 @Int = transpose mA # 2x3 -> 3x2
 $ ck_mm : @Int =
     if mC.[1, 1] == 11 =>
         0
@@ -63,14 +63,14 @@ $ ck_tr : @Int =
 $ ck_dot: @Int = if dot [1, 2, 3] [4, 5, 6] == 32 => 0 else 1024
 
 # The same ops are element-polymorphic, so Real matrices work too.
-$ rA : [2, 2] Real = [[1.0, 2.0], [3.0, 4.0]]
-$ rB : [2, 2] Real = [[2.0, 0.0], [0.0, 2.0]]
-$ rC : [2, 2] Real = matmul rA rB # doubles rA
+$ rA : Matrix 2 2 Real = [[1.0, 2.0], [3.0, 4.0]]
+$ rB : Matrix 2 2 Real = [[2.0, 0.0], [0.0, 2.0]]
+$ rC : Matrix 2 2 Real = matmul rA rB # doubles rA
 $ ck_real : @Int = if rC.[1, 1] == 8.0 => 0 else 2048
 
 # `.[..]` is OVERLOADABLE: a custom type joins the surface by defining
 # `@IIndex`.
-$ Grid : @struct = cells: [9] @Int
+$ Grid : @struct = cells: @Tensor 9 @Int
 $ impl_IIndex_for_Grid : @IIndex Grid @Int @Int = .{ .index = \g i => g.cells.[i] }
 $ board : Grid = .{ .cells = [1, 2, 3, 4, 5, 6, 7, 8, 9] }
 $ ck_ext : @Int =
@@ -82,7 +82,7 @@ $ ck_ext : @Int =
 # `create template f` builds a tensor the same size as `template` (result size is
 # the template's, so it is sound), applying `f` at each index. With `length` and
 # `index` this is enough to write tensor ops in SOURCE: here, transpose.
-$ myT : [m] [n] a -> [n] [m] a = \t => create t.[0] (\j => create t (\i => t.[i].[j]))
+$ myT : Matrix m n a -> Matrix n m a = \t => create t.[0] (\j => create t (\i => t.[i].[j]))
 $ ck_gen : @Int =
     if (myT mA).[2, 0] == 3 =>
         0
@@ -109,44 +109,30 @@ $ ck_slc : @Int =
 
 # Inclusive range-slice syntax `t.[p ... q]` (a leading-axis view). `...` matches
 # the range PATTERN syntax and includes both ends.
-$ sub : [2] @Int = v.[1 ... 2] # v[1],v[2] = [20,30]
+$ sub : @Tensor 2 @Int = v.[1 ... 2] # v[1],v[2] = [20,30]
 $ ck_rng : @Int = if sub.[0] + sub.[1] == 50 => 0 else 131072
 
 # MULTI-AXIS slicing: `..` keeps an axis (`mA.[.., j]` = column j), a range narrows
 # it, an index reduces it. Mix freely; the result shape is checked (mA is [2, 3]).
-$ colB : [2] @Int = mA.[.., 1]              # column 1 = [2, 5]
-$ blk : [2, 2] @Int = mA.[0 ... 1, 1 ... 2] # rows0-1, cols1-2 = [[2,3],[5,6]]
+$ colB : @Tensor 2 @Int = mA.[.., 1]            # column 1 = [2, 5]
+$ blk : Matrix 2 2 @Int = mA.[0 ... 1, 1 ... 2] # rows0-1, cols1-2 = [[2,3],[5,6]]
 $ ck_ms : @Int =
     if colB.[1] + blk.[1, 1] == 11 =>
         0
     else
         262144 # 5 + 6
 
-# VARIANCE: axes carry a co/contra tag. A matrix is `[@contra m, @co n]` (an upper
-# contravariant row index, a lower covariant column index). `matmul` contracts `a`'s
-# `@co k` against `b`'s `@contra k`, the Einstein-summation rule (an upper index
-# pairs with a lower one), so swapping a factor's variance is a type error. A plain
-# `[m, n]` matrix is neutral, compatible with either, which is why the checks above
-# still typed against the variance-typed `matmul`.
-$ vA : [@contra 2, @co 2] @Int = [[1, 2], [3, 4]]
-$ vB : [@contra 2, @co 2] @Int = [[1, 0], [1, 1]]
-$ vC : [@contra 2, @co 2] @Int = matmul vA vB
-$ ck_var : @Int =
-    if vC.[1, 1] == 4 =>
-        0
-    else
-        524288 # 3*0 + 4*1
-
 # `dot` and `matmul` run as runtime KERNELS (unboxed loops for CORE's numbers),
 # which must agree with the definition written in source: here on views (a
 # transpose, a column) and on element types that take the generic path.
-$ ref_dot : @use { p: IAdd a, m: IMul a, z: IZero a } -> [n] a -> [n] a -> a = \x y =>
+$ ref_dot : @use { p: IAdd a, m: IMul a, z: IZero a } -> @Tensor n a -> @Tensor n a -> a = \x y =>
     let go = \i acc => if i == length x => acc else go (i + 1) (p.add acc (m.mul x.[i] y.[i])) in
     go 0 z.zero
-$ ref_mm : @use { p: IAdd t, m: IMul t, z: IZero t } -> [m, k] t -> [k, n] t -> [m, n] t = \a b =>
+$ ref_mm : @use { p: IAdd t, m: IMul t, z: IZero t } -> Matrix m k t -> Matrix k n t
+    -> Matrix m n t = \a b =>
     let bt = transpose b in create a (\i => create (b.[0]) (\j => ref_dot a.[i] bt.[j]))
-$ kTA : [3, 3] @Int = matmul mT mA             # [[17, 22, 27], [22, 29, 36], [27, 36, 45]]
-$ kAT : [2, 2] @Int = matmul mA (transpose mA) # [[14, 32], [32, 77]]
+$ kTA : Matrix 3 3 @Int = matmul mT mA             # [[17, 22, 27], [22, 29, 36], [27, 36, 45]]
+$ kAT : Matrix 2 2 @Int = matmul mA (transpose mA) # [[14, 32], [32, 77]]
 $ ck_kview : @Int =
     if kTA.[0, 1] == 22
         && kTA.[2, 2] == 45
@@ -155,9 +141,9 @@ $ ck_kview : @Int =
         0
     else
         1048576
-$ i8 : [2, 2] @Int8 = [[100, 100], [1, 1]]
-$ f32 : [2, 2] @Float32 = [[0.1, 0.2], [0.3, 0.4]]
-$ f64 : [2, 3] Real = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+$ i8 : Matrix 2 2 @Int8 = [[100, 100], [1, 1]]
+$ f32 : Matrix 2 2 @Float32 = [[0.1, 0.2], [0.3, 0.4]]
+$ f64 : Matrix 2 3 Real = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
 $ ck_kgen : @Int =
     if (matmul i8 i8).[0, 0] == (ref_mm i8 i8).[0, 0]
         && (matmul f32 f32).[1, 0] == (ref_mm f32 f32).[1, 0]
@@ -168,7 +154,7 @@ $ ck_kgen : @Int =
 
 $ test : @Int =
     ck_get + ck_wrap + ck_wrap2 + ck_poly + ck_elem + ck_nested + ck_cat + ck_dup + ck_mm + ck_tr
-        + ck_dot + ck_real + ck_ext + ck_gen + ck_row + ck_col + ck_slc + ck_rng + ck_ms + ck_var
-        + ck_kview + ck_kgen
+        + ck_dot + ck_real + ck_ext + ck_gen + ck_row + ck_col + ck_slc + ck_rng + ck_ms + ck_kview
+        + ck_kgen
 
 $ &assert (test == 0) "TENSORS: a check failed"

@@ -12,7 +12,7 @@ $ @import MATH
 # ---- constants ----
 
 # `zero` and `one` double as LA's element dictionary (with `add`/`mul` below), so
-# `dot`/`matmul` reduce a `[n]Cpx` with no tensor-side support.
+# `dot`/`matmul` reduce a `@Tensor n Cpx` with no tensor-side support.
 $ zero : Cpx = Cpx.{ 0.0, 0.0 }
 $ one : Cpx = Cpx.{ 1.0, 0.0 }
 

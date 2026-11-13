@@ -244,7 +244,7 @@ pub struct Checker<'a> {
     /// (`V.Type`) is not.
     alias_types: HashMap<StrId, StrId>,
     module_name: StrId,
-    /// `[..]` literal sites resolved to a sized tensor `[n]T`: the one `[...]`
+    /// `[..]` literal sites resolved to a sized tensor `@Tensor n T`: the one `[...]`
     /// shape no hook can build, since the payload cannot carry the static size.
     /// Lowering flattens the collected elements with `@tensor_stack`.
     tensor_exprs: HashSet<Aol<Expr>>,
@@ -1306,105 +1306,88 @@ impl<'a> Checker<'a> {
         // (`index`, `length`, `dot`, `matmul`, `transpose`, `concat`) is a `library/LA`
         // function built from these plus `@use`, not a builtin.
         //
-        // The sized-tensor primitives. `[n]T` and `Vec T` share the runtime vector
+        // The sized-tensor primitives. `@Tensor n T` and `Vec T` share the runtime vector
         // rep but are DISTINCT types, so these carry their own tensor-typed
-        // signatures (a `@vec_*` binding is typed for `Vec`, not `[n]a`). Each is
-        // VARIANCE-POLYMORPHIC: a fresh generic variance var per axis, so the
-        // primitive works on any `[@Contra n]`/`[@Co n]`/`[n]` axis and preserves it
-        // (`transpose` keeps per-position variance and swaps only the sizes).
+        // signatures (a `@vec_*` binding is typed for `Vec`, not `@Tensor n a`).
         //
-        // `@tensor_index : [n]a -> Int -> a` (modular read). `.[..]` desugars to the
+        // `@tensor_index : @Tensor n a -> Int -> a` (modular read). `.[..]` desugars to the
         // `@IIndex` interface (its tensor instance in `library/LA` calls
         // `@tensor_index`); a custom container provides its own instance.
         {
             let a = self.unifier.fresh_generic();
             let n = self.unifier.fresh_generic_nat();
-            let v = self.unifier.fresh_generic();
-            let vn = tensor_type(&self.unifier.types, v, n, a);
+            let vn = tensor_type(&self.unifier.types, n, a);
             let t = self.unifier.types.arrow(vn, self.unifier.types.arrow(int, a));
         self.bind(StrId::intern("@tensor_index"), t);
         }
-        // `@tensor_length : [n]a -> Int` (runtime size, untied to `n`: no dependent values).
+        // `@tensor_length : @Tensor n a -> Int` (runtime size, untied to `n`: no dependent values).
         {
             let a = self.unifier.fresh_generic();
             let n = self.unifier.fresh_generic_nat();
-            let v = self.unifier.fresh_generic();
-            let vn = tensor_type(&self.unifier.types, v, n, a);
+            let vn = tensor_type(&self.unifier.types, n, a);
             let t = self.unifier.types.arrow(vn, int);
         self.bind(StrId::intern("@tensor_length"), t);
         }
-        // `@tensor_create : [n]x -> (Int -> a) -> [n]a`: build a tensor the SAME SIZE as a
+        // `@tensor_create : @Tensor n x -> (Int -> a) -> @Tensor n a`: build a tensor the SAME SIZE as a
         // template from an index function (sound: result size = template size). The
-        // constructing primitive that lets `transpose`/`matmul` be library code; it
-        // preserves the template's variance `v` onto the result.
+        // constructing primitive that lets `transpose`/`matmul` be library code.
         {
             let x = self.unifier.fresh_generic();
             let a = self.unifier.fresh_generic();
             let n = self.unifier.fresh_generic_nat();
-            let v = self.unifier.fresh_generic();
-            let template = tensor_type(&self.unifier.types, v, n, x);
+            let template = tensor_type(&self.unifier.types, n, x);
             let idx_fn = self.unifier.types.arrow(int, a);
-            let result = tensor_type(&self.unifier.types, v, n, a);
+            let result = tensor_type(&self.unifier.types, n, a);
             self.bind(StrId::intern("@tensor_create"),
                 self.unifier.types.arrow(template, self.unifier.types.arrow(idx_fn, result)),
             );
         }
-        // `@tensor_concat : [n]a -> [m]a -> [n+m]a`: the size-CHANGING join (which `@tensor_create`,
-        // being size-preserving, cannot express), so it is a primitive. Both operands
-        // and the result share the concatenated axis's variance `v`.
+        // `@tensor_concat : @Tensor n a -> @Tensor m a -> @Tensor (n + m) a`: the size-CHANGING join (which `@tensor_create`,
+        // being size-preserving, cannot express), so it is a primitive.
         {
             let a = self.unifier.fresh_generic();
             let n = self.unifier.fresh_generic_nat();
             let m = self.unifier.fresh_generic_nat();
-            let v = self.unifier.fresh_generic();
-            let tn = tensor_type(&self.unifier.types, v, n, a);
-            let tm = tensor_type(&self.unifier.types, v, m, a);
-            let tnm = tensor_type(&self.unifier.types, v, self.unifier.types.add(TypeNode::NatAdd(n, m)), a);
+            let tn = tensor_type(&self.unifier.types, n, a);
+            let tm = tensor_type(&self.unifier.types, m, a);
+            let tnm = tensor_type(&self.unifier.types, self.unifier.types.add(TypeNode::NatAdd(n, m)), a);
             let t = self.unifier.types.arrow(tn, self.unifier.types.arrow(tm, tnm));
         self.bind(StrId::intern("@tensor_concat"), t);
         }
-        // `@tensor_transpose : [m][n]a -> [n][m]a`: an O(1) VIEW (swap axes/strides),
-        // so `LA.transpose` copies nothing. Variance stays per POSITION (outer `vm`,
-        // inner `vn`); only the sizes swap, so a `[@Contra m, @Co n]` matrix
-        // transposes to `[@Contra n, @Co m]`.
+        // `@tensor_transpose : @Tensor m (@Tensor n a) -> @Tensor n (@Tensor m a)`: an O(1) VIEW (swap axes/strides),
+        // so `LA.transpose` copies nothing.
         {
             let a = self.unifier.fresh_generic();
             let m = self.unifier.fresh_generic_nat();
             let n = self.unifier.fresh_generic_nat();
-            let vm = self.unifier.fresh_generic();
-            let vn = self.unifier.fresh_generic();
-            let mn = tensor_type(&self.unifier.types, vm, m, tensor_type(&self.unifier.types, vn, n, a));
-            let nm = tensor_type(&self.unifier.types, vm, n, tensor_type(&self.unifier.types, vn, m, a));
+            let mn = tensor_type(&self.unifier.types, m, tensor_type(&self.unifier.types, n, a));
+            let nm = tensor_type(&self.unifier.types, n, tensor_type(&self.unifier.types, m, a));
             let t = self.unifier.types.arrow(mn, nm);
         self.bind(StrId::intern("@tensor_transpose"), t);
         }
-        // `@tensor_slice : [n]a -> Int -> Int -> [k]a`: an O(1) VIEW over `[lo, hi)` of
+        // `@tensor_slice : @Tensor n a -> Int -> Int -> @Tensor k a`: an O(1) VIEW over `[lo, hi)` of
         // the leading axis. The result size `k` is a runtime value, so it is a fresh
         // nat (not `hi - lo`, which are runtime Ints); indexing it is modular/total, so
-        // an unknown static size is consistent with the rest of the tensor design. The
-        // sliced axis keeps its variance `v`.
+        // an unknown static size is consistent with the rest of the tensor design.
         {
             let a = self.unifier.fresh_generic();
             let n = self.unifier.fresh_generic_nat();
             let k = self.unifier.fresh_generic_nat();
-            let v = self.unifier.fresh_generic();
-            let src = tensor_type(&self.unifier.types, v, n, a);
-            let out = tensor_type(&self.unifier.types, v, k, a);
+            let src = tensor_type(&self.unifier.types, n, a);
+            let out = tensor_type(&self.unifier.types, k, a);
             self.bind(StrId::intern("@tensor_slice"),
                 self.unifier.types.arrow(src, self.unifier.types.arrow(int, self.unifier.types.arrow(int, out))),
             );
         }
         // The coarse kernels `LA.dot`/`LA.matmul` call, with the element arithmetic
         // passed as plain functions (the `@use` methods):
-        // `@tensor_dot : (a -> a -> a) -> (a -> a -> a) -> a -> [n]a -> [n]a -> a` and
-        // `@tensor_matmul : (a -> a -> a) -> (a -> a -> a) -> a -> [m][k]a -> [k][n]a -> [m][n]a`.
+        // `@tensor_dot : (a -> a -> a) -> (a -> a -> a) -> a -> @Tensor n a -> @Tensor n a -> a` and
+        // `@tensor_matmul : (a -> a -> a) -> (a -> a -> a) -> a -> @Tensor m (@Tensor k a) -> @Tensor k (@Tensor n a) -> @Tensor m (@Tensor n a)`.
         {
             let a = self.unifier.fresh_generic();
             let n = self.unifier.fresh_generic_nat();
-            let vx = self.unifier.fresh_generic();
-            let vy = self.unifier.fresh_generic();
-            let x = tensor_type(&self.unifier.types, vx, n, a);
-            let y = tensor_type(&self.unifier.types, vy, n, a);
+            let x = tensor_type(&self.unifier.types, n, a);
+            let y = tensor_type(&self.unifier.types, n, a);
             let t = self.kernel_type(a, x, self.unifier.types.arrow(y, a));
             self.bind(StrId::intern("@tensor_dot"), t);
         }
@@ -1415,11 +1398,10 @@ impl<'a> Checker<'a> {
                 self.unifier.fresh_generic_nat(),
                 self.unifier.fresh_generic_nat(),
             );
-            let v: Vec<Type> = (0..6).map(|_| self.unifier.fresh_generic()).collect();
             let types = &self.unifier.types;
-            let x = tensor_type(types, v[0], m, tensor_type(types, v[1], k, a));
-            let y = tensor_type(types, v[2], k, tensor_type(types, v[3], n, a));
-            let out = tensor_type(types, v[4], m, tensor_type(types, v[5], n, a));
+            let x = tensor_type(types, m, tensor_type(types, k, a));
+            let y = tensor_type(types, k, tensor_type(types, n, a));
+            let out = tensor_type(types, m, tensor_type(types, n, a));
             let t = self.kernel_type(a, x, self.unifier.types.arrow(y, out));
             self.bind(StrId::intern("@tensor_matmul"), t);
         }

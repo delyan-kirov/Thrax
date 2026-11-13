@@ -25,7 +25,7 @@
 3. **Fewest rules.** Fordism adds none: indexed families are sugar over the
    parameterised scheme.
 4. **Efficient implementation.** Sirman et al. (SLK24 §2.2).
-5. **Fits Ares.** Sized tensors (`[n]T`) are the first indexed family Ares
+5. **Fits Ares.** Sized tensors (`@Tensor n T`) are the first indexed family Ares
    needs; fording keeps them in the existing scheme.
 
 ## Decision record (proposed)
