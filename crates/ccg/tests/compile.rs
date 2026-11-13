@@ -1121,8 +1121,8 @@ fn tensor_of_structs_matches_interpreter() {
     // to tell the two apart by tag alone (every struct shares it) and faulted here.
     let src = "$ @mod M\n\
                $ P : @struct = x: @Float64, y: @Float64,\n\
-               $ ps : [2]P = [P.{ 1.0, 2.0 }, P.{ 3.0, 4.0 }]\n\
-               $ zs : [2]Cpx = [Cpx.{ 1.0, 0.0 } + 1.0i, Cpx.{ 2.0, 0.0 }]\n\
+               $ ps : @Tensor 2 P = [P.{ 1.0, 2.0 }, P.{ 3.0, 4.0 }]\n\
+               $ zs : @Tensor 2 Cpx = [Cpx.{ 1.0, 0.0 } + 1.0i, Cpx.{ 2.0, 0.0 }]\n\
                $ r : @Str = to_string (@tensor_index ps 1).y\n\
                \t++ to_string (@tensor_length ps) ++ to_string (@tensor_index zs 0)\n";
     assert_matches(src, "r");

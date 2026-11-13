@@ -1,0 +1,4 @@
+$ @mod TENSOR_HEAD_ONLY
+
+# `@Tensor n T` heads its application, so as an argument it is parenthesized.
+$ v : @Vec @Tensor 2 @Int = @vec_new {}  #~ error[UNEXPECTED_TOKEN]: stands only at the head of an application

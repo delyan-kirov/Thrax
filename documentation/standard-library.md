@@ -180,7 +180,7 @@ instance; an INTEGER exponent is `CPX.powi` by name, since one operator takes on
 type for both operands.
 
 CORE's `IAdd Cpx` / `IMul Cpx` / `IZero Cpx` instances are what `LA.dot` and
-`matmul` resolve, so a `[n]Cpx` flows through them with no tensor-side support.
+`matmul` resolve, so a `@Tensor n Cpx` flows through them with no tensor-side support.
 `IEq Cpx` is in CORE too, so `==` works on a complex without a definition here.
 
 ## Testing

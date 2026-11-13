@@ -1413,7 +1413,7 @@ fn mutual_recursion_keeps_a_row_parameter_open() {
 fn reflection_reports_member_sources_and_pending_types() {
     let src = "$ @mod M\n\
                $ Big : @union a = D: {}, C: { n: @Int, a }, B: @Vec (@Vec a), A\n\
-               $ P : @struct b e n = f: b -> <Log, State @Int | e> @Int, g: [@co n + 1]{@Int, {}}\n\
+               $ P : @struct b e n = f: b -> <Log, State @Int | e> @Int, g: @Vec (@Tensor (2 * n + 1) {@Int, {}})\n\
                $ Q : @struct = &gen {}, x: @Int\n";
     let (ast, prog) = crate::parse_into(Ast::new(), src).expect("parse");
     let mut checker = Checker::new(&ast, std::rc::Rc::new(crate::Types::new()));
@@ -1429,7 +1429,7 @@ fn reflection_reports_member_sources_and_pending_types() {
     );
     let p = &reflect.structs.iter().find(|(_, n, _)| n == "P").expect("P reflected").2;
     let fields: Vec<&str> = p.members.iter().map(|(_, t)| t.as_str()).collect();
-    assert_eq!(fields, ["b -> <Log, State @Int | e> @Int", "[@co n + 1]{@Int, {}}"]);
+    assert_eq!(fields, ["b -> <Log, State @Int | e> @Int", "@Vec (@Tensor (2 * n + 1) {@Int, {}})"]);
     assert!(!p.pending);
     let q = &reflect.structs.iter().find(|(_, n, _)| n == "Q").expect("Q reflected").2;
     assert!(q.pending);

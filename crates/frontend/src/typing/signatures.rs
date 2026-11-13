@@ -190,7 +190,11 @@ impl<'a> Checker<'a> {
             };
             sub.insert(*p, t);
         }
-        Some(self.ty_of_ast(body, &mut sub))
+        // An argument is elaborated before the body shows where it lands, so a
+        // variable passed to a size parameter (`Matrix m n a`) is marked `Nat` here.
+        let expanded = self.ty_of_ast(body, &mut sub);
+        self.unifier.note_tensor_sizes(expanded);
+        Some(expanded)
     }
 
     /// Keep the first type error met while elaborating a type, reported once the
@@ -328,7 +332,7 @@ impl<'a> Checker<'a> {
 
 impl<'a> Checker<'a> {
     /// Elaborate a tensor size: a `Nat` literal, or a (Nat-kinded) size variable
-    /// bound by name in `tvars` so `[n]T -> [n]U` shares the one size.
+    /// bound by name in `tvars` so `@Tensor n T -> @Tensor n U` shares the one size.
     pub(super) fn size_ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<StrId, Type>) -> Type {
         match self.tnode(ty) {
             Ty::Nat(n) => self.unifier.types.add(TypeNode::Nat(*n)),
@@ -365,20 +369,10 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Peel a sized-tensor type `@tensor variance size elem` into `(size, elem)`,
-    /// discarding the variance (callers here only need the length and element).
+    /// Peel one axis of a sized-tensor type `@tensor size elem` into
+    /// `(size, elem)`.
     pub(super) fn tensor_parts(&self, ty: Type) -> Option<(Type, Type)> {
-        if let TypeNode::App(head, elem) = self.unifier.head(ty) {
-            if let TypeNode::App(head2, size) = self.unifier.head(head) {
-                if let TypeNode::App(con, _variance) = self.unifier.head(head2) {
-                    if matches!(self.unifier.head(con), TypeNode::Con(n) if self.unifier.types.name(n) == TENSOR)
-                    {
-                        return Some((size, elem));
-                    }
-                }
-            }
-        }
-        None
+        self.unifier.tensor_spine(ty)
     }
 
     /// An application spine whose arity the caller has already checked: the
@@ -452,15 +446,11 @@ impl<'a> Checker<'a> {
             // A size expression written in type position (only well-formed inside a
             // `[..]`); elaborate it as a size so kind-checking flags any misuse.
             Ty::SizeAdd(..) | Ty::SizeMul(..) => self.size_ty_of_ast(ty, tvars),
-            Ty::Sized {
-                variance,
-                size,
-                elem,
-            } => {
-                let (variance, size, elem) = (*variance, *size, *elem);
+            Ty::Sized { size, elem } => {
+                let (size, elem) = (*size, *elem);
                 let size_ty = self.size_ty_of_ast(size, tvars);
                 let elem_ty = self.ty_of_ast(elem, tvars);
-                tensor_type(&self.unifier.types, variance_con(&self.unifier.types, variance), size_ty, elem_ty)
+                tensor_type(&self.unifier.types, size_ty, elem_ty)
             }
             Ty::Arrow { from, effect, to } => {
                 let (from, to) = (*from, *to);

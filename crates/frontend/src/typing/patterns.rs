@@ -317,12 +317,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// A `[..]` or `++` pattern on a sized tensor `[n]T`. The size must be known,
+    /// A `[..]` or `++` pattern on a sized tensor `@Tensor n T`. The size must be known,
     /// so every length is checked here: a closed `[a, b, c]` fixes `n = 3`, and a
     /// `pre ++ mid ++ suf` gives `mid` the exact type `[n - k]T`. Splits along the
-    /// first axis, so on `[m, n]T` each element is a `[n]T` row.
+    /// first axis, so on `@Tensor m (@Tensor n T)` each element is a `@Tensor n T` row.
     pub(super) fn type_tensor_pattern(&mut self, pat: Aol<Pattern>, expected: Type) -> Result<()> {
-        let (variance, size, elem) = self.unifier.tensor_spine(expected).expect("guarded by tensor_parts");
+        let (size, elem) = self.unifier.tensor_spine(expected).expect("guarded by tensor_parts");
         let (pre, mid, suf): (Vec<Aol<Pattern>>, Option<Aol<Pattern>>, Vec<Aol<Pattern>>) =
             match self.pnode(pat) {
                 Pattern::List(_) => (vec![pat], None, Vec::new()),
@@ -375,7 +375,7 @@ impl<'a> Checker<'a> {
                 }
                 if let Some(mid) = mid {
                     let rest = self.unifier.types.nat(n - k);
-                    let rest = tensor_type(&self.unifier.types, variance, rest, elem);
+                    let rest = tensor_type(&self.unifier.types, rest, elem);
                     self.type_pattern(mid, rest)?;
                 }
                 self.tensor_patterns.insert(pat, n);
@@ -565,7 +565,7 @@ impl<'a> Checker<'a> {
     }
 
     /// A tensor pattern as a product over element positions: its length is static,
-    /// so `[x, y, z]` on a `[3]T` covers it. A refutable middle part is not modeled.
+    /// so `[x, y, z]` on a `@Tensor 3 T` covers it. A refutable middle part is not modeled.
     pub(super) fn tensor_dpat(&self, pat: Aol<Pattern>) -> usefulness::DPat {
         use usefulness::{DPat, ProductKind};
         let n = self.tensor_patterns[&pat];

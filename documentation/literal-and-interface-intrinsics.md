@@ -33,7 +33,7 @@ Three aggregates the compiler still knows directly:
 
 - `@Array` packed byte buffer (absorbs `@Str`).
 - `@Vec t` boxed dynamic array.
-- `[n]T` (`@tensor`) unboxed numeric fixed-size tensor, size in the type.
+- `@Tensor n T` (`@tensor`) unboxed numeric fixed-size tensor, size in the type.
 
 Deleted as builtins: `@Str` (folded into `@Array`), `@list` (redefined as a core
 `@union`).
@@ -79,7 +79,7 @@ Each writes `I.m` for "the single field of the instance resolved for `I` here".
 - `"foo"`            ->  `@IStrLit.of_str <bytes:@Str>`
 - `[a, b, c]`        ->  `@ISeqLit.of_vec <@Vec t payload>`
 
-  (except when the expected type is a sized tensor `[n]T`: that stays the existing
+  (except when the expected type is a sized tensor `@Tensor n T`: that stays the existing
   type-directed build, since a `@Vec` payload cannot carry the static length `n`.)
 - `42`               ->  `@IIntLit.of_int 42`
 - `1.5`              ->  `@IRealLit.of_real 1.5`
@@ -260,7 +260,7 @@ A `CStr` would need a conversion primitive that does not exist and a rewrite of
   default builds it; rewrite `library/LIST.ares`.
 - Fold `@Str` into `@Array`; string literals lower to a byte payload; migrate the
   `@array_*` byte-poking in `CORE.ares`/`STR.ares`.
-- Keep `@Array`, `@Vec`, `[n]T` as the three aggregate primitives.
+- Keep `@Array`, `@Vec`, `@Tensor n T` as the three aggregate primitives.
 
 Touchpoints: `typing.rs` (drop `@list`/`@Str` builtins), `library/CORE.ares`,
 `library/LIST.ares`, `library/STR.ares`, both backends.
@@ -283,8 +283,7 @@ Touchpoints: `typing/types.rs` (`display_con`, base-type set), `library/CORE.are
 
 ## Stage 5 - the whole `[]` surface, one mechanism  [LANDED 2026-09-25, issue #175]
 
-The remaining hardcoded `[]` jobs became overloads, so every bracket form except the
-`[n]T` type resolves through the same machinery.
+The remaining hardcoded `[]` jobs became overloads, so every bracket form resolves through the same machinery.
 
 - **Ranges.** `[lo ... hi]` resolves `@compiler_interface_range` and `[lo ...]`
   `@compiler_interface_range_from`; CORE overloads them for `@Vec` and `Stream`. The
@@ -316,7 +315,7 @@ with no compiler support, and three overloads (`_sequence_literal`, `(::)`,
 first half runs over a `@Vec`.
 
 What stays compiler business, by the type system rather than by convenience: the
-sized tensor `[n]T`. A `[..]` literal, a range, or a multi-axis slice aimed at one
+sized tensor `@Tensor n T`. A `[..]` literal, a range, or a multi-axis slice aimed at one
 carries a static length that no hook payload or signature can express, so those three
 keep their type-directed paths (`tensor_exprs`, `infer_slice`'s shape algebra).
 
@@ -352,6 +351,6 @@ What changed:
   (`blessed_first`), so CORE's declaration order keeps deciding that a bare
   `[lo ... hi]` is a `@Vec` and a bare `[lo ...]` is a `Stream`.
 
-`LA`'s tensor indexing is `$ impl_IIndex_for_tensor : @IIndex ([n]a) @Int a`,
+`LA`'s tensor indexing is `$ impl_IIndex_for_tensor : @IIndex (@Tensor n a) @Int a`,
 `MAP`'s is `@IIndex (Map k v) k (Option v)`, and `examples/TENSORS.ares` shows a user type
 joining with `@IIndex Grid @Int @Int`.

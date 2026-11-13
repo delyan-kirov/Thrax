@@ -328,7 +328,7 @@ impl<'a> Checker<'a> {
         let mut map = HashMap::new();
         let imported = self.import_ty(ty, &mut map);
         // `import_ty` makes fresh plain generics, losing the `Nat` kind; re-mark the
-        // tensor-size variables so an imported `[n]a -> ...` still kind-checks.
+        // tensor-size variables so an imported `@Tensor n a -> ...` still kind-checks.
         self.unifier.note_tensor_sizes(imported);
         imported
     }

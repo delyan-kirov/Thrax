@@ -46,10 +46,10 @@ $ ck_build : @Int = if sum ns == 10 => 0 else 64
 $ ck_len : @Int = if VEC.length ns == 4 => 0 else 128
 $ ck_empty : @Int = if VEC.length [5 ... 2] == 0 => 0 else 256
 
-# Against a sized tensor `[n]T` it builds the tensor instead: the LITERAL bounds fix
+# Against a sized tensor `@Tensor n T` it builds the tensor instead: the LITERAL bounds fix
 # `n = hi - lo + 1` at compile time. A non-literal bound to a sized tensor is a
 # compile-time error (its length would not be statically known).
-$ tv : [4] @Int = [1 ... 4] # the tensor [1, 2, 3, 4]
+$ tv : @Tensor 4 @Int = [1 ... 4] # the tensor [1, 2, 3, 4]
 $ ck_tens : @Int = if tv.[0] + tv.[3] == 5 => 0 else 512
 
 # An OPEN range `[lo ...]` has no upper bound, so it is infinite: it builds a

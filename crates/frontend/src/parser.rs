@@ -1209,7 +1209,11 @@ impl<'a> Parser<'a> {
 
     fn parse_type_app(&mut self) -> Result<Aol<Ty>> {
         let start = self.here()?;
-        let mut head = self.parse_type_atom()?;
+        let mut head = if self.at_intrinsic("Tensor")? {
+            self.parse_tensor_type()?
+        } else {
+            self.parse_type_atom()?
+        };
         while self.starts_type_atom()? {
             let arg = self.parse_type_atom()?;
             head = self.ty(Ty::App(head, arg));
@@ -1223,16 +1227,15 @@ impl<'a> Parser<'a> {
             return Ok(true);
         }
         // `@use` opens a signature's instance parameter; it is not a type atom, so
-        // type application must not swallow it.
-        if self.at_ctx()? || self.at_intrinsic("use")? {
+        // type application must not swallow it. A splice is not an argument either:
+        // `&` is a prefix operator, as in an expression, so it heads a type or a
+        // row entry and an argument is parenthesized, `@Vec (&f a)`.
+        if self.at_ctx()? || self.at_intrinsic("use")? || self.at_splice()? {
             return Ok(false);
-        }
-        if self.at_splice()? {
-            return Ok(true);
         }
         Ok(matches!(
             self.peek_kind()?,
-            Kind::Word | Kind::At | Kind::LParen | Kind::LBrace
+            Kind::Word | Kind::At | Kind::LParen | Kind::LBrace | Kind::Int(_)
         ))
     }
 
@@ -1271,6 +1274,16 @@ impl<'a> Parser<'a> {
                 let e = self.parse_splice_operand()?;
                 Ok(self.ty(Ty::MetaE(e)))
             }
+            // A size literal, an argument of a size-parameterized alias:
+            // `Matrix 2 3 @Int`.
+            Kind::Int(_) => self.parse_size_atom(),
+            Kind::At if self.intrinsic_name(t) == "Tensor" => Err(Diagnostic::error(
+                Code::UnexpectedToken,
+                t.span,
+                t.line,
+                "a tensor type `@Tensor n T` stands only at the head of an application",
+            )
+            .with_help("parenthesize it: `(@Tensor n T)`")),
             Kind::At => {
                 self.bump()?;
                 let name = self.intern(self.text(t));
@@ -1283,54 +1296,20 @@ impl<'a> Parser<'a> {
                 Ok(inner)
             }
             Kind::LBrace => self.parse_brace_type(),
-            // `[size]elem`: a sized tensor type. `size` is a Nat literal or a
-            // lowercase (Nat-kinded) variable; `elem` binds as one atom (nest
-            // `[m][n]T`, parenthesize a compound `[n](List a)`).
-            // `[n]T` and the multi-dimensional shape `[m, n, ...]T`, which is sugar
-            // for the nested `[m][n]...T` (one axis per dimension).
-            Kind::LBrack => {
-                self.bump()?; // '['
-                let mut axes = vec![self.parse_axis()?];
-                while self.eat(|k| matches!(k, Kind::Comma))? {
-                    axes.push(self.parse_axis()?);
-                }
-                expect!(self, Kind::RBrack, "expected ']' to close the tensor shape");
-                let mut elem = self.parse_type_atom()?;
-                for (variance, size) in axes.into_iter().rev() {
-                    elem = self.ty(Ty::Sized {
-                        variance,
-                        size,
-                        elem,
-                    });
-                }
-                Ok(elem)
-            }
             _ => Err(self.unexpected(&t, "expected a type")),
         }
     }
 
-    /// One axis of a tensor shape: an optional variance marker (`@contra`/`@co`)
-    /// followed by the size. A bare axis is `Neutral`. The marker is `@`-sigilled
-    /// like the other type-level intrinsics; a leading `@co`/`@contra` cannot clash
-    /// with a size expression (a size never starts with `@`).
-    fn parse_axis(&mut self) -> Result<(Variance, Aol<Ty>)> {
-        let variance = if matches!(self.peek_kind()?, Kind::At) {
-            let t = self.peek()?;
-            match self.intrinsic_name(t) {
-                "contra" => {
-                    self.bump()?;
-                    Variance::Contra
-                }
-                "co" => {
-                    self.bump()?;
-                    Variance::Co
-                }
-                _ => Variance::Neutral,
-            }
-        } else {
-            Variance::Neutral
-        };
-        Ok((variance, self.parse_size()?))
+    /// A sized tensor type `@Tensor n elem`, with the cursor on `@Tensor`: the
+    /// size and the element type, each one atom (`@Tensor 3 @Int`,
+    /// `@Tensor (n + 1) a`, `@Tensor m (@Tensor n a)` for a matrix).
+    fn parse_tensor_type(&mut self) -> Result<Aol<Ty>> {
+        let start = self.here()?;
+        self.bump()?; // '@Tensor'
+        let size = self.parse_size_atom()?;
+        let elem = self.parse_type_atom()?;
+        let node = self.ty(Ty::Sized { size, elem });
+        Ok(self.stamp_ty(start, node))
     }
 
     /// A tensor size expression: `+` of `*`-terms over Nat literals and size
@@ -2196,7 +2175,7 @@ impl<'a> Parser<'a> {
         }
         let first = self.parse_expr(0)?;
         // The inclusive range builder `[lo ... hi]`. A TYPE-DIRECTED literal
-        // (`Expr::Range`): the checker resolves it to a sized tensor `[n]T` or, by
+        // (`Expr::Range`): the checker resolves it to a sized tensor `@Tensor n T` or, by
         // default, a `List Int`. It is not desugared here so the target stays open.
         if matches!(self.peek_kind()?, Kind::Ellipsis) {
             self.bump()?; // '...'
@@ -2463,13 +2442,40 @@ impl<'a> Parser<'a> {
         if self.at_op("|")? {
             return self.parse_arms_lambda();
         }
-        let mut params = vec![self.parse_lambda_param()?];
+        let mut params = vec![self.lambda_param(true)?];
         while !self.eat(|k| matches!(k, Kind::FatArrow))? {
-            params.push(self.parse_lambda_param()?);
+            params.push(self.lambda_param(false)?);
         }
         let body = self.parse_expr(0)?;
         let params = self.ast.make_slice(params);
         Ok(self.expr(Expr::Lambda { params, body }))
+    }
+
+    /// One juxtaposed lambda parameter. A splice would take the parameters after
+    /// it as its operand's arguments (`\&f a b =>`), and `\.Tag .{ x } =>` would
+    /// read either as one parameter with its payload or as two, so a splice is
+    /// parenthesized and only the first parameter may start with `.`.
+    fn lambda_param(&mut self, first: bool) -> Result<LamParam> {
+        let t = self.peek()?;
+        if self.at_splice()? {
+            return Err(Diagnostic::error(
+                Code::UnexpectedToken,
+                t.span,
+                t.line,
+                "a splice as a lambda parameter is parenthesized",
+            )
+            .with_help("write `(&f a)`"));
+        }
+        if !first && matches!(t.kind, Kind::Dot) {
+            return Err(Diagnostic::error(
+                Code::UnexpectedToken,
+                t.span,
+                t.line,
+                "only a lambda's first parameter may start with `.`",
+            )
+            .with_help("parenthesize it: `(.Tag)`"));
+        }
+        self.parse_lambda_param()
     }
 
     // Note [Multi-argument arms]

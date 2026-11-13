@@ -1,6 +1,6 @@
 //! Sizes: the `Nat` kind of tensor axes, and their equality.
 //!
-//! A tensor type `[n]T` carries its size `n` as a type of kind `Nat`: a literal,
+//! A tensor type `@Tensor n T` carries its size `n` as a type of kind `Nat`: a literal,
 //! a `Nat` variable, or a `+`/`*` of sizes. Two sizes are equal when their
 //! normal forms are: `normalize_size` turns a size into a polynomial
 //! over Z/2^64 (a sum of coefficient-times-monomial terms, like terms combined,
@@ -9,10 +9,10 @@
 //! is inferred.
 //!
 //! This module also keeps the kind discipline (a `Nat` variable binds only a
-//! size) and unifies the per-axis variance markers of the tensor spine.
+//! size).
 //!
 //! Entry points: [`Unifier::fresh_nat`], [`Unifier::nat_value`]; plain
-//! [`Unifier::unify`] dispatches here for sizes and tensors.
+//! [`Unifier::unify`] dispatches here for sizes.
 
 use utilities::{Code, Diagnostic, Result, Span};
 
@@ -73,7 +73,7 @@ impl Unifier {
     pub fn note_tensor_sizes(&mut self, ty: Type) {
         match self.head(ty) {
             TypeNode::App(head, elem) => {
-                if let Some((_variance, size, _elem)) = self.tensor_spine(ty) {
+                if let Some((size, _elem)) = self.tensor_spine(ty) {
                     self.note_nat(size);
                 }
                 self.note_tensor_sizes(head);
@@ -155,41 +155,17 @@ impl Unifier {
 // ## Tensors
 
 impl Unifier {
-    /// Peel a sized-tensor type `@tensor variance size elem` into its three parts.
-    pub fn tensor_spine(&self, ty: Type) -> Option<(Type, Type, Type)> {
+    /// Peel one axis of a sized-tensor type `@tensor size elem` into its size and
+    /// element.
+    pub fn tensor_spine(&self, ty: Type) -> Option<(Type, Type)> {
         if let TypeNode::App(head, elem) = self.head(ty) {
-            if let TypeNode::App(head2, size) = self.head(head) {
-                if let TypeNode::App(con, variance) = self.head(head2) {
-                    if matches!(self.head(con), TypeNode::Con(n) if self.types.name(n) == "@tensor")
-                    {
-                        return Some((variance, size, elem));
-                    }
+            if let TypeNode::App(con, size) = self.head(head) {
+                if matches!(self.head(con), TypeNode::Con(n) if self.types.name(n) == "@tensor") {
+                    return Some((size, elem));
                 }
             }
         }
         None
-    }
-
-    /// Unify two axis variances. A variance variable binds like any unification
-    /// variable; `@neutral` is compatible with any concrete variance (so unmarked
-    /// `[n]T` axes interoperate with variance-typed tensors); `@co` and `@contra`
-    /// unify only with themselves, so mixing them is the type error variance exists
-    /// to catch.
-    pub(super) fn unify_variance(&mut self, a: Type, b: Type, where_: &str) -> Result<()> {
-        let a = self.resolve(a);
-        let b = self.resolve(b);
-        match (self.types.node(a), self.types.node(b)) {
-            (TypeNode::Var(i), TypeNode::Var(j)) if i == j => Ok(()),
-            (TypeNode::Var(i), _) => self.bind(i, b),
-            (_, TypeNode::Var(j)) => self.bind(j, a),
-            (TypeNode::Con(n), _) | (_, TypeNode::Con(n))
-                if self.types.name(n) == "@neutral" =>
-            {
-                Ok(())
-            }
-            (TypeNode::Con(x), TypeNode::Con(y)) if x == y => Ok(()),
-            _ => Err(self.mismatch(a, b, where_)),
-        }
     }
 }
 

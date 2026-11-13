@@ -52,10 +52,10 @@ $ ck_nested : @Int =
 
 # Over a tensor, the leading axis is split into O(1) slices, one task each:
 # rows of a matrix, elements of a vector. Equal to the sequential `LA.map`.
-$ tv : [12] @Int = [3, 9, 4, 12, 7, 5, 10, 8, 6, 11, 2, 13]
-$ tm : [3, 2] @Int = [[1, 2], [3, 4], [5, 6]]
+$ tv : @Tensor 12 @Int = [3, 9, 4, 12, 7, 5, 10, 8, 6, 11, 2, 13]
+$ tm : @Tensor 3 (@Tensor 2 @Int) = [[1, 2], [3, 4], [5, 6]]
 
-$ same : [n] @Int -> [n] @Int -> @Int -> @Int = \x y i =>
+$ same : @Tensor n @Int -> @Tensor n @Int -> @Int -> @Int = \x y i =>
     if i == LA.length x => 0 else if x.[i] == y.[i] => same x y (i + 1) else 1
 
 $ ck_tensor : @Int =

@@ -179,7 +179,7 @@ examples/TUPLES.ares):
 - One grammar subtlety: after `Tag:` in a union declaration, `{` always
   opens the PAYLOAD's field braces, never a bare tuple type (a single
   tuple-typed field is `Tag: {{A, B}}` or `Tag: {t: {A, B}}`); documentation/ares.y
-  resolves this structurally (payload_decl / type_nb).
+  resolves this structurally (payload_decl / app_nb).
 - `Map {@Int, Str}` works today as a type argument; keying a map by a tuple
   just needs a lexicographic comparison (dictionary passing, see
   STDLIB tests / section 4 of documentation/standard-library.md).

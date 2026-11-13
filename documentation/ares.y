@@ -17,33 +17,30 @@
  * crates/frontend/src/lexer/data.rs; the %left/%right/%precedence block below
  * is that spec.
  *
- * CONFLICTS. `%expect 21`: bison's summary count, all resolving by the default
- * (shift), all matching parser.rs. Not LALR(1) but unambiguous under maximal munch
- * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates thirty-nine
- * (state, token) warnings over the same classes: 14 on DOT, 21 on the tokens
- * that start an atom after a splice, 3 on BAR, 1 on KW_CTL. The summary number
- * is what `%expect` compares against.)
- *   - `lo ...`         open range shifts an upper bound when one follows, else
- *                      closes open (a pattern `num_lit ELLIPSIS`, an expression
- *                      `[expr ELLIPSIS RBRACK]`); two conflicts
- *   - `f x.y`         postfix `.` binds tighter than application -> `f (x.y)`
- *   - `E.Tag.{...}`   the `.{...}` is the variant payload, not a struct literal;
- *                     in juxtaposed lambda parameters (`\.Tag .{..}`) too,
- *                     three conflicts
- *   - `A.B.C`         qualified-name chains shift greedily
- *   - `&f a`          a splice's operand is the whole application wherever the
- *                     context could take another atom (a type argument, a
- *                     row entry's argument), so `@Vec &f a` splices `f a`;
- *                     twelve conflicts in the summary count
- *   - `do ... ctl`    `ctl` attaches to the nearest `do`
+ * CONFLICTS. `%expect 3`: bison's summary count, all resolving by the default
+ * (shift), all matching parser.rs. Each is the dangling-else kind: nothing
+ * closes a run of arms, so the grammar has to pick, and it picks the
+ * innermost -- EXPECTED, keep as is.
  *   - nested arms     arms belong to the innermost multi-arm `\ |` or handler
  *                     (parenthesize to nest); the real parser also ends the
  *                     arms at a `| op x` operation clause, which this grammar
- *                     does not model
+ *                     does not model; two
+ *   - `do ... ctl`    `ctl` attaches to the nearest `do`
+ * Everything else that would conflict is ruled out by the grammar instead: a
+ * splice is a prefix operator, never an argument (see app); an argument and a
+ * later lambda parameter do not start with `.` (see app, params); a qualified
+ * name, a variant and its payload are postfix `.` steps (see postfix).
  * The one brace overlap tuples introduced -- `Tag: {A, B}` is the variant's
  * positional PAYLOAD fields, never a bare tuple type is resolved
  * structurally (payload_decl's bare-type alternative is non-brace-initial,
- * type_nb), matching parser.rs's context rule; see payload_decl.
+ * app_nb), matching parser.rs's context rule; see payload_decl.
+ *
+ * ONE GRAMMAR FOR TYPES AND EXPRESSIONS (#406 step 2). A type is an `expr`:
+ * signatures, annotations, fields, payloads, row arguments. The merge kept
+ * the meaning of every corpus program; it admits more than parser.rs: an operator,
+ * a lowercase head (`m a`) or a control form in a type position parses here
+ * and is rejected by parser.rs, whose type parser stays separate until the
+ * elaborator takes types as expressions (step 3).
  *
  * DIVERGENCES from parser.rs (this grammar is intentionally stricter):
  *   - SHOULD WARN (future work): parser.rs lets a control form (let/if/\)
@@ -52,10 +49,11 @@
  *     -- the `+ 100` is swallowed. Legal, but a footgun that should emit a
  *     compiler warning. Here a control form in operand position needs parens.
  *   - LOWER PRIORITY: semantic well-formedness (field-case, mixed
- *     named/positional, arity) are omitted -- those are checks, not grammar. */
+ *     named/positional, arity, the one size of `@Array.{ n }`) are omitted --
+ *     those are checks, not grammar. */
 
 %define parse.error verbose
-%expect 21
+%expect 3
 
 %token INT REAL IMAG STR   /* IMAG: an `i`-suffixed number, `3i` / `1.2i` / `2.5e-2i` */
 %token UIDENT       /* Word, uppercase-initial */
@@ -116,14 +114,14 @@ global
   | DOLLAR UIDENT COLON AT_UNION  opt_type_params EQ union_body
   | DOLLAR UIDENT COLON AT_UNION  opt_type_params EQ  /* no variants: uninhabited */
   | DOLLAR UIDENT COLON AT_UNION  AT_EXTERN STR opt_type_params EQ union_body  /* C layout */
-  | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ type
+  | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ expr
   | DOLLAR UIDENT COLON AT_EFFECT opt_type_params EQ effect_body
   | DOLLAR AT_IMPORT import
   | DOLLAR AT_PRIVATE
-  | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@Vec @Str -> <@IO> @Int` */
+  | DOLLAR AT_MAIN COLON expr EQ expr  /* the entry: `@Vec @Str -> <@IO> @Int` */
   /* The compile-time entry, run during compilation; its `@Code` result adds
    * items to this module. Signature: `{} -> <@Meta, @IO> @Code`. */
-  | DOLLAR AT_BUILD COLON type EQ expr
+  | DOLLAR AT_BUILD COLON expr EQ expr
   /* A blessed interface TYPE, declarable only in CORE: the compiler resolves a
    * value of it at a desugar site and calls its single field. AT_IFACE is one of
    * `@IIntLit @IRealLit @IImagLit @IStrLit @ISeqLit @IRange @IRangeFrom @IIndex
@@ -131,16 +129,15 @@ global
   | DOLLAR AT_IFACE COLON AT_STRUCT opt_type_params EQ struct_body
   /* A builtin, declarable only in CORE: the name is the runtime primitive
    * (`$ @iadd : t -> t -> t = @extern "ares"`). */
-  | DOLLAR AT_TYCON COLON sig EQ builtin_lit
+  | DOLLAR AT_TYCON COLON expr EQ builtin_lit
   | DOLLAR splice  /* `$ &assert ..`: the items the code holds replace it */
-  | DOLLAR LPAREN operator_name RPAREN COLON type EQ expr  /* `$ (+) : T = e` */
+  | DOLLAR LPAREN operator_name RPAREN COLON expr EQ expr  /* `$ (+) : T = e` */
   ;
 
-opt_sig   : /* empty */ | COLON sig ;
+/* A signature is an expression, like every type; `@use` parameters stand on
+ * its arrows (see use_param). `=` is never an operator, so it ends the type. */
+opt_sig   : /* empty */ | COLON expr ;
 body      : expr | extern_lit ;
-
-/* A signature is a type; `@use` parameters are part of `type` (see use_param). */
-sig : type ;
 
 /* Every operator that may stand alone in parens: the name a `$ (op) : T = e`
  * definition binds, and the function value `(op)` refers to. The grammatical
@@ -163,7 +160,7 @@ opt_type_params : /* empty */ | opt_type_params LIDENT ;
 
 struct_body   : field_decls opt_comma ;
 field_decls   : field_decl | field_decls COMMA field_decl ;
-field_decl    : LIDENT COLON type | entry_splice ;
+field_decl    : LIDENT COLON expr | entry_splice ;
 
 union_body    : variant_decls opt_comma ;
 variant_decls : variant_decl | variant_decls COMMA variant_decl ;
@@ -185,39 +182,24 @@ splice : AMP app ;
  * `{A, B}` two positional fields) never a bare tuple type; that is how
  * parser.rs reads it. A single tuple-typed field is written nested
  * (`Tag: {{A, B}}`) or named (`Tag: {t: {A, B}}`), so the bare-type
- * alternative is restricted to non-brace-initial types (type_nb). */
+ * alternative is an application or arrow whose head is not brace-initial
+ * (app_nb, atom_nb). */
 payload_decl
   : LBRACE RBRACE
   | LBRACE payload_fields opt_comma RBRACE
-  | type_nb
+  | app_nb
+  | app_nb ARROW expr
+  | app_nb ARROW eff_row expr
   ;
 
 payload_fields : payload_field | payload_fields COMMA payload_field ;
-payload_field  : type | LIDENT COLON type ;
-
-type_nb      : type_app_nb | type_app_nb ARROW type | type_app_nb ARROW eff_row type ;
-type_app_nb  : type_atom_nb | type_app_head type_args ;
-type_atom_nb
-  : UIDENT
-  | UIDENT DOT UIDENT
-  | AT_TYCON
-  | LIDENT   /* a type variable */
-  | LPAREN type RPAREN
-  ;
+payload_field  : expr | LIDENT COLON expr ;
 
 effect_body : op_decls opt_comma ;
 op_decls    : op_decl | op_decls COMMA op_decl ;
-op_decl     : LIDENT COLON type ;
+op_decl     : LIDENT COLON expr ;
 
 opt_comma   : /* empty */ | COMMA ;
-
-type
-  : type_app
-  | type_app ARROW type
-  | type_app ARROW eff_row type
-  | use_param ARROW type
-  | use_param ARROW eff_row type
-  ;
 
 /* A searched parameter: `@use {d: IOrd t} -> t -> t -> t`. A closed record of
  * named fields, each an interface instance (or, with dependent types, a
@@ -231,49 +213,14 @@ type
  * type, which the parser enforces: the grammar admits `(@use {d: I t} -> t) -> t`,
  * parser.rs rejects it. A local `let` signature does not take `@use` yet. */
 use_param  : AT_USE LBRACE use_fields opt_comma RBRACE ;
-use_fields : LIDENT COLON type | use_fields COMMA LIDENT COLON type ;
-
-type_app      : type_atom | type_app_head type_args ;
-type_app_head : UIDENT | UIDENT DOT UIDENT | AT_TYCON | AT_IFACE ;
-type_args     : type_atom | type_args type_atom ;
-
-type_atom
-  : UIDENT
-  | UIDENT DOT UIDENT
-  | AT_TYCON
-  | LIDENT   /* a type variable */
-  | LBRACE RBRACE
-  | LBRACE type_list opt_comma RBRACE  /* tuple type; n >= 1 ({} is unit) */
-  | LBRACE rec_field_list BAR LIDENT RBRACE  /* open record: `{ x: T | r }` */
-  | splice                                  /* a type a generator produces */
-  | LBRACE rec_field_list opt_comma RBRACE /* named-record parameter sugar:
-      `{x: T, y: U}` is the tuple `{T, U}` whose field names bind the argument;
-      a one-field `{x: T}` collapses to `T` (see parse_global). Legal only in a
-      function parameter position. */
-  | LBRACK shape RBRACK type_atom  /* sized tensor `[n]T` / `[m, n]T` (Nat-kind) */
-  | LPAREN type RPAREN
-  ;
-
-/* A tensor shape: one dimension `[n]T`, or several `[m, n, ...]T` which is sugar
- * for the nested `[m][n]...T`. */
-shape : tensor_size | shape COMMA tensor_size ;
-
-/* A tensor size: a modular (Z/2^64) arithmetic expression over Nat literals and
- * lowercase (Nat-kinded) size variables. `*` binds tighter than `+`. */
-/* An axis may carry its variance: `[@contra m, @co n]T`. */
-tensor_size : size_sum | AT_TYCON size_sum ;
-size_sum    : size_prod | size_sum PLUS size_prod ;
-size_prod   : size_atom | size_prod STAR size_atom ;
-size_atom   : INT | LIDENT | LPAREN size_sum RPAREN ;
-
-type_list : type | type_list COMMA type ;
+use_fields : LIDENT COLON expr | use_fields COMMA LIDENT COLON expr ;
 
 rec_field_list
   : rec_field
   | rec_field_list COMMA rec_field
   ;
 
-rec_field : LIDENT COLON type ;
+rec_field : LIDENT COLON expr ;
 
 eff_row
   : ANGLE_EMPTY
@@ -283,15 +230,20 @@ eff_row
   | PIPE_BACK LIDENT GT
   ;
 
-/* An entry is an effect applied to its type arguments (`Chan @Int e`), or
- * entries a generator produces (`&X`). A row has no alias. */
-eff_names : eff_entry | eff_names COMMA eff_entry ;
-eff_entry : UIDENT | AT_TYCON | eff_entry type_atom | splice ;
+/* An entry is an effect applied to its arguments (`Chan @Int e`), or
+ * entries a generator produces (`&X`, a whole entry). The arguments are
+ * atoms, so a `>` inside one is parenthesized. A row has no alias. */
+eff_names : row_entry | eff_names COMMA row_entry ;
+row_entry : eff_entry | splice ;
+eff_entry : UIDENT | AT_TYCON | eff_entry arg ;
 
+/* Types are expressions (#406): there is no separate type grammar, and a
+ * signature, an annotation, a field or a payload is an `expr` like any other.
+ * Which expressions denote types is the checker's business. */
 expr
   : ctrl_expr
   | op_expr
-  /* The two lowest, right-associative operators take a whole expression on
+  /* The lowest, right-associative operators take a whole expression on
    * their right, so a control form may follow and run to the end:
    * `a; let x = 1 in b`, `f <| g <| \x => ..`. `|>` is left-associative, so
    * only its last operand may be a control form: `xs |> f |> \v => ..`, and a
@@ -299,6 +251,15 @@ expr
   | op_expr SEMI expr
   | op_expr PIPE_BACK expr
   | op_expr PIPE_FWD ctrl_expr
+  /* The function type, at that same lowest level: `a -> b -> c` is
+   * `a -> (b -> c)`, and `a |> f -> b` is `(a |> f) -> b`. An effect row may
+   * follow the arrow (`a -> <@IO> b`); `<` and `<|` cannot start an operand,
+   * so the row is unambiguous. A `@use` parameter stands only left of an
+   * arrow. */
+  | op_expr ARROW expr
+  | op_expr ARROW eff_row expr
+  | use_param ARROW expr
+  | use_param ARROW eff_row expr
   ;
 
 ctrl_expr
@@ -355,9 +316,28 @@ op_expr
   | app
   ;
 
-app  : atom | app atom %prec APP ;
+/* Application. The head of an application is any atom (`m a` with a
+ * variable `m`, `p x` with `p : A -> @Type`), not only a type name; a sized
+ * tensor is the builtin `@Tensor` applied, `@Tensor n a`. An argument is an
+ * `arg`: an atom that does not start with `.` (`f x .Tag` would otherwise
+ * read as `f (x.Tag)` or as two arguments), so `f (.Tag)` parenthesizes. A
+ * splice is never an argument: `&` is a prefix operator (see op_expr), so
+ * `@Vec (&f a)`. */
+app    : atom | app arg %prec APP ;
+app_nb : atom_nb | app_nb arg %prec APP ;
 
-atom
+/* An atom is a primary followed by a postfix `.` chain. Two restricted
+ * copies differ only in the head: `atom_nb` is not brace-initial (a variant's
+ * bare payload type, see payload_decl) and `arg` is not dot-initial. */
+atom    : primary    | atom DOT postfix ;
+atom_nb : primary_nb | atom_nb DOT postfix ;
+arg     : arg_primary | arg DOT postfix ;
+
+primary      : plain | dot_primary | brace_atom ;
+primary_nb   : plain | dot_primary ;
+arg_primary  : plain | brace_atom ;
+
+plain
   : INT
   | REAL
   | IMAG   /* resolves `@IImagLit <type>` and calls its field on the magnitude;
@@ -365,34 +345,53 @@ atom
   | STR
   | AT_TRUE   /* @Bool literals; the ONLY spelling (no bare `true`/`false`) */
   | AT_FALSE
-  | LIDENT
+  | LIDENT    /* a variable: a value, a type or anything else in scope */
   | UIDENT
   | HOLE
-  | AT_TYCON  /* an intrinsic as a value: `@vec_len v`, `@iadd a b` */
+  | AT_TYCON  /* a builtin type (`@Int`) or effect (`@IO`), or an intrinsic
+               * as a value: `@vec_len v`, `@iadd a b` */
+  | AT_IFACE  /* a blessed interface type: `@IIndex (@Tensor n a) @Int a` */
   | LPAREN expr RPAREN
   | LPAREN operator_name RPAREN  /* an operator as a function value: `(+) 1 1` */
-  | LPAREN expr COLON type RPAREN  /* a type ascription: `([] : List @Int)` */
-  | LBRACE dot_inits opt_comma RBRACE  /* a record or codata literal `{ .f = e }` */
-  | LBRACE dot_inits BAR expr RBRACE   /* a record update `{ .f = e | base }` */
-  | LBRACE dot_inits COMMA DOT DOT op_expr RBRACE  /* extension `{ .tag = 1, ..p }` */
-  | LBRACE DOT DOT op_expr RBRACE      /* `{ ..p }`: p's fields, as a record */
+  | LPAREN expr COLON expr RPAREN  /* a type ascription: `([] : List @Int)` */
   /* An explicit `@use` argument, matched to the signature's `@use` fields by
    * name; omitted fields are still searched: `max_of @use {.d = flip} 3 7`.
    * At least one field: an empty `@use {}` supplies nothing, so it is an error.
    * It precedes the explicit argument that follows its parameter. */
   | AT_USE LBRACE use_inits opt_comma RBRACE
-  | LBRACE RBRACE
-  | LBRACE elem_list opt_comma RBRACE  /* tuple literal; n >= 1 ({} is unit) */
   | seq_lit
-  | array_lit
-  | DOT LBRACE struct_lit_body RBRACE
-  | DOT UIDENT variant_payload
-  | atom DOT LIDENT
-  | atom DOT INT   /* `.n`: positional tuple/struct field `t.0`; chained `t.0.1` */
-  | atom DOT REAL  /* arrives as one REAL token and is split at its '.' */
-  | atom DOT UIDENT variant_payload
-  | atom DOT LBRACE struct_lit_body RBRACE
-  | atom DOT LBRACK index_list RBRACK   /* `t.[i]` / `t.[i, j]`: modular indexing */
+  /* The byte-array type. `@Array.{ n }` is its literal, the typed struct
+   * literal postfix on the type like `Person.{ ... }`; parser.rs checks that
+   * it holds one size (`n` or `.size = n`). */
+  | AT_ARRAY
+  ;
+
+dot_primary
+  : DOT LBRACE struct_lit_body RBRACE
+  | DOT UIDENT   /* a bare variant `.Tag`; its payload is the postfix `.{ .. }` */
+  ;
+
+brace_atom
+  : LBRACE dot_inits opt_comma RBRACE  /* a record or codata literal `{ .f = e }` */
+  | LBRACE dot_inits BAR expr RBRACE   /* a record update `{ .f = e | base }` */
+  | LBRACE dot_inits COMMA DOT DOT op_expr RBRACE  /* extension `{ .tag = 1, ..p }` */
+  | LBRACE DOT DOT op_expr RBRACE      /* `{ ..p }`: p's fields, as a record */
+  | LBRACE RBRACE                      /* the unit value, and its type */
+  | LBRACE elem_list opt_comma RBRACE  /* a tuple, or a tuple type `{A, B}`; n >= 1 */
+  /* A record type `{x: T, y: U}`: as a parameter it is the tuple `{T, U}`
+   * whose field names bind the argument; a one-field `{x: T}` collapses to
+   * `T` (see parse_global). */
+  | LBRACE rec_field_list opt_comma RBRACE
+  | LBRACE rec_field_list BAR LIDENT RBRACE  /* open record type `{ x: T | r }` */
+  ;
+
+postfix
+  : LIDENT
+  | INT   /* `.n`: positional tuple/struct field `t.0`; chained `t.0.1` */
+  | REAL  /* arrives as one REAL token and is split at its '.' */
+  | UIDENT   /* a qualified name `M.x`, a variant `E.Tag`, a chain `M.E.Tag` */
+  | LBRACE struct_lit_body RBRACE  /* `T.{ .. }`, a variant's `E.Tag.{ .. }` */
+  | LBRACK index_list RBRACK   /* `t.[i]` / `t.[i, j]`: modular indexing */
   ;
 
 /* `t.[i, j, ...]`: a comma-list of axis indices, folded to nested single-axis
@@ -419,8 +418,6 @@ struct_lit_body
   | BAR expr
   ;
 
-variant_payload : /* empty */ | DOT LBRACE field_inits RBRACE ;
-
 seq_lit
   : LBRACK RBRACK
   | LBRACK elem_list opt_comma RBRACK
@@ -434,11 +431,6 @@ dot_inits
   ;
 
 use_inits : DOT LIDENT EQ expr | use_inits COMMA DOT LIDENT EQ expr ;
-
-array_lit
-  : AT_ARRAY DOT LBRACE expr opt_comma RBRACE
-  | AT_ARRAY DOT LBRACE DOT LIDENT EQ expr opt_comma RBRACE
-  ;
 
 /* `@extern "C" "symbol" "lib"`: ABI, symbol, then SYMBOLIC library name --
  * never a path or soname (resolution is the consumer's job: dlopen table in
@@ -486,10 +478,13 @@ arm
 /* A lambda's parameters, juxtaposed. An annotated parameter is ALWAYS
    parenthesized, `\(x: T) => e`, even when it is the only one: the annotation
    then ends at `)`, never at a `=>` (types become expressions with #406, and an
-   `if` arm inside a type has its own `=>`). `\x: T => e` is an error. */
-params : param | params param ;
+   `if` arm inside a type has its own `=>`). `\x: T => e` is an error.
+   Only the first parameter may start with `.` (`\.Tag .{ x }` would read as
+   one parameter or two), and a splice parameter is parenthesized, since its
+   operand would take the parameters after it: `\(&f a) b => e`. */
+params : param | pat_dot | params param ;
 
-param : pat_atom | LPAREN pattern RPAREN | LPAREN pattern COLON type RPAREN ;
+param : pat_plain | LPAREN pattern RPAREN | LPAREN pattern COLON expr RPAREN ;
 
 /* `++` splits a sequence into fixed pieces (string literals, `[..]` lists)
  * around at most one part of unknown length: `"a" ++ r`, `r ++ [z]`,
@@ -505,7 +500,11 @@ pattern
 
 num_lit : INT | REAL | MINUS INT | MINUS REAL ;  /* `-` only directly before a literal */
 
-pat_atom
+pat_atom : pat_plain | pat_dot | splice ;  /* splice: a constant (`&answer`)
+                                            or a pattern a generator produces */
+pat_dot  : DOT UIDENT pat_payload ;
+
+pat_plain
   : UNDERSCORE
   | LIDENT
   | num_lit
@@ -515,11 +514,9 @@ pat_atom
   | list_pattern
   | LBRACE pat_elem_list opt_comma RBRACE  /* tuple pattern; n >= 1 */
   | LBRACE rec_pats RBRACE                 /* record pattern `{ .x = a, .y, .._ }` */
-  | DOT UIDENT pat_payload
   | UIDENT DOT LBRACE field_pats RBRACE
   | UIDENT DOT UIDENT pat_payload
   | UIDENT DOT UIDENT DOT UIDENT pat_payload
-  | splice  /* a constant (`&answer`) or a pattern a generator produces */
   ;
 
 pat_payload  : /* empty */ | DOT LBRACE field_pats RBRACE ;

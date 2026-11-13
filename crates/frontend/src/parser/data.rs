@@ -166,13 +166,8 @@ impl Ast {
             Ty::Con { module: None, name } => name.to_string(),
             Ty::Var(name) => name.to_string(),
             Ty::Nat(_) | Ty::SizeAdd(..) | Ty::SizeMul(..) => self.size_src(ty, 0)?,
-            Ty::Sized { variance, size, elem } => {
-                let marker = match variance {
-                    Variance::Neutral => "",
-                    Variance::Co => "@co ",
-                    Variance::Contra => "@contra ",
-                };
-                format!("[{marker}{}]{}", self.size_src(*size, 0)?, self.ty_src(*elem, 2)?)
+            Ty::Sized { size, elem } => {
+                wrap(format!("@Tensor {} {}", self.size_src(*size, 2)?, self.ty_src(*elem, 2)?), 1)
             }
             Ty::App(head, arg) => wrap(format!("{} {}", self.ty_src(*head, 1)?, self.ty_src(*arg, 2)?), 1),
             Ty::MetaE(_) => return None,
@@ -200,7 +195,8 @@ impl Ast {
         })
     }
 
-    /// A tensor size: `*` binds tighter than `+`.
+    /// A tensor size: `*` binds tighter than `+`. `prec` is what the context
+    /// binds: 0 a sum, 1 a product, 2 an atom (a tensor's size argument).
     fn size_src(&self, ty: Aol<Ty>, prec: u8) -> Option<String> {
         Some(match self.ty(ty) {
             Ty::Nat(n) => n.to_string(),
@@ -208,7 +204,10 @@ impl Ast {
                 let s = format!("{} + {}", self.size_src(*a, 0)?, self.size_src(*b, 1)?);
                 if prec > 0 { format!("({s})") } else { s }
             }
-            Ty::SizeMul(a, b) => format!("{} * {}", self.size_src(*a, 1)?, self.size_src(*b, 1)?),
+            Ty::SizeMul(a, b) => {
+                let s = format!("{} * {}", self.size_src(*a, 1)?, self.size_src(*b, 2)?);
+                if prec > 1 { format!("({s})") } else { s }
+            }
             _ => self.ty_src(ty, 2)?,
         })
     }
@@ -376,38 +375,22 @@ pub struct PayloadField {
 
 // -- types -------------------------------------------------------------------
 
-/// The variance of a tensor axis. `Contra` is an upper (contravariant) index, a
-/// vector/column component living in `V`; `Co` is a lower (covariant) index, a
-/// covector/row living in the dual `V*`. `Neutral` is an unmarked axis, compatible
-/// with either (so plain `[n]T` code interoperates with variance-typed tensors).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Variance {
-    Neutral,
-    Co,
-    Contra,
-}
-
 #[derive(Clone, Debug)]
 pub enum Ty {
     /// A type constructor: `Int`, `@Int64`, or module-qualified `A.B`.
     Con { module: Option<StrId>, name: StrId },
     /// A type variable `` `a ``.
     Var(StrId),
-    /// A type-level natural literal (a size inside `[n]T`).
+    /// A type-level natural literal (a tensor size).
     Nat(u64),
-    /// A size sum `a + b` inside a tensor size (`[n+m]T`).
+    /// A size sum `a + b` (`@Tensor (n + m) T`).
     SizeAdd(Aol<Ty>, Aol<Ty>),
-    /// A size product `a * b` inside a tensor size (`[n*m]T`).
+    /// A size product `a * b` (`@Tensor (n * m) T`).
     SizeMul(Aol<Ty>, Aol<Ty>),
-    /// A sized tensor type `[size]elem`, e.g. `[5]Int` or `[n]a`. `size` is a `Nat`
-    /// literal or a (Nat-kinded) `Var`; `elem` is the element type. `variance` tags
-    /// the axis: `[@Contra n]`/`[@Co n]` are the two standard tensor-index kinds, a
-    /// bare `[n]` is `Neutral`.
-    Sized {
-        variance: Variance,
-        size: Aol<Ty>,
-        elem: Aol<Ty>,
-    },
+    /// A sized tensor type `@Tensor size elem`: `@Tensor 5 @Int`, `@Tensor n a`.
+    /// `size` is a `Nat` literal, a (Nat-kinded) `Var` or a `+`/`*` of them; a
+    /// matrix nests, `@Tensor m (@Tensor n a)`.
+    Sized { size: Aol<Ty>, elem: Aol<Ty> },
     /// Type application `Head Arg` (left-associative at use sites).
     App(Aol<Ty>, Aol<Ty>),
     /// A compile-time type splice `&X`: `X` is a compile-time expression that
@@ -591,7 +574,7 @@ pub enum Expr {
     /// `[ a, b, ... ]` / `[]`.
     List(Slice<Aol<Expr>>),
     /// The inclusive range builder `[lo ... hi]`. A TYPE-DIRECTED literal: it
-    /// materializes into a sized tensor `[n]T` (when a tensor is expected and the
+    /// materializes into a sized tensor `@Tensor n T` (when a tensor is expected and the
     /// bounds are literals, so the length is a compile-time constant), otherwise a
     /// `List Int` (the default). Both bounds are `Int`. An open range `[lo ...]`
     /// omits the upper bound and builds an unbounded `Stream Int`.

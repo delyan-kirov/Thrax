@@ -87,7 +87,9 @@ through proofs (Lean's `#print axioms`). A script pins them with a
 
 ## 6. Next steps
 
-Plan step 2 merges the type and expression grammars of `documentation/ares.y`
-without changing meaning. Step 3 grows the frontend's Algorithm W into a
+Plan step 2 is done: `documentation/ares.y` has one grammar for types and
+expressions, and every corpus file groups as it did under the separate type
+grammar (the parser in `crates/frontend` keeps its own type parser until step
+3). Step 3 grows the frontend's Algorithm W into a
 bidirectional elaborator with NbE conversion, for which this kernel is the
 reference.

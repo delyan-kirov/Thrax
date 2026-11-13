@@ -787,7 +787,7 @@ $ (::) : @use { d: ICons t s } -> t -> s -> s = \x xs => d.cons x xs
 $ impl_ICons_for_vec : ICons t (@Vec t) = .{ .cons = \x v => vcons x v }
 
 # The inclusive Ints from `lo` to `hi` (empty when `lo > hi`), as a `@Vec`: its
-# length is a runtime value, not the static size of a `[n]T` tensor.
+# length is a runtime value, not the static size of a `@Tensor n T`.
 $ range : @Int -> @Int -> @Vec @Int = \lo hi => range_onto (@vec_new {}) lo hi
 
 # A closed range `[lo ... hi]` builds whatever its `@IRange` instance returns. A
@@ -849,7 +849,7 @@ $ impl_ISeqLit_for_vec : @ISeqLit t (@Vec t) = .{ .of_vec = \v => v }
 $ impl_ISeqLit_for_array : @ISeqLit @Int @Array = .{ .of_vec = \v => array_onto @Array.{ 0 } v 0 }
 
 # A single-axis `xs.[lo ... hi]` slice, inclusive at both ends. An `@ISlice`
-# instance joins a type to the slice surface; a sized tensor `[n]T` slices by its
+# instance joins a type to the slice surface; a sized tensor `@Tensor n T` slices by its
 # own rule (its result shape is computed from the bounds, which no interface
 # method's type can say).
 $ impl_ISlice_for_vec : @ISlice (@Vec t) (@Vec t) =
@@ -924,7 +924,7 @@ $ impl_ISeqViewBack_for_str : @ISeqViewBack @Str @Int = .{
 $ Stream : @struct t = head : t, tail : Stream t
 
 # The ascending Ints from `lo` upward, with no end. A `Stream` is the only shape
-# that can hold an unbounded sequence (not a finite `@Vec`, not a `[n]T` tensor).
+# that can hold an unbounded sequence (not a finite `@Vec`, not a `@Tensor n T`).
 $ count_from : @Int -> Stream @Int = \lo => { .head = lo, .tail = count_from (lo + 1) }
 
 # The open range `[lo ...]` counterpart of `@IRange`. Declared FIRST, so a bare
