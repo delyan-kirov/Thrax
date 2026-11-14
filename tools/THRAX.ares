@@ -361,8 +361,6 @@ $ musl_prefix : @Str = "external/artifacts/musl"
 
 $ musl_src : @Str = "external/musl"
 
-$ musl_tag : @Str = "v1.2.5"
-
 $ dist_dir : @Str = "target/dist"
 
 # Exit status 0 when the archive at `stamp` is missing or older than a file
@@ -410,14 +408,6 @@ $ ffi_wrap : @Str -> <@IO> @Str = \cmd =>
         "sh -c " ++ sh_quote cmd
     else
         "nix develop ./external --command sh -c " ++ sh_quote cmd
-
-$ musl_fetch_cmd : @Str =
-    "[ -d "
-        ++ musl_src
-        ++ " ] || git clone --quiet --depth 1 --branch "
-        ++ musl_tag
-        ++ " https://git.musl-libc.org/git/musl "
-        ++ musl_src
 
 $ musl_build_cmd : @Str =
     "set -e; root=$PWD; b=target/musl-build; p=$root/"
@@ -511,7 +501,6 @@ $ refresh_ffi : {} -> <@IO, Fail> {} = \u =>
         println "thrax: libffi is up to date"
 
 $ refresh_musl : {} -> <@IO, Fail> {} = \u =>
-    step "musl fetch" musl_fetch_cmd;
     if C.system musl_stale_cmd == 0 =>
         println "thrax: building musl from external/musl ...";
         step "musl build (log: target/musl-build.log)" musl_build_cmd
