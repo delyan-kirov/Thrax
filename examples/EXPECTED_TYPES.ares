@@ -1,0 +1,42 @@
+$ @mod EXPECTED_TYPES
+
+# \file EXPECTED_TYPES.ares
+# \info Checking against an expected type. A signature or an annotation is
+#       pushed into the expression it types, down to each literal, so a literal
+#       aimed at a user type is built through that type's `@IIntLit` instance.
+#       The expectation reaches through a call (the result is known before the
+#       arguments are checked), a pipe, a tuple and a variant's payload.
+
+$ @import OPT
+
+# Tenths: an integer literal counts whole units.
+$ Tenths : @struct = n: @Int
+$ impl_IIntLit_for_Tenths : @IIntLit Tenths = .{ .of_int = \k => Tenths.{ k * 10 } }
+
+$ id : t -> t = \x => x
+$ pair : a -> b -> { a, b } = \x y => { x, y }
+
+# A call: `id`'s result is `Tenths`, so its argument is too.
+$ by_call : Tenths = id 3
+$ chk_call : @Int = if by_call.n == 30 => 0 else 1
+
+# Only the parameter the result fixes takes the expected type.
+$ by_pair : { Tenths, @Int } = pair 3 4
+$ chk_pair : @Int = by_pair |> \ | { t, k } => (if t.n + k == 34 => 0 else 1)
+
+# A pipe is a call, either way round.
+$ by_pipe : Tenths = 3 |> id
+$ by_back : Tenths = id <| 3
+$ chk_pipe : @Int = if by_pipe.n + by_back.n == 60 => 0 else 1
+
+# A tuple checks each item against its component.
+$ by_tuple : { Tenths, Tenths } = { 1, 2 }
+$ chk_tuple : @Int = by_tuple |> \ | { a, b } => (if a.n + b.n == 30 => 0 else 1)
+
+# A variant takes its union's parameters from the expected type.
+$ by_variant : Option Tenths = Option.Some.{ 5 }
+$ chk_variant : @Int = by_variant |> \ | Option.Some.{ t } => (if t.n == 50 => 0 else 1) | _ => 1
+
+$ test : @Int = chk_call + chk_pair + chk_pipe + chk_tuple + chk_variant
+
+$ &assert (test == 0) "EXPECTED_TYPES: a check failed"

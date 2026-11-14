@@ -452,7 +452,7 @@ impl<'a> Checker<'a> {
                 let elem_ty = self.ty_of_ast(elem, tvars);
                 tensor_type(&self.unifier.types, size_ty, elem_ty)
             }
-            Ty::Arrow { from, effect, to } => {
+            Ty::Arrow { from, effect, to, .. } => {
                 let (from, to) = (*from, *to);
                 // An unannotated arrow is pure.
                 let eff = match effect {

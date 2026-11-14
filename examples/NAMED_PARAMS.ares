@@ -1,0 +1,28 @@
+$ @mod NAMED_PARAMS
+
+# \file NAMED_PARAMS.ares
+# \info Named parameters. `(x: A) -> B` is the function type `A -> B` with its
+#       parameter named. In a definition's signature the body sees each named
+#       parameter bound, so it needs no lambda for it; a lambda binds the
+#       parameters it reaches instead (the last ones). Callers pass plain
+#       arguments, and partial application works as for any function.
+
+$ add : (a: @Int) -> (b: @Int) -> @Int = a + b
+$ chk_add : @Int = if add 2 3 == 5 => 0 else 1
+
+# A lambda binds the last parameter; the named one ahead of it is bound by name.
+$ scale : (k: @Int) -> @Int -> @Int = \x => k * x
+$ chk_scale : @Int = if scale 4 5 == 20 => 0 else 1
+
+# A function-typed parameter, and partial application.
+$ twice : (f: @Int -> @Int) -> (x: @Int) -> @Int = f (f x)
+$ add5 : @Int -> @Int = add 5
+$ chk_twice : @Int = if twice add5 0 == 10 => 0 else 1
+
+# A thunk after a named parameter: `{}` binds nothing.
+$ later : (n: @Int) -> {} -> @Int = n + 1
+$ chk_later : @Int = if later 6 {} == 7 => 0 else 1
+
+$ test : @Int = chk_add + chk_scale + chk_twice + chk_later
+
+$ &assert (test == 0) "NAMED_PARAMS: a check failed"

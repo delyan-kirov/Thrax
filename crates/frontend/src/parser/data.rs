@@ -65,6 +65,8 @@ pub struct Ast {
     pub ty_spans: SecondaryMap<Ty, Span>,
     /// Source span of each `Pattern` node, for diagnostics on match arms.
     pub pat_spans: SecondaryMap<Pattern, Span>,
+    /// Source span of the name of each named-parameter arrow `(x: A) -> B`.
+    pub binder_spans: SecondaryMap<Ty, Span>,
 }
 
 /// An element type stored in a run: names the [`Store`] on the [`Ast`] that holds
@@ -171,12 +173,16 @@ impl Ast {
             }
             Ty::App(head, arg) => wrap(format!("{} {}", self.ty_src(*head, 1)?, self.ty_src(*arg, 2)?), 1),
             Ty::MetaE(_) => return None,
-            Ty::Arrow { from, effect, to } => {
+            Ty::Arrow { binder, from, effect, to } => {
                 let row = match effect {
                     Some(row) => format!("{} ", self.row_src(row)?),
                     None => String::new(),
                 };
-                wrap(format!("{} -> {row}{}", self.ty_src(*from, 1)?, self.ty_src(*to, 0)?), 0)
+                let from = match binder {
+                    Some(x) => format!("({x}: {})", self.ty_src(*from, 0)?),
+                    None => self.ty_src(*from, 1)?,
+                };
+                wrap(format!("{from} -> {row}{}", self.ty_src(*to, 0)?), 0)
             }
             Ty::Unit => "{}".to_string(),
             Ty::Tuple(items) => {
@@ -399,7 +405,10 @@ pub enum Ty {
     /// substitutes the resulting type source at this node's span, and re-parses.
     MetaE(Aol<Expr>),
     /// A function type `From -> To`, optionally carrying an effect row.
+    /// `binder` names the parameter of `(x: From) -> To`; a definition's body
+    /// sees it bound, like a record parameter's fields.
     Arrow {
+        binder: Option<StrId>,
         from: Aol<Ty>,
         effect: Option<EffectRow>,
         to: Aol<Ty>,

@@ -105,6 +105,11 @@ pub struct Checker<'a> {
     ast: &'a Ast,
     unifier: Unifier,
     scopes: Vec<HashMap<StrId, Type>>,
+    /// Where each local of `scopes` was bound, parallel to it, for the binders
+    /// whose name has a span.
+    local_sites: Vec<HashMap<StrId, Span>>,
+    /// Each reference to a local, with the span of the binder it names.
+    local_refs: HashMap<Aol<Expr>, Span>,
     structs: HashMap<StrId, StructInfo>,
     unions: HashMap<StrId, UnionInfo>,
     /// Which slots of a declared type hold their value lazily, keyed by
@@ -487,6 +492,8 @@ impl<'a> Checker<'a> {
             ast,
             unifier,
             scopes: vec![HashMap::new()],
+            local_sites: vec![HashMap::new()],
+            local_refs: HashMap::new(),
             structs: HashMap::new(),
             unions: HashMap::new(),
             lazy_slots: HashMap::new(),
@@ -1000,6 +1007,7 @@ impl<'a> Checker<'a> {
     ) {
         self.unifier.unwind_level(level);
         self.scopes.truncate(1);
+        self.local_sites.truncate(1);
         self.pending.clear();
         self.ctx_pending.clear();
         self.current_sig = None;
@@ -1158,6 +1166,29 @@ impl<'a> Checker<'a> {
 
     /// The type inferred for expression `e`, as a user reads it, when types were
     /// recorded and `e` was checked.
+    /// Where the local that reference `e` names was bound, when its binder
+    /// has a span. Recorded only for tools, alongside [`Self::expr_type`].
+    pub fn local_definition(&self, e: Aol<Expr>) -> Option<Span> {
+        self.local_refs.get(&e).copied()
+    }
+
+    /// Remember the binder of local `name` that reference `site` names: the
+    /// innermost scope binding it decides, as [`Self::lookup`] does.
+    fn note_local_ref(&mut self, name: StrId, site: Aol<Expr>) {
+        if self.expr_types.is_none() {
+            return;
+        }
+        let Some(depth) = self.scopes.iter().rposition(|s| s.contains_key(&name)) else {
+            return;
+        };
+        if depth == 0 {
+            return;
+        }
+        if let Some(span) = self.local_sites[depth].get(&name).copied() {
+            self.local_refs.insert(site, span);
+        }
+    }
+
     pub fn expr_type(&self, e: Aol<Expr>) -> Option<String> {
         let t = *self.expr_types.as_ref()?.get(&e)?;
         Some(self.show(self.unifier.zonk(t)))
@@ -1258,6 +1289,17 @@ impl<'a> Checker<'a> {
     /// is an error rather than a silent rebinding. Imported names may still be
     /// shadowed: a library adding a name must not break its importers.
     fn bind_local(&mut self, name: StrId, ty: Type) -> Result<()> {
+        self.bind_local_at(name, ty, None)
+    }
+
+    /// Bind a local, remembering where its binder stands so a reference can
+    /// lead back to it (the editor's go-to-definition).
+    fn bind_local_at(&mut self, name: StrId, ty: Type, site: Option<Span>) -> Result<()> {
+        let sites = self.local_sites.last_mut().expect("the global scope");
+        match site {
+            Some(span) => sites.insert(name, span),
+            None => sites.remove(&name),
+        };
         debug_assert!(self.scopes.len() > 1, "a local binder outside any local scope");
         if self.local_defs.contains(&name) {
             return Err(diag!(
@@ -1285,10 +1327,12 @@ impl<'a> Checker<'a> {
 
     fn enter_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.local_sites.push(HashMap::new());
     }
 
     fn leave_scope(&mut self) {
         self.scopes.pop();
+        self.local_sites.pop();
         debug_assert!(!self.scopes.is_empty(), "popped the global scope");
     }
 }

@@ -1,0 +1,5 @@
+$ @mod PARSE_NAMED_PARAM_DEPENDENT
+
+# A result type that names the parameter is a dependent function type, which
+# needs the elaborator of #406; until then a lowercase name is a type variable.
+$ len : (n: @Nat) -> @Tensor n @Int = ???  #~ error[UNEXPECTED_TOKEN]: the result type names the parameter `n`

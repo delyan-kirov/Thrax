@@ -148,6 +148,26 @@ impl<'a> Checker<'a> {
         if self.leading_lam_params(body) >= self.arrow_arity_ty(sig) {
             return self.check(body, sig_ty);
         }
+        // A named parameter `(x: A) -> B` binds `x` in the body.
+        if let Ty::Arrow { binder: Some(name), from, to, .. } = *self.tnode(sig) {
+            let (param_ty, result_ty, eff) = self.arrow_parts(sig_ty)?;
+            self.enter_scope();
+            let site = self.ast.binder_spans.get(sig).copied();
+            let out = self
+                .bind_local_at(name, param_ty, site)
+                .map_err(|d| match self.ast.ty_span(from) {
+                    Some(span) => d.fill_span(span),
+                    None => d,
+                })
+                .and_then(|_| {
+                    let saved = std::mem::replace(&mut self.ambient, eff);
+                    let out = self.check_body_against_sig(body, to, result_ty);
+                    self.ambient = saved;
+                    out
+                });
+            self.leave_scope();
+            return out;
+        }
         let fields: &[RecField] = match self.tnode(sig) {
             Ty::Arrow { from, .. } => match self.tnode(*from) {
                 // A CLOSED record parameter is the destructuring sugar; an open
@@ -478,7 +498,20 @@ impl<'a> Checker<'a> {
                     .union_head_with_tag(expected, tag)
                     .expect("guarded above");
                 let fields = self.ast.slice(*fields);
-                let got = self.infer_variant(Some(uname), tag, fields)?;
+                let got = self.infer_variant(Some(uname), tag, fields, Some(expected))?;
+                self.unifier
+                    .unify_expected(got, expected, "against the expected type")
+            }
+            // A qualified `Union.Tag.{ .. }` takes its parameters from the
+            // expected type.
+            Expr::Variant { module, ty: Some(ty), tag, fields } if self.pushes_into_call(expected) => {
+                let (module, ty, tag) = (*module, *ty, *tag);
+                if let Some(d) = self.unqualified_alias_ctor(module, Some(ty), tag) {
+                    let span = self.ast.expr_span(e).unwrap_or(Span::at(0));
+                    return Err(d.fill_span(span));
+                }
+                let fields = self.ast.slice(*fields);
+                let got = self.infer_variant(Some(ty), tag, fields, Some(expected))?;
                 self.unifier
                     .unify_expected(got, expected, "against the expected type")
             }
@@ -494,6 +527,49 @@ impl<'a> Checker<'a> {
                 self.check_cast(arg, expected)?;
                 if let Some(width) = self.sized_width(expected) {
                     self.cast_widths.insert(e, width);
+                }
+                Ok(())
+            }
+            // A call knows its result before its arguments: `id 3 : Big`.
+            Expr::App(..) if self.pushes_into_call(expected) => {
+                let got = self.app(e, Some(expected))?;
+                self.unifier.unify_expected(got, expected, "against the expected type")
+            }
+            // `f <| x` is the call `f x`.
+            Expr::BinOp { op, lhs, rhs } if op.as_str() == "<|" && self.pushes_into_call(expected) => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                let tf = self.infer(lhs)?;
+                let got = self.apply_args(lhs, tf, &[rhs], Some(expected))?;
+                self.unifier.unify_expected(got, expected, "against the expected type")
+            }
+            // `x |> f` is the call `f x`. A literal `x` is checked after `f`, so
+            // it sees the parameter `f` declares (`3 |> id : Big`); any other
+            // `x` goes first, as in inference, and `f` is checked against a
+            // function from its type to the expected one.
+            Expr::BinOp { op, lhs, rhs } if op.as_str() == "|>" && self.pushes_into_call(expected) => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                if self.is_literal(lhs) {
+                    let tf = self.infer(rhs)?;
+                    let got = self.apply_args(rhs, tf, &[lhs], Some(expected))?;
+                    return self.unifier.unify_expected(got, expected, "against the expected type");
+                }
+                let tx = self.infer(lhs)?;
+                let eff = self.unifier.fresh();
+                let want = self.unifier.types.arrow_eff(tx, expected, eff);
+                self.check(rhs, want)?;
+                let amb = self.ambient;
+                self.unifier.subrow(eff, amb, "in an application")
+            }
+            // A tuple checks each item against its component.
+            Expr::Tuple(items)
+                if matches!(self.unifier.head(expected), TypeNode::Tuple(ts)
+                    if self.unifier.types.items(ts).len() == self.ast.slice(*items).len()) =>
+            {
+                let items = self.ast.slice(*items);
+                let TypeNode::Tuple(ts) = self.unifier.head(expected) else { unreachable!("guarded") };
+                let ts = self.unifier.types.items(ts).to_vec();
+                for (item, t) in items.iter().zip(ts) {
+                    self.check(*item, t)?;
                 }
                 Ok(())
             }
@@ -971,7 +1047,7 @@ impl<'a> Checker<'a> {
                     return Err(d.fill_span(span));
                 }
                 let fields = self.ast.slice(*fields);
-                self.infer_variant(ty, tag, fields)
+                self.infer_variant(ty, tag, fields, None)
             }
 
             Expr::Array { size } => {
@@ -1259,6 +1335,13 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn infer_app(&mut self, e: Aol<Expr>) -> Result<Type> {
+        self.app(e, None)
+    }
+
+    /// Type a call `f a b ...`: infer the head, then check each argument
+    /// against its parameter. With `expected`, the call's result is known
+    /// before its arguments are checked.
+    fn app(&mut self, e: Aol<Expr>, expected: Option<Type>) -> Result<Type> {
         let mut args_rev = Vec::new();
         let mut head = e;
         while let Expr::App(f, x) = self.node(head) {
@@ -1326,14 +1409,30 @@ impl<'a> Checker<'a> {
             }
         }
 
-        let mut tf = self.infer(head)?;
+        let tf = self.infer(head)?;
         if let Some(uses) = self.ctx_override.remove(&head) {
             return Err(self.use_without_fields(head, &uses));
         }
+        self.apply_args(head, tf, &args, expected)
+    }
+
+    /// Apply a callee of type `tf` to `args`, checking each argument against
+    /// its parameter. An expected result is pushed into the callee first (see
+    /// [`Self::expect_result`]).
+    fn apply_args(
+        &mut self,
+        head: Aol<Expr>,
+        mut tf: Type,
+        args: &[Aol<Expr>],
+        expected: Option<Type>,
+    ) -> Result<Type> {
+        if let Some(expected) = expected {
+            self.expect_result(tf, args.len(), expected);
+        }
         let mut callee = head;
-        for a in &args {
+        for a in args {
             if self.unifier.resolve(tf) == self.unifier.types.error() {
-                for a in &args {
+                for a in args {
                     self.infer(*a)?;
                 }
                 return Ok(tf);
@@ -1354,6 +1453,41 @@ impl<'a> Checker<'a> {
             tf = result;
         }
         Ok(tf)
+    }
+
+    /// Unify the result of applying `tf` to `n` arguments with `expected`
+    /// before the arguments are checked, so the parameters it fixes reach them:
+    /// `id 3 : Big` checks `3` against `Big` and builds it through `@IIntLit`
+    /// (Pierce and Turner's local type inference). It is tentative: a callee
+    /// that is not a function of `n` arguments, or a result that does not fit,
+    /// binds nothing, and the mismatch is reported against the whole call.
+    fn expect_result(&mut self, tf: Type, n: usize, expected: Type) {
+        if !self.pushes_into_call(expected) {
+            return;
+        }
+        let save = self.unifier.save();
+        let mut t = tf;
+        for _ in 0..n {
+            let callable = self.unifier.resolve(t) != self.unifier.types.error()
+                && matches!(self.unifier.head(t), TypeNode::Var(_) | TypeNode::Arrow(..));
+            if !callable {
+                return self.unifier.restore(save);
+            }
+            match self.arrow_parts(t) {
+                Ok((_, result, _)) => t = result,
+                Err(_) => return self.unifier.restore(save),
+            }
+        }
+        if self.unifier.unify(t, expected, "against the expected type").is_err() {
+            self.unifier.restore(save);
+        }
+    }
+
+    /// Whether an expected type says enough to push into a call. A variable
+    /// says nothing, and a record keeps the promotion `check` applies to the
+    /// whole call (`foo (f x)` wraps a scalar result into `foo`'s record).
+    fn pushes_into_call(&self, expected: Type) -> bool {
+        !matches!(self.unifier.head(expected), TypeNode::Var(_) | TypeNode::Record(_))
     }
 
     /// An argument whose effect is not handled, where the call returns a
@@ -1405,7 +1539,7 @@ impl<'a> Checker<'a> {
             Pattern::Var(name) => {
                 let name = *name;
                 let v = self.unifier.fresh();
-                self.bind_local(name, v).map_err(|d| match self.ast.pat_span(b.pat) {
+                self.bind_local_at(name, v, self.ast.pat_span(b.pat)).map_err(|d| match self.ast.pat_span(b.pat) {
                     Some(span) => d.fill_span(span),
                     None => d,
                 })?;
@@ -1452,6 +1586,9 @@ impl<'a> Checker<'a> {
         name: StrId,
         site: Aol<Expr>,
     ) -> Result<Type> {
+        if module.is_none() {
+            self.note_local_ref(name, site);
+        }
         if module.is_none() && name == crate::lexer::HOLE {
             let t = self.unifier.fresh();
             let locals = self.scopes[1..].iter().flat_map(|s| s.iter().map(|(n, t)| (*n, *t))).collect();
@@ -1858,6 +1995,7 @@ impl<'a> Checker<'a> {
         ty: Option<StrId>,
         tag: StrId,
         fields: &'a [FieldInit],
+        expected: Option<Type>,
     ) -> Result<Type> {
         let union = match ty {
             Some(n) => Some(n),
@@ -1885,6 +2023,15 @@ impl<'a> Checker<'a> {
                 ),
             });
         };
+        // Pin the union's parameters to the expected type before the fields are
+        // checked, so `Option.Some.{ 1 } : Option Big` checks `1` against `Big`.
+        // A union that does not fit binds nothing; the caller reports it.
+        if let Some(expected) = expected {
+            let save = self.unifier.save();
+            if self.unifier.unify(result, expected, "against the expected type").is_err() {
+                self.unifier.restore(save);
+            }
+        }
         let label = variant_label(union, tag);
         let mut covered = vec![false; payload.len()];
         for (i, fi) in fields.iter().enumerate() {
@@ -2357,7 +2504,7 @@ pub(super) fn sig_var_sites(
             sig_var_sites(ast, *a, span, out, tails);
             sig_var_sites(ast, *b, span, out, tails);
         }
-        Ty::Arrow { from, effect, to } => {
+        Ty::Arrow { from, effect, to, .. } => {
             sig_var_sites(ast, *from, span, out, tails);
             if let Some(effect) = effect {
                 row(effect, out, tails);

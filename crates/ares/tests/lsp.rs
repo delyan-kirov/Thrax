@@ -294,6 +294,63 @@ fn unsaved_sibling_buffer_is_a_module() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// A local leads to its binder: a named parameter `(a: A) ->` to its name, and
+// a name an inner lambda rebinds to that lambda's parameter. Hover shows a
+// named parameter's type at its use.
+#[test]
+fn local_definition_and_named_parameters() {
+    let dir = std::env::temp_dir().join(format!("ares-lsp-locals-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("LOCALS.ares");
+    let src = "$ @mod LOCALS\n\n$ add : (a: @Int) -> (b: @Int) -> @Int = a + b\n$ inner : (x: @Int) -> @Int = (\\x => x) 1 + x\n";
+    std::fs::write(&path, src).unwrap();
+    let path = path.canonicalize().unwrap();
+    let uri = ares::lsp::path_to_uri(&path);
+
+    let mut c = Client::start();
+    c.request(
+        "initialize",
+        Json::obj([
+            ("capabilities", Json::obj([("general", Json::obj([("positionEncodings", Json::Arr(vec![Json::str("utf-8")]))]))])),
+            ("initializationOptions", Json::obj([("lsp", Json::obj([("grace", Json::Bool(false))]))])),
+        ]),
+    );
+    c.notify("initialized", Json::obj([]));
+    c.notify(
+        "textDocument/didOpen",
+        Json::obj([(
+            "textDocument",
+            Json::obj([
+                ("uri", Json::str(uri.clone())),
+                ("languageId", Json::str("ares")),
+                ("version", Json::int(1)),
+                ("text", Json::str(src)),
+            ]),
+        )]),
+    );
+    let diags = c.diagnostics(&uri);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    let at = |c: &mut Client, line: i64, col: i64| {
+        let def = c.request("textDocument/definition", Json::obj([("textDocument", doc(&uri)), ("position", pos(line, col))]));
+        assert_eq!(def.get("uri").as_str(), Some(uri.as_str()), "{def}");
+        let start = def.get("range").get("start");
+        (start.get("line").as_i64().unwrap(), start.get("character").as_i64().unwrap())
+    };
+    assert_eq!(at(&mut c, 2, 41), (2, 9), "`a` leads to its named parameter");
+    assert_eq!(at(&mut c, 3, 37), (3, 32), "the lambda's `x` leads to the lambda");
+    assert_eq!(at(&mut c, 3, 44), (3, 11), "the outer `x` leads to the named parameter");
+
+    let hover = c.request("textDocument/hover", Json::obj([("textDocument", doc(&uri)), ("position", pos(2, 41))]));
+    let shown = hover.get("contents").get("value").as_str().unwrap_or("");
+    assert!(shown.contains("a : @Int"), "{hover}");
+
+    c.request("shutdown", Json::Null);
+    c.notify("exit", Json::Null);
+    assert!(c.child.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // A module that cannot be loaded leaves nothing to check, but the editor still
 // hears why: at the import that names it, or at the root's import it is
 // reached through.

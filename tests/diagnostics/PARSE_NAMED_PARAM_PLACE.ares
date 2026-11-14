@@ -1,0 +1,4 @@
+$ @mod PARSE_NAMED_PARAM_PLACE
+
+# A named parameter stands only left of an arrow.
+$ bad : List (x: @Int) = ???  #~ error[UNEXPECTED_TOKEN]: a named parameter `(x: ...)` stands only before `->`

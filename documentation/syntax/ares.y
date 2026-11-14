@@ -255,7 +255,8 @@ expr
    * `a -> (b -> c)`, and `a |> f -> b` is `(a |> f) -> b`. An effect row may
    * follow the arrow (`a -> <@IO> b`); `<` and `<|` cannot start an operand,
    * so the row is unambiguous. A `@use` parameter stands only left of an
-   * arrow. */
+   * arrow. An ascribed name left of an arrow names the parameter,
+   * `(x: A) -> B`; in a signature the body sees `x` bound. */
   | op_expr ARROW expr
   | op_expr ARROW eff_row expr
   | use_param ARROW expr
