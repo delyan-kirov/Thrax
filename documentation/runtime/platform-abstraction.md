@@ -482,8 +482,8 @@ is shared; a new platform implements only `call`.
   statically by default (`--libc=musl|gnu`, [`Target::default_libc`]); macOS,
   Windows and wasm have one C library each and take no choice. The musl
   sysroot is `$ARES_MUSL` or the `lib/musl` a release compiler ships (built by
-  `thrax build release` from `external/musl`, a gitignored checkout of a pinned
-  musl tag). The system gcc is pointed at it through a generated GCC specs file
+  `thrax build release` from `external/musl`, a git subtree of musl v1.2.5).
+  The system gcc is pointed at it through a generated GCC specs file
   ([`musl_specs`]), the way `musl-gcc` works but without baked-in paths, so the
   install is relocatable. Without a sysroot (a debug compiler), or when the
   program links a shared library (an `@extern` `.so`, or libares for a program

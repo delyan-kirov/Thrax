@@ -15,7 +15,6 @@ result
 target
 !/crates/utilities/src/target/
 artifacts
-external/musl
 
 # Written by `thrax tags` (tools/editors/TAGS.ares)
 /tags
