@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use utilities::{Applicability, Code, Edit, Span};
 
 /// The explanation of every diagnostic code, one `## CODE` section each.
-const EXPLANATIONS: &str = include_str!("../../../documentation/errors.md");
+const EXPLANATIONS: &str = include_str!("../../../documentation/tooling/errors.md");
 
 fn style(path: &Path) -> frontend::format::Style {
     let config = crate::driver::project_options(path.parent().unwrap_or(Path::new("")));
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn every_code_is_explained() {
         for c in ALL_CODES {
-            assert!(explanation(c.name()).is_some(), "documentation/errors.md has no `## {}`", c.name());
+            assert!(explanation(c.name()).is_some(), "documentation/tooling/errors.md has no `## {}`", c.name());
         }
     }
 }

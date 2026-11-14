@@ -3,7 +3,7 @@ $ @mod ARRAY_PATTERNS
 # \info Type-directed `[..]` patterns on an @Array (a byte vector). The SAME
 #       bracket syntax as list patterns; the scrutinee's inferred type picks the
 #       lowering -- a length test + `@array_get`/`@array_slice` here, cons/nil for
-#       a @Vec. `::` stays @Vec-only. See documentation/strings-and-arrays.md phase 6b.
+#       a @Vec. `::` stays @Vec-only. See documentation/language/strings-and-arrays.md phase 6b.
 
 $ emptA : @Array = []
 $ arr2 : @Array = [10, 20]

@@ -77,7 +77,7 @@ there is no Pair type.
 | `PATH` | POSIX paths, pure Str: `basename`, `dirname`, `extension`, `strip_ext`, `join`, `parts`, `is_abs` |
 | `VEC`  | `Vec \`T` (growable vector, O(1) access); `new`, `fill`, `len`, `is_empty`, `get`, `get_or`, `set`, `push`, `last`, `from_list`, `to_list`, `map`, `fold` |
 | `ASYNC` | concurrency on one thread: the `Async` effect (`spawn`, `yield`, `chan`, `send`, `recv`; channels carry `@Int`) and `run_async`, a structured round-robin scheduler returning `Option` of `main`'s result (`None` on deadlock) |
-| `PAR`  | parallel tasks: `Future \`B`, `par` (pure task), `spawn` (task that may perform `@IO`), `get`, `both`; over `@Vec`: `map`, `formap`, `map_chunks`, `reduce` (see documentation/concurrency-design.md) |
+| `PAR`  | parallel tasks: `Future \`B`, `par` (pure task), `spawn` (task that may perform `@IO`), `get`, `both`; over `@Vec`: `map`, `formap`, `map_chunks`, `reduce` (see documentation/language/concurrency-design.md) |
 | `CPX`  | complex math over CORE's `Cpx`: `zero`, `one`, `add`, `mul`, `re`, `im`, `of_real`, `conj`, `abs`, `norm`, `arg`, `is_real`, `is_zero`, `scale`, `recip`, `div_smith`, `polar`, `from_polar`, `exp`, `log`, `sqrt`, `pow`, `powi`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `roots_of_unity`, `roots` |
 
 `@IO` is the one builtin effect, the outside world, and every IO function and
@@ -101,7 +101,7 @@ tuples, for tuple-keyed maps: `new (cmp_pair cmp_int cmp_str)` orders a
 `Map {@Int, Str} \`V`. Maps are values: `insert`/`remove` return an updated
 copy and never disturb the original -- structural sharing makes that cheap
 (path copying only). A MUTABLE hash table (Rust/Jai flavor) is future work,
-now unblocked by `Vec`; see documentation/stdlib-design.md.
+now unblocked by `Vec`; see documentation/library/stdlib-design.md.
 
 ### The vector
 
@@ -204,7 +204,7 @@ requirement, by type, over a flat instance index.
 
 ## Future work
 
-See documentation/stdlib-design.md for the full inventory-driven roadmap (Koka/Jai
+See documentation/library/stdlib-design.md for the full inventory-driven roadmap (Koka/Jai
 module surveys, the mutable hash table, tuples, SET/PATH/DIR/PROCESS/...).
 Smaller items:
 

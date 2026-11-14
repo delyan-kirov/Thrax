@@ -4,7 +4,7 @@
 //! A definition is a line comment whose whole text is `Note [Title]`. A
 //! reference is `See Note [Title]` anywhere in a comment, on one line. Any other
 //! `Note [` in a comment is reported, so a misspelled reference fails instead
-//! of reading as prose. The convention is in `documentation/compiler-style.md`.
+//! of reading as prose. The convention is in `documentation/tooling/compiler-style.md`.
 //!
 //! This file is skipped by the scan: its own fixtures would trip it.
 

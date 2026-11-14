@@ -48,7 +48,7 @@ fn set_validates_too() {
 
 #[test]
 fn every_option_is_documented() {
-    let reference = include_str!("../../../../documentation/language-reference.md");
+    let reference = include_str!("../../../../documentation/language/language-reference.md");
     for k in KEYS {
         let full = format!("`{}.{}`", k.section, k.name);
         assert!(reference.contains(&full), "{full} is missing from the language reference");

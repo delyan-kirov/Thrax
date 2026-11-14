@@ -3,7 +3,7 @@
 > **Current spelling.** Stages 0-5 below built this family as overloadable
 > `@compiler_interface_*` FUNCTIONS. Issue #213 removed overloading, so each one is
 > now a blessed interface TYPE whose single field the compiler projects; Stage 6 at
-> the bottom records the migration and `documentation/interfaces.md` has the rules.
+> the bottom records the migration and `documentation/language/interfaces.md` has the rules.
 > The stage history is kept as written, with the old names, because it is a log.
 
 ## Goal

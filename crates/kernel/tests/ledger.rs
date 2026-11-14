@@ -1,7 +1,7 @@
-//! The theory ledger checker: `documentation/theory/LEDGER.md` and the
+//! The theory ledger checker: `documentation/type-theory/LEDGER.md` and the
 //! `// Rule [Name]`, `// Algorithm [Name]` and `// Test [Name]` tags in the
 //! workspace's Rust sources must agree, and every vendored source must be in
-//! `documentation/theory/references` with the hash the ledger gives.
+//! `documentation/type-theory/references` with the hash the ledger gives.
 //!
 //! A tag is a line comment whose whole text is `Rule [Name]` or
 //! `Algorithm [Name]`, beside the code that implements it, or `Test [Name]`,
@@ -11,8 +11,13 @@
 //! reference is `See Rule [Name]` (or `Algorithm`, `Test`) anywhere in a
 //! comment, on one line. Any other `Rule [`, `Algorithm [` or `Test [` in a
 //! comment is reported, so a misspelled tag fails instead of reading as
-//! prose. The rules the ledger must
-//! satisfy are listed at its top.
+//! prose.
+//!
+//! The Lean proofs under `documentation/type-theory/consistency-proof/` tag the constructor that states a rule
+//! with a line that starts `-- Rule [Name]`, where prose may follow after a
+//! `:` or `,`. A rule covered by a theorem whose proof is `Lean` must be
+//! tagged there, and a Lean tag must name such a rule. The rules the ledger
+//! must satisfy are listed at its top.
 //!
 //! This file is skipped by the scan: its own fixtures would trip it.
 
@@ -76,6 +81,8 @@ struct Tags {
     malformed: Vec<(String, String)>,
     /// The text after each `// Test [Name]` tag, up to the next one.
     test_bodies: Vec<(String, String, String)>,
+    /// `-- Rule [Name]` and `-- Algorithm [Name]` in the Lean proofs.
+    lean: BTreeMap<(String, String), Vec<String>>,
 }
 
 const KINDS: [&str; 3] = ["Rule", "Algorithm", "Test"];
@@ -127,6 +134,24 @@ impl Tags {
     }
 }
 
+impl Tags {
+    fn scan_lean(&mut self, file: &str, src: &str) {
+        for (i, line) in src.lines().enumerate() {
+            let site = format!("{file}:{}", i + 1);
+            let Some(text) = line.trim().strip_prefix("-- ") else { continue };
+            for kind in ["Rule", "Algorithm"] {
+                let Some(after) = text.strip_prefix(kind).and_then(|t| t.strip_prefix(" [")) else { continue };
+                match after.split_once(']') {
+                    Some((name, rest)) if !name.is_empty() && (rest.is_empty() || rest.starts_with([':', ','])) => {
+                        self.lean.entry((kind.to_string(), name.to_string())).or_default().push(site.clone());
+                    }
+                    _ => self.malformed.push((text.to_string(), site.clone())),
+                }
+            }
+        }
+    }
+}
+
 /// Every violation, one line each.
 fn problems(ledger: &str, tags: &Tags, references: Option<&Path>) -> Vec<String> {
     let tables = parse_tables(ledger);
@@ -167,9 +192,13 @@ fn problems(ledger: &str, tags: &Tags, references: Option<&Path>) -> Vec<String>
     };
 
     let mut theorems = BTreeSet::new();
+    let mut in_lean = BTreeSet::new();
     for row in table("Theorems") {
         let name = &row["Theorem"];
         theorems.insert(name.clone());
+        if row["Proof"] == "Lean" {
+            in_lean.insert(name.clone());
+        }
         cites(&mut out, &format!("theorem {name}"), &row["Source"]);
         if !PROOFS.contains(&row["Proof"].as_str()) {
             out.push(format!("theorem {name}: proof kind `{}` is not one of {PROOFS:?}", row["Proof"]));
@@ -193,13 +222,14 @@ fn problems(ledger: &str, tags: &Tags, references: Option<&Path>) -> Vec<String>
             if issue != "-" && !is_issue(issue) {
                 out.push(format!("{what}: issue `{issue}` is not `#N`"));
             }
-            if matches!(status, "deviation" | "conjecture") && !is_issue(issue) {
+            let covered = row.get("Covered by").map(|c| list(c)).unwrap_or_default();
+            let proved = status == "deviation" && !covered.is_empty();
+            if matches!(status, "deviation" | "conjecture") && !is_issue(issue) && !proved {
                 out.push(format!("{what} is a {status} and names no issue"));
             }
             if status != "conjecture" && list(&row["Source"]).is_empty() {
                 out.push(format!("{what} is {status} and cites no source"));
             }
-            let covered = row.get("Covered by").map(|c| list(c)).unwrap_or_default();
             for t in &covered {
                 if !theorems.contains(t) {
                     out.push(format!("{what} is covered by theorem {t}, which the ledger does not list"));
@@ -217,6 +247,19 @@ fn problems(ledger: &str, tags: &Tags, references: Option<&Path>) -> Vec<String>
             }
             if kind == "Rule" && row["Code"] == "yes" && !tags.implementations.contains_key(&("Test".to_string(), name.clone())) {
                 out.push(format!("{what} is implemented, but no test is tagged `// Test [{name}]`"));
+            }
+            if kind == "Rule" {
+                let lean_tagged = tags.lean.get(&(kind.to_string(), name.clone()));
+                match (covered.iter().find(|t| in_lean.contains(*t)), lean_tagged) {
+                    (Some(t), None) => out.push(format!("{what} is covered by {t}, but no `-- {kind} [{name}]` tag exists in the Lean proofs")),
+                    (None, Some(sites)) => out.push(format!("{}: `-- {kind} [{name}]` is tagged, but no Lean theorem covers it", sites[0])),
+                    _ => {}
+                }
+            }
+        }
+        for ((k, name), sites) in &tags.lean {
+            if k == kind && !names.contains(name) {
+                out.push(format!("{}: `-- {kind} [{name}]` has no ledger entry", sites[0]));
             }
         }
         for ((k, name), sites) in &tags.implementations {
@@ -306,16 +349,17 @@ fn sha256_hex(data: &[u8]) -> String {
 
 // ## The workspace
 
-fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+/// The files under `dir` with extension `ext`, outside build directories.
+fn sources(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
         if path.is_dir() {
-            if path.file_name().is_some_and(|n| n == "target") {
+            if path.file_name().is_some_and(|n| n == "target" || n == ".lake") {
                 continue;
             }
-            rust_sources(&path, out);
-        } else if path.extension().is_some_and(|x| x == "rs") {
+            sources(&path, ext, out);
+        } else if path.extension().is_some_and(|x| x == ext) {
             out.push(path);
         }
     }
@@ -325,10 +369,10 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 fn the_ledger_and_the_code_agree() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let this = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ledger.rs").canonicalize().expect("this file");
-    let references = root.join("documentation/theory/references");
-    let ledger = std::fs::read_to_string(root.join("documentation/theory/LEDGER.md")).expect("the ledger exists");
+    let references = root.join("documentation/type-theory/references");
+    let ledger = std::fs::read_to_string(root.join("documentation/type-theory/LEDGER.md")).expect("the ledger exists");
     let mut files = Vec::new();
-    rust_sources(&root.join("crates"), &mut files);
+    sources(&root.join("crates"), "rs", &mut files);
     files.sort();
     let mut tags = Tags::default();
     for path in &files {
@@ -340,6 +384,14 @@ fn the_ledger_and_the_code_agree() {
         tags.scan(&name, &src);
     }
     assert!(!tags.implementations.is_empty(), "found no tags under crates/");
+    let mut proofs = Vec::new();
+    sources(&root.join("documentation/type-theory/consistency-proof"), "lean", &mut proofs);
+    proofs.sort();
+    for path in &proofs {
+        let src = std::fs::read_to_string(path).expect("readable");
+        tags.scan_lean(&path.strip_prefix(&root).unwrap_or(path).display().to_string(), &src);
+    }
+    assert!(!tags.lean.is_empty(), "found no tags under documentation/type-theory/consistency-proof/");
     let problems = problems(&ledger, &tags, Some(&references));
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
@@ -434,6 +486,25 @@ fn checker_reports_an_untested_rule_and_a_one_sided_test() {
     let found = problems(LEDGER, &scanned(&[("a.rs", "// Rule [Beta]\n// Algorithm [Walk]\n"), ("t.rs", one_sided)]), None);
     assert!(found.iter().any(|p| p.contains("t.rs:1: the test of Rule [Beta] never calls `blocked(..)`")), "{found:?}");
     assert!(found.iter().any(|p| p.contains("t.rs:3: `// Test [Gamma]` names no rule")), "{found:?}");
+}
+
+#[test]
+fn checker_matches_lean_tags_to_lean_theorems() {
+    let ledger = LEDGER
+        .replace("| P Normalisation | P | Thm 1 | all of it | Agda |", "| P Normalisation | P | Thm 1 | all of it | Agda |\n| L Consistency | - | x.lean | all of it | Lean |")
+        .replace("| published | P Normalisation | - | yes |", "| published | P Normalisation, L Consistency | - | yes |");
+    let rust = [("a.rs", "// Rule [Beta]\nfn beta() {}\n// Algorithm [Walk]\n"), ("t.rs", TESTED)];
+    let mut tags = scanned(&rust);
+    tags.scan_lean("x.lean", "  -- Rule [Beta]: the redex\n");
+    assert_eq!(problems(&ledger, &tags, None), Vec::<String>::new());
+    let untagged = problems(&ledger, &scanned(&rust), None);
+    assert!(untagged.iter().any(|p| p.contains("Rule [Beta] is covered by L Consistency, but no `-- Rule [Beta]`")), "{untagged:?}");
+    let mut stray = scanned(&rust);
+    stray.scan_lean("x.lean", "-- Rule [Beta]\n-- Rule [Odd]\n-- Rule [Gamma]\n-- Rule [Beta] here\n");
+    let found = problems(&ledger, &stray, None);
+    assert!(found.iter().any(|p| p.contains("x.lean:2: `-- Rule [Odd]` is tagged, but no Lean theorem")), "{found:?}");
+    assert!(found.iter().any(|p| p.contains("x.lean:3: `-- Rule [Gamma]` has no ledger entry")), "{found:?}");
+    assert!(found.iter().any(|p| p.starts_with("x.lean:4:")), "{found:?}");
 }
 
 #[test]

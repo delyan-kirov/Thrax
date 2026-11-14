@@ -24,7 +24,7 @@ ergonomically but **without** giving up value semantics. Concretely:
 
 ## Mutation model: opportunistic in-place (rc == 1)
 
-The language is pure and reference-counted (see `native-backend.md`, the RC work
+The language is pure and reference-counted (see `documentation/runtime/native-backend.md`, the RC work
 in #70). We keep it pure. A mutating built-in (`array_push`, `array_set`, `++`)
 **mutates its buffer in place when the value's refcount is 1, and copies-then-
 mutates otherwise**, "functional but in-place" (FBIP), as in Roc and Koka.
@@ -155,7 +155,7 @@ key *is* `array_push`, so emitting it post-TC dispatches correctly.
 > **Superseded.** `[a, ..rest]` is gone. The rest of a sequence is matched with
 > `++`, which also matches suffixes and both ends: `[a] ++ rest`, `rest ++ [z]`,
 > `[a] ++ mid ++ [z]`, at most one part of unknown length. See
-> documentation/language-reference.md 5.7 and `examples/SEQ_SPLIT.ares`.
+> documentation/language/language-reference.md 5.7 and `examples/SEQ_SPLIT.ares`.
 
 `[p1, .., pn, ..rest]` binds the leading cells and a `rest` tail (the remaining
 list), so it matches *at least* n elements; it is pure parser sugar

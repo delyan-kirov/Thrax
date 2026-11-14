@@ -1,7 +1,7 @@
 # Ares Effect System Design Decisions
 
 **Status:** design locked; typed effect rows (M3.1) are implemented on both
-engines (see the language reference, documentation/language-reference.md section 8, for the
+engines (see the language reference, documentation/language/language-reference.md section 8, for the
 surface syntax). Resumptions are **general** (multi-shot) since 2026-10-04, which
 revised section 2. The "OPEN" items and the rest of M3.2 (evidence passing /
 tail-resumptive) below remain future work.
@@ -712,7 +712,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     Go-style surface; desugars to the internal `%finally` intrinsic). `initially`
     and the stored-then-dropped case remain unaddressed.
   - Effect **surface syntax** **DECIDED 2026-06-27**; see section 12 and the
-    language reference (documentation/language-reference.md section 8). `@effect` declaration; `do ... ctl k ... is ... else
+    language reference (documentation/language/language-reference.md section 8). `@effect` declaration; `do ... ctl k ... is ... else
     ...`; no `perform` (call the operation), no `resume` (apply the first-class `k`);
     unit `{}`.
   - **Named handlers** vs pure effect-label dispatch; `mask`.
@@ -758,7 +758,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
 ## 12. Surface syntax (decided 2026-06-27)
 
 The M2 (untyped) surface. The current implemented surface is in the language
-reference (documentation/language-reference.md section 8). Chosen to reuse Ares's existing grammar and spend as few keywords as possible;
+reference (documentation/language/language-reference.md section 8). Chosen to reuse Ares's existing grammar and spend as few keywords as possible;
 the result is **closest to Flix**.
 
 - **Declaration.** `$ Eff : @effect = op : A -> B, ...` an `@effect` annotation

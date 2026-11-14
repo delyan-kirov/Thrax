@@ -35,13 +35,22 @@ jobs:
             ARES_BIN=./target/release/ares ./target/release/ares run tools/THRAX.ares corpus
           '
 
-      # documentation/ares.y is the written syntax standard; `%expect` fails the
+      # documentation/syntax/ares.y is the written syntax standard; `%expect` fails the
       # check when the conflict count moves.
       - name: Grammar spec
         run: |
           nix develop --command bash -c '
             set -e
-            bison -o /dev/null documentation/ares.y
+            bison -o /dev/null documentation/syntax/ares.y
+          '
+
+      # The kernel's consistency proof (#481), in Lean from the dev shell. Lake
+      # fails on any proof that does not check.
+      - name: Consistency proof
+        run: |
+          nix develop --command bash -c '
+            set -e
+            cd documentation/type-theory/consistency-proof && lake build
           '
 
   # The corpus compiled for wasm32-wasi with emscripten and run under node,

@@ -67,7 +67,7 @@ $ four : add (succ (succ zero)) (succ (succ zero)) ~ succ (succ (succ (succ zero
 
 Every rule the kernel implements, where it comes from, what theorem covers it
 and where it departs, is in the theory ledger,
-[`documentation/theory/LEDGER.md`](theory/LEDGER.md) (#472). The code tags
+[`documentation/type-theory/LEDGER.md`](LEDGER.md) (#472). The code tags
 each rule's implementation with `// Rule [Name]`, and
 `crates/kernel/tests/ledger.rs` keeps the two in step. The main departures:
 
@@ -87,7 +87,7 @@ through proofs (Lean's `#print axioms`). A script pins them with a
 
 ## 6. Next steps
 
-Plan step 2 is done: `documentation/ares.y` has one grammar for types and
+Plan step 2 is done: `documentation/syntax/ares.y` has one grammar for types and
 expressions, and every corpus file groups as it did under the separate type
 grammar (the parser in `crates/frontend` keeps its own type parser until step
 3). Step 3 grows the frontend's Algorithm W into a

@@ -14,7 +14,7 @@
 //! one constant (its max-plus normal form), where `<=` is read off directly.
 //! Lean 4's kernel does not do this: its `is_geq` is a syntactic check, sound
 //! but incomplete. The split has no source yet (the theory ledger,
-//! `documentation/theory/LEDGER.md`, lists it as a conjecture).
+//! `documentation/type-theory/LEDGER.md`, lists it as a conjecture).
 //! See Algorithm [Level comparison by case split].
 //!
 //! Kernel parameters range over every level, `0` included. The surface default

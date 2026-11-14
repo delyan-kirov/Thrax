@@ -25,6 +25,7 @@ $ Command : @union =
     Edit,
     Corpus,
     Grammar,
+    Proofs,
     TreeSitter,
     Tags,
     Fmt,
@@ -101,12 +102,17 @@ $ spec : Command -> Spec = \c =>
         | .Grammar       => Spec.{
             .name = "grammar",
             .usage = "",
-            .info = "check documentation/ares.y with bison (-v for counterexamples)",
+            .info = "check documentation/syntax/ares.y with bison (-v for counterexamples)",
+        }
+        | .Proofs        => Spec.{
+            .name = "proofs",
+            .usage = "",
+            .info = "check the kernel's consistency proof in documentation/type-theory/consistency-proof/ with Lean (#481)",
         }
         | .TreeSitter    => Spec.{
             .name = "tree-sitter",
             .usage = "",
-            .info = "generate the Helix grammar from documentation/ares.y\n"
+            .info = "generate the Helix grammar from documentation/syntax/ares.y\n"
                 ++ "(tools/editors/tree-sitter-ares, for Helix and Zed)",
         }
         | .Tags          => Spec.{
@@ -125,7 +131,7 @@ $ spec : Command -> Spec = \c =>
             .name = "hooks",
             .usage = "",
             .info = "use tools/hooks as this clone's git hooks (see\n"
-                ++ "documentation/workflow.md)",
+                ++ "documentation/tooling/workflow.md)",
         }
         | .Doc           => Spec.{
             .name = "doc",
@@ -291,7 +297,7 @@ $ comparable : @Vec @Str -> @Vec @Str -> @Vec @Str = \skip ls =>
 
 # `%expect` in the grammar is a tripwire: bison fails when the conflict count
 # moves, so a syntax change has to be accounted for in the spec.
-$ grammar_cmd : @Str = "bison -o /dev/null documentation/ares.y"
+$ grammar_cmd : @Str = "bison -o /dev/null documentation/syntax/ares.y"
 
 # The editor grammar: generated from the Bison spec by a Ares program, then
 # compiled to C by tree-sitter from the tools/editors flake (kept out of the
@@ -326,7 +332,10 @@ $ fmt_files : @Str = "$(git ls-files --recurse-submodules -- '*.ares' ':!:tests/
 $ fmt_cmd : @Bool -> @Str = \check =>
     "${ARES_BIN:-ares} fmt " ++ (if check => "--check " else "") ++ fmt_files
 
-$ grammar_verbose_cmd : @Str = "bison -Wcounterexamples -o /dev/null documentation/ares.y"
+# Lake builds every file of the proof; a failed proof fails the build.
+$ proofs_cmd : @Str = "cd documentation/type-theory/consistency-proof && lake build"
+
+$ grammar_verbose_cmd : @Str = "bison -Wcounterexamples -o /dev/null documentation/syntax/ares.y"
 
 $ doc_page : @Str = "target/doc/ares/index.html"
 
@@ -603,11 +612,15 @@ $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =>
         | .Hooks         =>
             step "hooks" hooks_cmd; println "thrax: git hooks installed from tools/hooks"
         | .Grammar =>
-            println "thrax: checking documentation/ares.y ...";
+            println "thrax: checking documentation/syntax/ares.y ...";
             if C.system grammar_cmd == 0 =>
                 println "thrax: grammar OK"
             else
                 C.system grammar_verbose_cmd; Fail.fail "grammar FAILED (counterexamples above)"
+        | .Proofs =>
+            println "thrax: checking documentation/type-theory/consistency-proof/ with Lean ...";
+            step "proofs" proofs_cmd;
+            println "thrax: proofs OK"
         | .Doc =>
             println "thrax: building rustdoc ...";
             step "doc" "cargo doc --workspace --no-deps";

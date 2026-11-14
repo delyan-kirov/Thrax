@@ -3,7 +3,7 @@
 **Status:** implemented (Rust port). Combined corpus (`tests/MAIN.ares`) links
 every `examples/*.ares` into one program and runs green on both the interpreter
 and the C backend. It names none of them: its `$ @build` reads the directory at
-compile time and generates the imports (see documentation/metaprogramming.md
+compile time and generates the imports (see documentation/language/metaprogramming.md
 section 10), so section 4's search runs on module names a metaprogram produced.
 
 **Scope:** how a name written in one module resolves to a definition when many

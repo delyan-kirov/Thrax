@@ -3,7 +3,7 @@ $ @mod HOOKS
 #-
  - \file HOOKS.ares
  - \info The git hooks, which tools/hooks/* hand to `thrax hook NAME ARGS`
- - \note documentation/workflow.md describes the workflow they add up to.
+ - \note documentation/tooling/workflow.md describes the workflow they add up to.
  -#
 
 $ @import IO
@@ -183,8 +183,8 @@ $ pre_commit : {} -> <@IO, Fail> {} = \u =>
             {}
     );
     (
-        if VEC.any (\f => f == "documentation/ares.y") staged =>
-            say "grammar check ..."; sh "bison -o /dev/null documentation/ares.y"
+        if VEC.any (\f => f == "documentation/syntax/ares.y") staged =>
+            say "grammar check ..."; sh "bison -o /dev/null documentation/syntax/ares.y"
         else
             {}
     );

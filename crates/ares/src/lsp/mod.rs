@@ -1,7 +1,7 @@
 //! `ares lsp`: the compiler as a language server, over JSON-RPC on stdio.
 //!
 //! The server is the compiler (as in Flix): every diagnostic, fix and type it
-//! shows is the one `ares check` would produce. See `documentation/lsp.md`
+//! shows is the one `ares check` would produce. See `documentation/tooling/lsp.md`
 //! for the design, in particular how diagnostics are ranked so the most
 //! important error stands out.
 
