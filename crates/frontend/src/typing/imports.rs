@@ -514,7 +514,7 @@ pub(super) fn collect_ty_nodes(ast: &Ast, ty: Aol<Ty>, out: &mut HashSet<Aol<Ty>
             collect_ty_nodes(ast, *size, out);
             collect_ty_nodes(ast, *elem, out);
         }
-        Ty::Arrow { from, effect, to } => {
+        Ty::Arrow { from, effect, to, .. } => {
             collect_ty_nodes(ast, *from, out);
             collect_ty_nodes(ast, *to, out);
             if let Some(r) = effect {

@@ -295,6 +295,19 @@ $ act  : {} -> <State> @Int = \u => get {}           # may perform State
 $ poly : (a -> <e> b) -> a -> <e> b = \f x => f x   # effect-polymorphic
 ```
 
+A parameter may be named, `(x: A) -> B`. In a definition's signature the body
+sees each named parameter bound, so it needs no lambda for it; a lambda binds
+the parameters it reaches instead, which are the last ones, as for record
+parameters. The type is the same as `A -> B`, and callers pass plain arguments.
+
+```ares
+$ add   : (a: @Int) -> (b: @Int) -> @Int = a + b
+$ scale : (k: @Int) -> @Int -> @Int = \x => k * x
+```
+
+The result type may not name the parameter yet: `(n: @Nat) -> @Tensor n @Int`
+is a dependent function type, which comes with dependent types (#406).
+
 ## 3.6 Type variables
 A lowercase name free in a signature is a type variable, universally quantified
 over the whole signature. The same lowercase name repeated is the same variable;
@@ -402,6 +415,13 @@ $ inc : @Int -> @Int = \x => x + 1
 $ add : @Int -> @Int -> @Int = \a b => a + b
 $ r : @Int = add (inc 2) 3   # (add (inc 2)) 3
 ```
+
+When the context fixes a call's result type, it is fixed before the arguments
+are checked, so an argument sees the parameter type that result implies. With
+`id : t -> t`, `$ x : Big = id 3` checks `3` against `Big` and builds it through
+`Big`'s `@IIntLit` instance. Pipes are calls, so `3 |> id` and `id <| 3` do the
+same. Tuples and qualified variants pass their expected type to their parts too:
+`{1, 2} : {Big, Big}`, `Option.Some.{ 1 } : Option Big`.
 
 ## 4.3 Arithmetic and unary operators
 `+ - * / %`, unary `-` (negation) and `!` (boolean not). Standard precedence,

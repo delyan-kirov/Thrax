@@ -909,7 +909,7 @@ impl<'a> Parser<'a> {
     fn parse_signature(&mut self) -> Result<(Aol<Ty>, Option<Aol<Ty>>)> {
         let start = self.here()?;
         let mut fields: Vec<UseField> = Vec::new();
-        let mut params: Vec<(usize, Aol<Ty>, Option<EffectRow>)> = Vec::new();
+        let mut params: Vec<(usize, Option<Token>, Aol<Ty>, Option<EffectRow>)> = Vec::new();
         let result = loop {
             if self.at_ctx()? {
                 return Err(self.ctx_reserved()?);
@@ -934,18 +934,28 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let at = self.here()?;
+            if self.at_named_param()? {
+                let (name, from, effect) = self.parse_named_param()?;
+                params.push((at, Some(name), from, effect));
+                continue;
+            }
             let from = self.parse_type_app()?;
             if !matches!(self.peek_kind()?, Kind::Arrow) {
                 break from;
             }
             self.bump()?; // '->'
             let effect = self.parse_effect_row_opt()?;
-            params.push((at, from, effect));
+            params.push((at, None, from, effect));
         };
         let mut to = result;
-        for (at, from, effect) in params.into_iter().rev() {
-            let node = self.ty(Ty::Arrow { from, effect, to });
-            to = self.stamp_ty(at, node);
+        for (at, name, from, effect) in params.into_iter().rev() {
+            to = match name {
+                Some(name) => self.named_arrow(at, name, from, effect, to)?,
+                None => {
+                    let node = self.ty(Ty::Arrow { binder: None, from, effect, to });
+                    self.stamp_ty(at, node)
+                }
+            };
         }
         let (Some(first), Some(last)) = (fields.first().copied(), fields.last().copied()) else {
             return Ok((to, None));
@@ -960,7 +970,7 @@ impl<'a> Parser<'a> {
                 node
             }
         };
-        let node = self.ty(Ty::Arrow { from: ctx, effect: None, to });
+        let node = self.ty(Ty::Arrow { binder: None, from: ctx, effect: None, to });
         let sig = self.stamp_ty(start, node);
         let fields = self.ast.make_slice(fields);
         self.ast.use_params.insert(sig, fields);
@@ -1196,6 +1206,9 @@ impl<'a> Parser<'a> {
             .with_note("not inside a parameter's type, an annotation, or a field type"));
         }
         let start = self.here()?;
+        if self.at_named_param()? {
+            return self.parse_named_arrow(start);
+        }
         let from = self.parse_type_app()?;
         if !matches!(self.peek_kind()?, Kind::Arrow) {
             return Ok(from);
@@ -1203,8 +1216,100 @@ impl<'a> Parser<'a> {
         self.bump()?; // '->'
         let effect = self.parse_effect_row_opt()?;
         let to = self.parse_type()?; // right-associative
-        let node = self.ty(Ty::Arrow { from, effect, to });
+        let node = self.ty(Ty::Arrow { binder: None, from, effect, to });
         Ok(self.stamp_ty(start, node))
+    }
+
+    /// Whether the cursor is on a named parameter `(x: A)`.
+    fn at_named_param(&mut self) -> Result<bool> {
+        Ok(matches!(self.peek_kind()?, Kind::LParen)
+            && matches!(self.peek_kind_at(1)?, Kind::Word)
+            && matches!(self.peek_kind_at(2)?, Kind::Colon))
+    }
+
+    /// A function type with a named parameter, `(x: A) -> B`, with the cursor
+    /// on `(`.
+    fn parse_named_arrow(&mut self, start: usize) -> Result<Aol<Ty>> {
+        let (name, from, effect) = self.parse_named_param()?;
+        let to = self.parse_type()?;
+        self.named_arrow(start, name, from, effect, to)
+    }
+
+    /// The `(x: A) ->` of a named parameter, with the cursor on `(`: its name
+    /// token, its type and the arrow's effect row.
+    fn parse_named_param(&mut self) -> Result<(Token, Aol<Ty>, Option<EffectRow>)> {
+        self.bump()?; // '('
+        let name = self.bump()?;
+        self.bump()?; // ':'
+        let from = self.parse_type()?;
+        expect!(self, Kind::RParen, "expected ')' to close the named parameter");
+        let what = format!("expected '->' after the named parameter `({}: ...)`", self.text(name));
+        expect!(self, Kind::Arrow, &what);
+        let effect = self.parse_effect_row_opt()?;
+        Ok((name, from, effect))
+    }
+
+    /// The arrow `(x: A) -> B`. Its result may not name `x` yet: that is a
+    /// dependent function type, which needs the elaborator of #406.
+    fn named_arrow(
+        &mut self,
+        start: usize,
+        name: Token,
+        from: Aol<Ty>,
+        effect: Option<EffectRow>,
+        to: Aol<Ty>,
+    ) -> Result<Aol<Ty>> {
+        let binder = self.intern(self.text(name));
+        if let Some(at) = self.ty_mention(to, binder) {
+            let span = self.ast.ty_span(at).unwrap_or(name.span);
+            return Err(utilities::diag!(
+                Code::UnexpectedToken, span, name.line,
+                "the result type names the parameter `{binder}`, which needs dependent types";
+                note: "a function type whose result depends on its argument comes with \
+                       dependent types (#406); until then `{binder}` here is a type variable";
+                help: "rename the parameter, or the type variable if that is what you meant"
+            )
+            .with_label(name.span, "the parameter"));
+        }
+        let node = self.ty(Ty::Arrow { binder: Some(binder), from, effect, to });
+        self.ast.binder_spans.insert(node, name.span);
+        Ok(self.stamp_ty(start, node))
+    }
+
+    /// The first place `ty` names the type variable `name`.
+    fn ty_mention(&self, ty: Aol<Ty>, name: StrId) -> Option<Aol<Ty>> {
+        let row_mentions = |row: &Option<EffectRow>| {
+            row.as_ref().is_some_and(|row| row.tail == Some(name))
+        };
+        match self.ast.ty(ty) {
+            Ty::Var(v) if *v == name => Some(ty),
+            Ty::Var(_) | Ty::Con { .. } | Ty::Nat(_) | Ty::Unit | Ty::MetaE(_) => None,
+            Ty::SizeAdd(a, b) | Ty::SizeMul(a, b) | Ty::App(a, b) => {
+                self.ty_mention(*a, name).or_else(|| self.ty_mention(*b, name))
+            }
+            Ty::Sized { size, elem } => {
+                self.ty_mention(*size, name).or_else(|| self.ty_mention(*elem, name))
+            }
+            Ty::Arrow { from, effect, to, .. } => {
+                let args = effect.as_ref().map(|row| {
+                    self.ast.slice(row.entries).iter().flat_map(|e| self.ast.slice(e.args).to_vec()).collect()
+                });
+                let args: Vec<Aol<Ty>> = args.unwrap_or_default();
+                if row_mentions(effect) {
+                    return Some(ty);
+                }
+                self.ty_mention(*from, name)
+                    .or_else(|| self.ty_mention(*to, name))
+                    .or_else(|| args.into_iter().find_map(|a| self.ty_mention(a, name)))
+            }
+            Ty::Tuple(items) => self.ast.slice(*items).iter().find_map(|t| self.ty_mention(*t, name)),
+            Ty::Record { fields, tail } => {
+                if *tail == Some(name) {
+                    return Some(ty);
+                }
+                self.ast.slice(*fields).iter().find_map(|f| self.ty_mention(f.ty, name))
+            }
+        }
     }
 
     fn parse_type_app(&mut self) -> Result<Aol<Ty>> {
@@ -1289,6 +1394,12 @@ impl<'a> Parser<'a> {
                 let name = self.intern(self.text(t));
                 Ok(self.ty(Ty::Con { module: None, name }))
             }
+            Kind::LParen
+                if matches!(self.peek_kind_at(1)?, Kind::Word)
+                    && matches!(self.peek_kind_at(2)?, Kind::Colon) =>
+            {
+                Err(self.named_param_type()?)
+            }
             Kind::LParen => {
                 self.bump()?;
                 let inner = self.parse_type()?;
@@ -1298,6 +1409,22 @@ impl<'a> Parser<'a> {
             Kind::LBrace => self.parse_brace_type(),
             _ => Err(self.unexpected(&t, "expected a type")),
         }
+    }
+
+    /// A named parameter `(x: A)` where no arrow can follow it (an argument
+    /// of a type application, a field type), with the cursor on `(`.
+    fn named_param_type(&mut self) -> Result<Diagnostic> {
+        let open = self.bump()?;
+        let name = self.bump()?;
+        let name = self.text(name).to_string();
+        self.bump()?; // ':'
+        self.parse_type()?;
+        let close = expect!(self, Kind::RParen, "expected ')' to close the named parameter");
+        Ok(utilities::diag!(
+            Code::UnexpectedToken, Span::new(open.span.start, close.span.end), open.line,
+            "a named parameter `({name}: ...)` stands only before `->`";
+            help: "parenthesize the whole function type: `((x: A) -> B)`"
+        ))
     }
 
     /// A sized tensor type `@Tensor n elem`, with the cursor on `@Tensor`: the
@@ -1339,7 +1466,8 @@ impl<'a> Parser<'a> {
         match t.kind {
             Kind::Int(v) if v >= 0 => {
                 self.bump()?;
-                Ok(self.ty(Ty::Nat(v as u64)))
+                let node = self.ty(Ty::Nat(v as u64));
+                Ok(self.stamp_ty(t.span.start, node))
             }
             Kind::Int(_) => Err(self.unexpected(&t, "a tensor size must be non-negative")),
             Kind::LParen => {
@@ -1350,7 +1478,8 @@ impl<'a> Parser<'a> {
             }
             _ if self.at_tyvar()? => {
                 let name = self.expect_tyvar("expected a size variable")?;
-                Ok(self.ty(Ty::Var(name)))
+                let node = self.ty(Ty::Var(name));
+                Ok(self.stamp_ty(t.span.start, node))
             }
             _ => Err(self.unexpected(
                 &t,

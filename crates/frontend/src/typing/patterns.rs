@@ -32,7 +32,10 @@ impl<'a> Checker<'a> {
         }
         match self.pnode(pat) {
             Pattern::Wild => Ok(()),
-            Pattern::Var(name) => self.bind_local(*name, expected),
+            Pattern::Var(name) => {
+                let site = self.ast.pat_span(pat);
+                self.bind_local_at(*name, expected, site)
+            }
             // `&X` with data is a literal of the scrutinee's type. A `@Code`
             // pattern is unknown until the driver runs `X`, so it matches the
             // scrutinee at any type and binds nothing here. Only a lenient round

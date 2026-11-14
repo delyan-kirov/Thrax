@@ -352,7 +352,7 @@ impl<'a> Walk<'a> {
                 self.ty(elem);
             }
             Ty::MetaE(e) => self.expr(e),
-            Ty::Arrow { from, effect, to } => {
+            Ty::Arrow { from, effect, to, .. } => {
                 self.ty(from);
                 if let Some(row) = effect {
                     self.row(&row);

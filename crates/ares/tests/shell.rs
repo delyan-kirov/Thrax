@@ -67,3 +67,10 @@ fn type_and_scope_print_what_reflection_finds() {
     // A name prints its declaration, `@use` fields and all, in both.
     assert_eq!(out.matches("to_string : @use {d: IToString a} -> a -> @Str\n").count(), 2, "{out}");
 }
+
+#[test]
+fn a_named_parameter_is_bound_in_the_body() {
+    let out = shell(&["foo: (i: @Int) -> @Int = i", "_= foo 41 + 1"]);
+    assert!(out.contains("# 42 : @Int"), "{out}");
+    assert!(!out.contains("error"), "{out}");
+}

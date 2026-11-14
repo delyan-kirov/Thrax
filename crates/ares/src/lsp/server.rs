@@ -927,6 +927,11 @@ impl Server {
         let frontend::Expr::Var { module: qual, name } = ast.expr(e) else { return Json::Null };
         let name = ast.text(*name);
         let checker = snap.checker(module);
+        // A local leads to its binder, in this file.
+        if let Some(span) = checker.local_definition(e) {
+            let doc = Document::new(snap.sources[module].2.clone(), 0);
+            return Json::obj([("uri", Json::str(uri.clone())), ("range", range(&doc, span, enc))]);
+        }
         let owner = match qual {
             Some(q) => Some(checker.qualifier_module(*q)),
             None => checker.call_modules().get(&e).copied(),

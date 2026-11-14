@@ -396,10 +396,10 @@ impl<'a> Desugarer<'a> {
 
     fn record_params(&mut self, sig: Option<Aol<Ty>>, body: Aol<Term>) -> Aol<Term> {
         let Some(sig) = sig else { return body };
-        let Ty::Arrow { from, to, .. } = self.tnode(sig) else {
+        let Ty::Arrow { binder, from, to, .. } = self.tnode(sig) else {
             return body;
         };
-        let (from, to) = (*from, *to);
+        let (binder, from, to) = (*binder, *from, *to);
         // The body's leading lambdas bind the LAST k of the m signature parameters,
         // so a parameter is only auto-bound when the lambdas do not reach it
         // (`k < m`). This lets `\p => p.x` name a record parameter explicitly, while
@@ -407,6 +407,11 @@ impl<'a> Desugarer<'a> {
         let m = 1 + self.arrow_arity(to);
         if leading_lams(&self.terms, body) >= m {
             return body;
+        }
+        // A named parameter `(x: A) -> B` is a lambda over `x`.
+        if let Some(name) = binder {
+            let inner = self.record_params(Some(to), body);
+            return self.terms.lam(name, inner);
         }
         // A CLOSED record parameter is the destructuring sugar; an open `{ x | r }`
         // is a real record value (plain parameter); a unit parameter takes no
@@ -1151,7 +1156,7 @@ impl<'a> Desugarer<'a> {
                 self.collect_meta_types(size);
                 self.collect_meta_types(elem);
             }
-            Ty::Arrow { from, effect, to } => {
+            Ty::Arrow { from, effect, to, .. } => {
                 let (from, to) = (*from, *to);
                 if let Some(row) = effect {
                     let row = row.clone();
