@@ -29,7 +29,7 @@ The hooks are one-line shims in `tools/hooks/`; their logic is
 
 | Hook | Does |
 | --- | --- |
-| `pre-commit` | formats the staged `.ares` files; `cargo check` when Rust is staged; the grammar check when `documentation/ares.y` is; refuses a staged `tools/editors` whose Zed extension pins an older grammar commit |
+| `pre-commit` | formats the staged `.ares` files; `cargo check` when Rust is staged; the grammar check when `documentation/syntax/ares.y` is; refuses a staged `tools/editors` whose Zed extension pins an older grammar commit |
 | `commit-msg` | requires `#N` (an open issue) on `master`, opens the issue for `#new`, adds the branch's `#N` elsewhere |
 | `post-commit` | moves a `master` commit to its issue's branch; rebuilds what an installed Zed or Helix compiles when it is stale (tools/editors has hooks of its own, see its README) |
 | `pre-push` | refuses pushes to `master`, and pushes of a commit pinning an `applications` or `tools/editors` commit not on its remote; opens the pull request of a pushed issue branch |

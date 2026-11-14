@@ -13,7 +13,7 @@
 //! a literal, range or sequence pattern on a user type finds its instance by
 //! type, and desugaring projects the interface's one field.
 //!
-//! See `documentation/interfaces.md` for the language-level rules.
+//! See `documentation/language/interfaces.md` for the language-level rules.
 //!
 //! Entry points: [`Checker::plan_ctx`], [`Checker::resolve_pending_ctx`].
 

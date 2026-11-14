@@ -34,7 +34,7 @@ do. A `help:` may carry machine edits and an applicability, after rustc:
 - `HasPlaceholders`: an edit with a hole left to fill.
 
 On the command line a fix shows the patched line under its `help:`. `ares
-explain CODE` prints the code's entry in `documentation/errors.md`.
+explain CODE` prints the code's entry in `documentation/tooling/errors.md`.
 
 `???` is a typed hole (after GHC). It has whatever type its context needs, and
 it is always an error that names that type and lists the names in scope that
@@ -205,7 +205,7 @@ were written.
   nodes to colors.
 
 The tree-sitter grammar is not written by hand: `tools/editors/TREE_SITTER_GEN.ares`
-(a Ares program) reads the Bison spec `documentation/ares.y` and writes
+(a Ares program) reads the Bison spec `documentation/syntax/ares.y` and writes
 `grammar.js`, carrying over the rules and their precedence, removing empty
 productions the way tree-sitter needs, and spelling each terminal. The output is
 ignored by git. The tree-sitter CLI comes from `tools/editors/flake.nix`, kept

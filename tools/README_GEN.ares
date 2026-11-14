@@ -130,7 +130,7 @@ $ building : @Str =
         ++ sh "cargo build --release   # target/release/ares"
         ++ "\nLinux is the development platform; macOS, Windows and wasm are tested in CI,\n"
         ++ "and each release ships an SDK for them. See\n"
-        ++ "[documentation/platforms.md](documentation/platforms.md).\n"
+        ++ "[documentation/runtime/platforms.md](documentation/runtime/platforms.md).\n"
 
 $ ex_entry : @Str =
     "$ @main : @Vec @Str -> <@IO> @Int = \\args =>\n" ++ "\tC.puts \"hello\";\n" ++ "\t0"
@@ -169,7 +169,7 @@ $ compiling : @Str =
             )
         ++ "\n`ares lsp` serves diagnostics, fixes, hover, go-to-definition, completion,\n"
         ++ "symbols and formatting. It ranks errors so the one that matters most stands\n"
-        ++ "out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.\n"
+        ++ "out; see documentation/tooling/lsp.md, and tools/editors/ for Neovim and Helix.\n"
 
 $ features : @Str =
     "\n## Features\n\n"

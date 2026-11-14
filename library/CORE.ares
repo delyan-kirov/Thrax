@@ -177,7 +177,7 @@ $ @stm_save : {} -> <@IO> @Int = @extern "ares"
 $ @stm_rollback : @Int -> <@IO> {} = @extern "ares"
 
 # Metaprogramming: the compiler pipeline as a library (see
-# documentation/metaprogramming.md). Lexing, parsing and `@eval` are pure, so they
+# documentation/language/metaprogramming.md). Lexing, parsing and `@eval` are pure, so they
 # also run in a built program. A lex or syntax error traps (fails the build).
 # A token is a `Token` (below): match on its kind, and every kind carries its
 # lexeme. `@token_kind` is the kind's name, `@token_text` the lexeme. `@Code` is

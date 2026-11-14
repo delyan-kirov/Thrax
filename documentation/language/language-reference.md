@@ -1010,7 +1010,7 @@ $ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b => Money.{ .cents = a.cents 
 $ total : Money = Money.{ .cents = 1 } + Money.{ .cents = 2 }
 ```
 
-See `documentation/interfaces.md` for the full rules, the diagnostics, and the
+See `documentation/language/interfaces.md` for the full rules, the diagnostics, and the
 blessed `@I*` interfaces the compiler's own desugars resolve.
 
 ## 7.5 Tail-call optimization
@@ -1322,7 +1322,7 @@ cannot express with `@cast` (which is integer widths only): `C.i2f`/`C.f2i`
 (@Int and @Float32), `C.i2d`/`C.d2i` (@Int and Real), `C.i2p`/`C.p2i` (@Int to
 @Ptr and back), `C.ptr_add` (an address `n` bytes on), and `C.null` (the null
 pointer). These are provided by the engines' runtimes (an
-empty `lib`); see `documentation/native-backend.md`.
+empty `lib`); see `documentation/runtime/native-backend.md`.
 
 ```ares
 $ x : @Float32 = C.i2f 41
@@ -1582,7 +1582,7 @@ during *your* build, the same trust an imported `build.rs` carries.
 `tests/MAIN.ares` is the worked example: it reads `examples/` at compile time and
 generates its own imports and `@main`, so adding an example to the corpus is
 adding a file. See `examples/META_BUILD.ares` and
-documentation/metaprogramming.md.
+documentation/language/metaprogramming.md.
 
 To see what a metaprogram produced, `ares expand <file> [MODULE]` prints the
 source as the checker finally saw it: every `&` spliced and every
@@ -1615,7 +1615,7 @@ An option not set keeps its default:
 | `format.indent` | `4` | 1 to 16 | spaces per indentation level |
 | `check.max_errors` | `20` | 1 to 10000 | the most errors `ares check` prints |
 | `lsp.check` | `type` | `type`, `save` | check as you type, or only when a file is saved |
-| `lsp.focus` | `roots` | `all`, `roots`, `one` | how loudly errors are shown (see `documentation/lsp.md`) |
+| `lsp.focus` | `roots` | `all`, `roots`, `one` | how loudly errors are shown (see `documentation/tooling/lsp.md`) |
 | `lsp.debounce_ms` | `150` | 0 to 5000 | how long typing must pause before the file is checked |
 | `lsp.grace` | `true` | `true`, `false` | hold back errors in the definition being typed |
 | `lsp.grace_ms` | `1500` | 0 to 60000 | the pause after which held-back errors are shown |
@@ -1750,7 +1750,7 @@ is `MAIN.ares` in the current directory (or the sole `.ares` file there).
 | `fmt` | format files in place; `fmt --check` only lists unformatted ones |
 | `fix` | apply every fix the compiler is sure of, rechecking until none is left |
 | `explain` | explain a diagnostic code (`ares explain TYPE_MISMATCH`) |
-| `lsp` | run the language server on stdin/stdout (see `documentation/lsp.md`) |
+| `lsp` | run the language server on stdin/stdout (see `documentation/tooling/lsp.md`) |
 
 Flags: `--target=ARCH-OS` cross-compiles (e.g. `x86_64-linux`, `wasm32-wasi`);
 `-h` / `--help` prints usage.

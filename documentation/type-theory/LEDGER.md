@@ -1,7 +1,7 @@
 # Theory ledger
 
 **Status:** the registry of where the kernel's theory comes from, issue #472.
-**Date:** 2026-11-11.
+**Date:** 2026-11-14.
 **Scope:** every source, algorithm, rule, theorem and assumption behind
 `crates/kernel`, with a status, enforced by `crates/kernel/tests/ledger.rs`.
 
@@ -18,14 +18,19 @@ a rule says so with a tag on its own line:
 ```
 
 Prose may point at an entry with `See Rule [Name]` or `See Algorithm [Name]`.
+The Lean proofs in [`consistency-proof/`](consistency-proof) tag the constructor that states a
+rule the same way, as `-- Rule [Name]`, with prose allowed after it.
 
 The test reads the tables below and checks:
 
 - every tag and every `See` resolves to an entry;
 - every rule and algorithm marked `yes` in its Code column is tagged somewhere,
   and every one marked `planned` is tagged nowhere;
-- a `published` rule names a theorem that covers it; a `deviation` or
-  `conjecture` names an issue, and so does every assumption;
+- a `published` rule names a theorem that covers it; a `deviation` names an
+  issue or a theorem that covers it; a `conjecture` names an issue, and so
+  does every assumption;
+- every rule covered by a theorem proved in Lean is tagged `-- Rule [Name]`
+  in `consistency-proof/`, and every Lean tag names a rule such a theorem covers;
 - every source, theorem and issue a row names exists, and every vendored file
   is in [`references/`](references/README.md) with the SHA-256 written here.
 
@@ -44,8 +49,11 @@ The design questions behind the rules, compared across systems, are the
 | `deviation` | differs from every source; the row says how, and names an issue |
 | `conjecture` | no source; names an issue |
 
-Each `published` rule is covered by *some* theorem, each for its own fragment.
-No theorem covers their union, which is the kernel; see Assume [Composition].
+Each published theorem covers its own fragment. Lean Consistency covers every
+rule at once: it is the kernel's rules together, proved consistent in Lean
+(#481). It proves consistency only; normalisation and decidability of the
+whole kernel are not proved, and the published theorems that give them each
+cover a fragment.
 
 Paper rule names are written as the paper prints them, so `Eq-Π` is the rule
 the kernel calls `Eq-Pi`. "Not checked" in a Where column means the location
@@ -104,6 +112,8 @@ redistributed, or that is not fetched yet, has `-` for its path and hash.
 | PLT25 Decidability | PLT25 | Theorem 5.6 | CIC^obs restricted to Π, N and universes, with Cast-Refl in conversion | Agda |
 | PLT25 Consistency | PLT25 | Theorem 6.5 | CIC^obs with its scheme of parameterised inductive types (Section 4.1) | paper |
 | Puj22 Cast-Refl decidability | Puj22 | Theorem 5.1.2, Section 5.1.4 | CC^obs with Cast-Refl decided during conversion | Agda |
+| Lean Consistency | - | `consistency-proof/Proofs/Consistency.lean`, `consistent₁` to `consistent₄` and `consistent_poly` | every rule below at once, as `Deriv` in `consistency-proof/Proofs/Typing.lean`, over any signature of inductive declarations (`SigOk`), for each bound on the universes with a model (four are built); levels are numbers, and a level-polymorphic derivation is its instances; the differences from the kernel are listed in `consistency-proof/Proofs/Syntax.lean` | Lean |
+| Lean Level comparison soundness | - | `consistency-proof/Proofs/Levels.lean`, `Lvl.leq_sound` | Algorithm [Level comparison by case split], with fuel bounding its depth: a yes holds under every assignment | Lean |
 | AC20 Non-normalisation | AC20 | Introduction and Section 2 | an impredicative Prop, proof-irrelevant equality, and a cast that reduces when its two types are definitionally equal: normalisation fails for open terms | paper |
 
 ## Algorithms
@@ -113,7 +123,7 @@ redistributed, or that is not fetched yet, has `-` for its path and hash.
 | Normalisation by evaluation | BS91, Coq96 | not checked: not vendored | published-uncovered | - | yes |
 | Bidirectional checking | PTu00, DK21 | not checked: not vendored | published-uncovered | - | yes |
 | Typed conversion | AC05, PLT25 | PLT25 Fig. 7, algorithmic conversion; AC05 not checked: not vendored | published-uncovered | - | yes |
-| Level comparison by case split | nanoda-level | level.rs:158-173, leq_imax_by_cases, the same split on a parameter being zero or not | published-uncovered | #479 | yes |
+| Level comparison by case split | nanoda-level | level.rs:158-173, leq_imax_by_cases, the same split on a parameter being zero or not; soundness is Lean Level comparison soundness | published-uncovered | #479 | yes |
 | Recursor generation | Dyb94 | not checked: not vendored | published-uncovered | - | yes |
 | Transitive axioms | - | - | conjecture | #480 | yes |
 
@@ -121,7 +131,8 @@ The level comparison was attributed to Lean 4 in the code, but Lean's C++
 kernel does not split cases: `is_geq_core` (Lean4, `level.cpp:483`) is a
 syntactic check, sound but incomplete. nanoda_lib, an independent Lean kernel
 in Rust, does split (`nanoda/level.rs:158-173`), which is the kernel's
-algorithm; neither has a proof (#479).
+algorithm; neither has a proof. Its soundness is proved in Lean
+(`consistency-proof/Proofs/Levels.lean`); completeness is open (#479).
 Transitive axioms is graph reachability over what the checker resolved; it is
 a conjecture only in that nothing proves the recorded edges complete.
 
@@ -129,63 +140,65 @@ a conjecture only in that nothing proves the recorded edges complete.
 
 | Rule | Source | Where in source | Status | Covered by | Issue | Code |
 |---|---|---|---|---|---|---|
-| Univ | PT23 | Fig. 2, Univ with 𝒜(Ω, 𝒰₀) and 𝒜(𝒰ᵢ, 𝒰ᵢ₊₁) | published | PT23 Decidability, PT23 Consistency | - | yes |
-| Level-Polymorphism | ST14 | not checked: not vendored | published-uncovered | - | - | yes |
-| Pi-Form | PT23 | Fig. 2, Π-Form with sort ℛ(s, s′), imax for constant levels | published | PT23 Decidability, PT23 Consistency | - | yes |
-| Fun | PT22 | Fig. 2, Fun | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| App | PT22 | Fig. 2, App | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Beta | PT22 | Fig. 4, β-red | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Eta-Pi | PT22 | Fig. 3, η-Eq | published | PT22 Decidability | - | yes |
-| Let | PT22 | Fig. 4, β-red; a let is a typed redex whose variable stays transparent | published-uncovered | - | - | yes |
-| Proof-Irrelevance | PT22 | Fig. 3, Proof-Irrelevance | published | PT22 Decidability | - | yes |
-| Sigma-Form | PT22 | Section 4.4, Σ-types; for propositions PT23 Fig. 2, &-Form | published-uncovered | PT22 Sigma | - | yes |
-| Sigma-Pair | PT22 | Section 4.4, pairs and projections | published-uncovered | PT22 Sigma | - | yes |
-| Eta-Sigma | AC05 | not checked: not vendored | published-uncovered | - | - | yes |
-| Top | PT22 | Fig. 2, ⊤-Form and ⊤-Intro | published | PT22 Normalisation | - | yes |
-| Bottom | PT22 | Fig. 2, ⊥-Form and ⊥-Elim | published | PT22 Normalisation | - | yes |
-| Eq-Form | PT22 | Fig. 2, Eq-Form | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Eq-Box | PT22, Puj22 | PT22 Section 4.3, the equality of □A; Puj22 Section 3.2.10, Box-Proof-Eq; a proof inside data is read as boxed | published-uncovered | - | - | yes |
-| Eq-Stuck | PT22 | Fig. 2, Eq-Form, which needs a type in 𝒰; a level parameter can leave that undecided | deviation | - | #478 | yes |
-| Eq-Data-Stuck | PLT25 | Section 2.3, no computation for `Ind a ∼ Ind a'`; Section 4.1, only the eq_c projections use it | published | PLT25 Consistency | - | yes |
-| Refl | PT22 | Fig. 2, Refl | published | PT22 Normalisation | - | yes |
-| Transport | PT22 | Fig. 2, Transport-Ω, with the non-dependent motive the paper says suffices | published | PT22 Normalisation | - | yes |
-| Cast | PT22 | Fig. 2, Cast | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Eq-Fun | PT22 | Fig. 4, Eq-Fun | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Eq-Pair | PT22 | Section 4.4, Eq-Pair | published-uncovered | PT22 Sigma | - | yes |
-| Eq-Omega | PT22 | Fig. 4, Eq-Ω | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Eq-Univ | PT22 | Fig. 4, Eq-Univ | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Eq-Univ-Neq | PT22 | Fig. 4, Eq-Univ-≠, with hd extended to Σ, inductive types, quotients and the sorts of a binder's sides | published-uncovered | - | - | yes |
-| Eq-Pi | PT22 | Fig. 4, Eq-Π | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Eq-Sigma | PT22 | Section 4.4, Eq-Σ | published-uncovered | PT22 Sigma | - | yes |
-| Eq-Ctor | PT22 | Fig. 4, Eq-zero, Eq-Suc, Eq-zero-suc, Eq-suc-zero, generalised to every constructor | published-uncovered | - | - | yes |
-| Eq-Univ-Data | PT22 | Fig. 4, Eq-Univ for ℕ, extended to every inductive type without parameters | published-uncovered | - | - | yes |
-| Data-Eq-Projection | PLT25 | Section 4.1, the eq_c projections from `Ind a ∼ Ind a'` to the equality of each constructor's field types | published | PLT25 Consistency | - | yes |
-| Eq-Quot-Class | PT22 | Section 4.1, π(t) ∼ π(u) reduces to R t u | published-uncovered | PT22 Quotients | - | yes |
-| Eq-Quot | PT22 | Section 4.1, equality of two quotient types | published-uncovered | PT22 Quotients | - | yes |
-| Cast-Pi | PT22 | Fig. 4, Cast-Π | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Cast-Sigma | PT22 | Section 4.4, Cast-Σ | published-uncovered | PT22 Sigma | - | yes |
-| Cast-Univ | PT22 | Fig. 4, Cast-Univ | published | PT22 Normalisation, PT22 Decidability | - | yes |
-| Cast-Ctor | PLT25 | Section 4.1, the cast rule for a constructor | published-uncovered | PLT25 Consistency | - | yes |
-| Cast-Quot | PT22 | Section 4.1, cast of π(t) | published-uncovered | PT22 Quotients | - | yes |
-| Cast-Refl | PLT25 | Fig. 3, Cast-Refl, a conversion rule | published | PLT25 Decidability, Puj22 Cast-Refl decidability | - | yes |
-| Proof-Witness | PT22, AC20 | PT22 Fig. 2, the proof terms of Refl, Transport-Ω and every other proof, which the kernel drops; AC20 Section 2, the loops that dropping them avoids | deviation | - | #465 | yes |
-| Data-Form | Dyb94, PLT25 | PLT25 Section 4.1, inductive definitions without indices, outside Ω (with indices, see Data-Ford); Dyb94 not checked | published-uncovered | PLT25 Consistency | - | yes |
-| Data-Ford | PLT25 | Section 4.2, Fordism: indices as parameters with one equality field per index, and a cast in each branch of a match; index types restricted to depend on the parameters only | published | PLT25 Consistency | - | yes |
-| Data-Ctor | Dyb94, PLT25 | PLT25 Section 4.1; Dyb94 not checked | published-uncovered | PLT25 Consistency | - | yes |
-| Data-Elim | Dyb94 | not checked: not vendored | published-uncovered | - | - | yes |
-| Data-Iota | Dyb94 | not checked: not vendored | published-uncovered | - | - | yes |
-| Positivity-Restricted | Dyb94 | not checked: not vendored; the kernel admits only whole recursive fields | deviation | - | #467 | yes |
-| Quot-Form | PT22 | Section 4.1, A/(R, Rr, Rs, Rt) | published-uncovered | PT22 Quotients | - | yes |
-| Quot-Intro | PT22 | Section 4.1, π(t) | published-uncovered | PT22 Quotients | - | yes |
-| Quot-Elim | PT22, PLT25 | PT22 Section 4.1, Q-elim; the respect premise in PLT25 Section 7.6's direction | published-uncovered | PT22 Quotients | - | yes |
-| Quot-Beta | PT22 | Section 4.1, Q-elim on π(u) | published-uncovered | PT22 Quotients | - | yes |
+| Univ | PT23 | Fig. 2, Univ with 𝒜(Ω, 𝒰₀) and 𝒜(𝒰ᵢ, 𝒰ᵢ₊₁) | published | PT23 Decidability, PT23 Consistency, Lean Consistency | - | yes |
+| Level-Polymorphism | ST14 | not checked: not vendored | published | Lean Consistency | - | yes |
+| Pi-Form | PT23 | Fig. 2, Π-Form with sort ℛ(s, s′), imax for constant levels | published | PT23 Decidability, PT23 Consistency, Lean Consistency | - | yes |
+| Fun | PT22 | Fig. 2, Fun | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| App | PT22 | Fig. 2, App | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| Beta | PT22 | Fig. 4, β-red | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| Eta-Pi | PT22 | Fig. 3, η-Eq | published | PT22 Decidability, Lean Consistency | - | yes |
+| Let | PT22 | Fig. 4, β-red; a let is a typed redex whose variable stays transparent | published | Lean Consistency | - | yes |
+| Proof-Irrelevance | PT22 | Fig. 3, Proof-Irrelevance | published | PT22 Decidability, Lean Consistency | - | yes |
+| Sigma-Form | PT22 | Section 4.4, Σ-types; for propositions PT23 Fig. 2, &-Form | published | PT22 Sigma, Lean Consistency | - | yes |
+| Sigma-Pair | PT22 | Section 4.4, pairs and projections | published | PT22 Sigma, Lean Consistency | - | yes |
+| Eta-Sigma | AC05 | not checked: not vendored | published | Lean Consistency | - | yes |
+| Top | PT22 | Fig. 2, ⊤-Form and ⊤-Intro | published | PT22 Normalisation, Lean Consistency | - | yes |
+| Bottom | PT22 | Fig. 2, ⊥-Form and ⊥-Elim | published | PT22 Normalisation, Lean Consistency | - | yes |
+| Eq-Form | PT22 | Fig. 2, Eq-Form | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| Eq-Box | PT22, Puj22 | PT22 Section 4.3, the equality of □A; Puj22 Section 3.2.10, Box-Proof-Eq; a proof inside data is read as boxed | published | Lean Consistency | - | yes |
+| Eq-Stuck | PT22 | Fig. 2, Eq-Form, which needs a type in 𝒰; a level parameter can leave that undecided | deviation | Lean Consistency | - | yes |
+| Eq-Data-Stuck | PLT25 | Section 2.3, no computation for `Ind a ∼ Ind a'`; Section 4.1, only the eq_c projections use it | published | PLT25 Consistency, Lean Consistency | - | yes |
+| Refl | PT22 | Fig. 2, Refl | published | PT22 Normalisation, Lean Consistency | - | yes |
+| Transport | PT22 | Fig. 2, Transport-Ω, with the non-dependent motive the paper says suffices | published | PT22 Normalisation, Lean Consistency | - | yes |
+| Cast | PT22 | Fig. 2, Cast | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| Eq-Fun | PT22 | Fig. 4, Eq-Fun | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| Eq-Pair | PT22 | Section 4.4, Eq-Pair | published | PT22 Sigma, Lean Consistency | - | yes |
+| Eq-Omega | PT22 | Fig. 4, Eq-Ω | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| Eq-Univ | PT22 | Fig. 4, Eq-Univ | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| Eq-Univ-Neq | PT22 | Fig. 4, Eq-Univ-≠, with hd extended to Σ, inductive types, quotients and the sorts of a binder's sides | published | Lean Consistency | - | yes |
+| Eq-Pi | PT22 | Fig. 4, Eq-Π | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| Eq-Sigma | PT22 | Section 4.4, Eq-Σ | published | PT22 Sigma, Lean Consistency | - | yes |
+| Eq-Ctor | PT22 | Fig. 4, Eq-zero, Eq-Suc, Eq-zero-suc, Eq-suc-zero, generalised to every constructor | published | Lean Consistency | - | yes |
+| Eq-Univ-Data | PT22 | Fig. 4, Eq-Univ for ℕ, extended to every inductive type without parameters | published | Lean Consistency | - | yes |
+| Data-Eq-Projection | PLT25 | Section 4.1, the eq_c projections from `Ind a ∼ Ind a'` to the equality of each constructor's field types | published | PLT25 Consistency, Lean Consistency | - | yes |
+| Eq-Quot-Class | PT22 | Section 4.1, π(t) ∼ π(u) reduces to R t u | published | PT22 Quotients, Lean Consistency | - | yes |
+| Eq-Quot | PT22 | Section 4.1, equality of two quotient types | published | PT22 Quotients, Lean Consistency | - | yes |
+| Cast-Pi | PT22 | Fig. 4, Cast-Π | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| Cast-Sigma | PT22 | Section 4.4, Cast-Σ | published | PT22 Sigma, Lean Consistency | - | yes |
+| Cast-Univ | PT22 | Fig. 4, Cast-Univ | published | PT22 Normalisation, PT22 Decidability, Lean Consistency | - | yes |
+| Cast-Ctor | PLT25 | Section 4.1, the cast rule for a constructor | published | PLT25 Consistency, Lean Consistency | - | yes |
+| Cast-Quot | PT22 | Section 4.1, cast of π(t) | published | PT22 Quotients, Lean Consistency | - | yes |
+| Cast-Refl | PLT25 | Fig. 3, Cast-Refl, a conversion rule | published | PLT25 Decidability, Puj22 Cast-Refl decidability, Lean Consistency | - | yes |
+| Proof-Witness | PT22, AC20 | PT22 Fig. 2, the proof terms of Refl, Transport-Ω and every other proof, which the kernel drops; AC20 Section 2, the loops that dropping them avoids | deviation | Lean Consistency | #465 | yes |
+| Data-Form | Dyb94, PLT25 | PLT25 Section 4.1, inductive definitions without indices, outside Ω (with indices, see Data-Ford); Dyb94 not checked | published | PLT25 Consistency, Lean Consistency | - | yes |
+| Data-Ford | PLT25 | Section 4.2, Fordism: indices as parameters with one equality field per index, and a cast in each branch of a match; index types restricted to depend on the parameters only | published | PLT25 Consistency, Lean Consistency | - | yes |
+| Data-Ctor | Dyb94, PLT25 | PLT25 Section 4.1; Dyb94 not checked | published | PLT25 Consistency, Lean Consistency | - | yes |
+| Data-Elim | Dyb94 | not checked: not vendored | published | Lean Consistency | - | yes |
+| Data-Iota | Dyb94 | not checked: not vendored | published | Lean Consistency | - | yes |
+| Positivity-Restricted | Dyb94 | not checked: not vendored; the kernel admits only whole recursive fields | deviation | Lean Consistency | #467 | yes |
+| Quot-Form | PT22 | Section 4.1, A/(R, Rr, Rs, Rt) | published | PT22 Quotients, Lean Consistency | - | yes |
+| Quot-Intro | PT22 | Section 4.1, π(t) | published | PT22 Quotients, Lean Consistency | - | yes |
+| Quot-Elim | PT22, PLT25 | PT22 Section 4.1, Q-elim; the respect premise in PLT25 Section 7.6's direction | published | PT22 Quotients, Lean Consistency | - | yes |
+| Quot-Beta | PT22 | Section 4.1, Q-elim on π(u) | published | PT22 Quotients, Lean Consistency | - | yes |
 
 How the deviations differ from their sources:
 
 - **Eq-Stuck.** Equality at a type whose sort is a level that may or may
   not be `0` is left stuck, since neither Eq-Form nor Eq-Box applies until the
   level is known. No source has level parameters over an observational
-  theory, so this is part of Assume [Composition] (#478). (`D a ~ D a'` is
+  theory. Lean Consistency covers it: in each instance of a level-polymorphic
+  derivation the level is a number, so the stuck equality is never formed
+  (#478). (`D a ~ D a'` is
   stuck too, but that is CIC^obs's rule, Eq-Data-Stuck; until 2026-11-11 it
   reduced to `a ~ a'`, which was unsound, #477.)
 - **Proof-Witness.** Every term checked against a proposition elaborates to
@@ -199,6 +212,5 @@ How the deviations differ from their sources:
 
 | Assumption | Why it is believed | What would discharge it | Issue |
 |---|---|---|---|
-| Composition | each published rule is covered for its own fragment, and the fragments' models (setoids, sets) look compatible | a logical relation for the whole kernel, or a translation into a system that has one | #478 |
 | Level comparison is complete | it decides `<=` on max-plus normal forms and splits every undecided `imax` on both values of a parameter, as nanoda_lib does | a proof | #479 |
 | Proofs need not be kept | every proof the evaluator drops was type-checked, and the published systems contain the proof terms the rules would build | keeping proof terms | #465 |

@@ -3,11 +3,11 @@
 **Superseded syntax (2026-11-12).** This log writes sized tensors as `[n]T` and
 `[m, n]T`; they are now `@Tensor n T` and `@Tensor m (@Tensor n T)` (`LA.Matrix m
 n T`), and the per-axis variance of increment 4 (`@co`/`@contra`) was removed
-(#366). See documentation/language-reference.md section 9 for the current form.
+(#366). See documentation/language/language-reference.md section 9 for the current form.
 
 **Status: SHIPPED.** Ranges (pattern form) are done. The codata discussion below
 is historical: `@codata` was removed on 2026-09-28 and laziness became a property
-of a recursive slot in any declared type (documentation/language-reference.md 6.5,
+of a recursive slot in any declared type (documentation/language/language-reference.md 6.5,
 effect-system-design.md 1a). Read every "codata" below as "a lazy recursive
 slot"; the design questions it raises are unchanged. The LA extension has landed through **increment 4**: sized tensors
 (increment 1), a strided data plane (2a), O(1) views (2b), multi-axis slicing with
@@ -146,7 +146,7 @@ built together. Decide the shape now; implement later.
   coinductive (observations/destructors, projection, potentially infinite,
   lazy-by-construction).
 - Opportunity, not just a new type: Ares today is "CBV except lazy data
-  constructors" (see documentation/effect-system-design.md and the sum-types work), i.e.
+  constructors" (see documentation/language/effect-system-design.md and the sum-types work), i.e.
   lazy DATA, which is the source of murky cost. The principled cleanup is a
   `data`/`codata` split: make `data` strict (predictable cost, refcount-in-place
   friendly) and confine ALL laziness behind explicit `codata`, visible in the
@@ -200,7 +200,7 @@ Scalar`, `index _ {Range/.. ..} -> view`).
   the same `index` primitive, one overload keyed on the index type.
 - Mechanism: split storage from shape.
   - Buffer: refcounted contiguous storage (already exists: the `%vec` byte-vector
-    with rc and rc==1 in-place, see documentation/strings-and-arrays.md).
+    with rc and rc==1 in-place, see documentation/language/strings-and-arrays.md).
   - Array/Tensor is a view: `{ buffer(strong ref), offset, shape[], strides[] }`.
   - A slice is a new view over the same buffer (rc 1 becomes 2), O(1), no copy.
 - Strides are the LA payoff, all O(1): row, column, transpose (swap

@@ -143,6 +143,9 @@
 
           pkgs.xdg-utils
           pkgs.bison
+
+          # `thrax proofs`: the kernel's consistency proof in documentation/type-theory/consistency-proof/ (#481).
+          pkgs.lean4
         ];
 
         shellHook = ''
@@ -154,7 +157,7 @@
           # far as aresDev, thraxDev and `thrax tosdk` are concerned.
           export ARES_ROOT=$PWD
 
-          # What `thrax hooks` sets: the git hooks of documentation/workflow.md.
+          # What `thrax hooks` sets: the git hooks of documentation/tooling/workflow.md.
           if [ -d .git ]; then
             git config core.hooksPath tools/hooks
             git config core.commentChar ';'

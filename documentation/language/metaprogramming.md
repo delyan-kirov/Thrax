@@ -6,7 +6,7 @@
 **Scope:** compile-time metaprogramming: exposing the compiler pipeline
 (tokens -> AST -> value) as a library, macro expansion, compiler messages, and
 compile-time IO. Builds directly on the effect system
-(documentation/effect-system-design.md) and CTFE (`$ &`).
+(documentation/language/effect-system-design.md) and CTFE (`$ &`).
 
 **Spelling (#457, 2026-11-10).** The splice is the prefix operator `&`, which
 replaced the intrinsic `@e` in every position: `$ @e <| assert ..` is now

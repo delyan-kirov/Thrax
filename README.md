@@ -28,7 +28,7 @@ cargo build --release   # target/release/ares
 
 Linux is the development platform; macOS, Windows and wasm are tested in CI,
 and each release ships an SDK for them. See
-[documentation/platforms.md](documentation/platforms.md).
+[documentation/runtime/platforms.md](documentation/runtime/platforms.md).
 
 ## Compiling and running
 
@@ -71,7 +71,7 @@ ares lsp                       # language server for an editor
 
 `ares lsp` serves diagnostics, fixes, hover, go-to-definition, completion,
 symbols and formatting. It ranks errors so the one that matters most stands
-out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.
+out; see documentation/tooling/lsp.md, and tools/editors/ for Neovim and Helix.
 
 ## Features
 
